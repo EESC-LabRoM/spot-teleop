@@ -29,6 +29,7 @@
 [submodule "spot-ros2_ws/src/moveit2"]
 	path = spot-ros2_ws/src/moveit2
 	url = https://github.com/murilo-vinicius04/moveit2.git
+	branch = humble
 
 [submodule "spot-ros2_ws/src/moveit_msgs"]
 	path = spot-ros2_ws/src/moveit_msgs
