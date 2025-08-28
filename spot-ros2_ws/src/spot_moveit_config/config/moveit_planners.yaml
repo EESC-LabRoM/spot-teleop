@@ -1,0 +1,21 @@
+ompl:
+  planning_plugin: ompl_interface/OMPLPlanner
+  request_adapters: >-
+    default_planner_request_adapters/AddTimeParameterization
+    default_planner_request_adapters/FixWorkspaceBounds
+    default_planner_request_adapters/FixStartStateBounds
+    default_planner_request_adapters/FixStartStateCollision
+    default_planner_request_adapters/FixStartStatePathConstraints
+  start_state_max_bounds_error: 0.1
+  planner_configs:
+    - arm_rrtconnect
+
+planner_configs:
+  arm_rrtconnect:
+    type: geometric::RRTConnect
+    range: 0.0
+    goal_bias: 0.05
+    planning_time: 5.0
+    simplify_max_duration: 0.0
+    constraint_sampling_attempts: 30
+    constraint_sample_resolution: 0.05 

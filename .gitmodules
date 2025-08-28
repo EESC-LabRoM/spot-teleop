@@ -1,0 +1,51 @@
+[submodule "zed_ws/src/isaac_ros_nitros"]
+	path = zed_ws/src/isaac_ros_nitros
+	url = https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_nitros.git
+
+[submodule "zed_ws/src/negotiated"]
+	path = zed_ws/src/negotiated
+	url = https://github.com/osrf/negotiated.git
+
+[submodule "zed_ws/src/zed-ros2-wrapper"]
+	path = zed_ws/src/zed-ros2-wrapper
+	url = https://github.com/stereolabs/zed-ros2-wrapper.git
+
+[submodule "zed_ws/src/isaac_ros_nvblox"]
+	path = zed_ws/src/isaac_ros_nvblox
+	url = https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_nvblox.git
+
+[submodule "zed_ws/src/zed-ros2-interfaces"]
+	path = zed_ws/src/zed-ros2-interfaces
+	url = https://github.com/stereolabs/zed-ros2-interfaces.git
+
+[submodule "zed_ws/src/isaac_ros_common"]
+	path = zed_ws/src/isaac_ros_common
+	url = https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_common.git
+
+[submodule "spot-ros2_ws/src/spot_ros2"]
+	path = spot-ros2_ws/src/spot_ros2
+	url = https://github.com/bdaiinstitute/spot_ros2.git
+
+[submodule "spot-ros2_ws/src/moveit2"]
+	path = spot-ros2_ws/src/moveit2
+	url = https://github.com/moveit/moveit2.git
+
+[submodule "spot-ros2_ws/src/moveit_msgs"]
+	path = spot-ros2_ws/src/moveit_msgs
+	url = https://github.com/ros-planning/moveit_msgs.git
+
+[submodule "spot-ros2_ws/src/moveit_resources"]
+	path = spot-ros2_ws/src/moveit_resources
+	url = https://github.com/ros-planning/moveit_resources.git
+
+[submodule "spot-ros2_ws/src/moveit_task_constructor"]
+	path = spot-ros2_ws/src/moveit_task_constructor
+	url = https://github.com/ros-planning/moveit_task_constructor.git
+
+[submodule "spot-ros2_ws/src/moveit2_tutorials"]
+	path = spot-ros2_ws/src/moveit2_tutorials
+	url = https://github.com/ros-planning/moveit2_tutorials.git
+
+[submodule "isaac-sim_ws/zed-isaac-sim"]
+	path = isaac-sim_ws/zed-isaac-sim
+	url = https://github.com/stereolabs/zed-isaac-sim.git

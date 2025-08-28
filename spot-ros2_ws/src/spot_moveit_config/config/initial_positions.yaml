@@ -1,0 +1,10 @@
+# Default initial positions for spot's ros2_control fake system
+
+initial_positions:
+  arm_sh0: -0.02695775
+  arm_sh1: -3.13850904
+  arm_el0: 2.91766429
+  arm_el1: 0.35457969
+  arm_wr0: 1.06671405
+  arm_wr1: -0.99687028
+  arm_f1x: -0.01323318

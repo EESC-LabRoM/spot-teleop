@@ -1,0 +1,130 @@
+services:
+  spot-ros2:
+    build:
+      context: .
+      dockerfile: Dockerfile.spot-ros2
+    volumes:
+      - .:/home/spot_ws
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - ./config/fastdds_no_shm_profile.xml:/home/spot_ws/fastdds_profile.xml
+    working_dir: /home/spot_ws/spot-ros2_ws
+    runtime: nvidia
+    environment:
+      - SPOT_NAME=${SPOT_NAME:-Spot}
+      - DISPLAY=${DISPLAY}
+      - QT_X11_NO_MITSHM=1
+      - ROS_DOMAIN_ID=0
+      - HOME=/home/spot_ws
+      - USER=root
+      - FASTRTPS_DEFAULT_PROFILES_FILE=/home/spot_ws/fastdds_profile.xml
+      - RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=all
+    command: >
+      bash -c "
+        source /opt/ros/humble/setup.bash &&
+        source /home/spot_ws/spot-ros2_ws/install/setup.bash &&
+        echo '🎉 Container Spot ROS2 + RealSense pronto! ROS_DOMAIN_ID: 0' &&
+        exec bash
+      "
+    stdin_open: true
+    tty: true
+    network_mode: host
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  zed:
+    build:
+      context: .
+      dockerfile: Dockerfile.zed
+    container_name: zed-container
+    environment:
+      - DISPLAY=${DISPLAY}
+      - QT_X11_NO_MITSHM=1
+      - ROS_DOMAIN_ID=0
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=all
+      - FASTRTPS_DEFAULT_PROFILES_FILE=/home/spot_ws/fastdds_profile.xml
+      - RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix
+      - /dev:/dev
+      - ./zed_ws:/home/spot_ws/zed_ws
+      - ./config/fastdds_no_shm_profile.xml:/home/spot_ws/fastdds_profile.xml
+    working_dir: /home/spot_ws/zed_ws
+    network_mode: host
+    privileged: true
+    tty: true
+    stdin_open: true
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    command: >
+      bash -c "
+        source /opt/ros/humble/setup.bash &&
+        source /home/spot_ws/zed_ws/install/setup.bash &&
+        echo '🎥 Container ZED + NVBlox pronto! ROS_DOMAIN_ID: 0' &&
+        exec bash
+      "
+
+  isaac-sim:
+    build:
+      context: .
+      dockerfile: Dockerfile.isaac
+    runtime: nvidia
+    network_mode: host
+    privileged: true
+    environment:
+      - ACCEPT_EULA=Y
+      - PRIVACY_CONSENT=Y
+      - ROS_DOMAIN_ID=0
+      - RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+      # GUI (comente se for headless)
+      - DISPLAY=${DISPLAY}
+      - QT_X11_NO_MITSHM=1
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=all
+      - __NGX_CONF_FILE=/usr/share/nvidia/nvidia-ngx-conf.json
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw  # GUI
+      - ./isaac-sim_ws:/isaac-sim:rw  # 🎯 Workspace persistente para suas alterações
+      - ./isaac-sim_ws/apps:/workspace/apps
+      - ./isaac-sim_ws/assets:/workspace/assets
+      # caches (pra carregar + rápido)
+      - ./isaac-sim_ws/cache/kit:/isaac-sim/kit/cache:rw
+      - ./isaac-sim_ws/cache/ov:/root/.cache/ov:rw
+      - ./isaac-sim_ws/cache/pip:/root/.cache/pip:rw
+      - ./isaac-sim_ws/cache/glcache:/root/.cache/nvidia/GLCache:rw
+      - ./isaac-sim_ws/cache/computecache:/root/.nv/ComputeCache:rw
+
+      # 🔥 NGX injection
+      - /usr/bin/nvidia-ngx-updater:/usr/bin/nvidia-ngx-updater:ro
+      - /lib/x86_64-linux-gnu/libnvidia-ngx.so.1:/usr/lib/x86_64-linux-gnu/libnvidia-ngx.so.1:ro
+      - /usr/share/nvidia/ngx:/usr/share/nvidia/ngx
+      - /usr/share/nvidia/nvidia-ngx-conf.json:/usr/share/nvidia/nvidia-ngx-conf.json:ro
+      
+      # Força as libs de vídeo do host dentro do container:
+      - /lib/x86_64-linux-gnu/libnvcuvid.so.1:/usr/lib/x86_64-linux-gnu/libnvcuvid.so.1:ro
+      - /lib/x86_64-linux-gnu/libnvcuvid.so:/usr/lib/x86_64-linux-gnu/libnvcuvid.so:ro
+      - /lib/x86_64-linux-gnu/libnvidia-encode.so.1:/usr/lib/x86_64-linux-gnu/libnvidia-encode.so.1:ro
+      - /lib/x86_64-linux-gnu/libnvidia-encode.so:/usr/lib/x86_64-linux-gnu/libnvidia-encode.so:ro
+    stdin_open: true
+    tty: true
+    entrypoint: ["/bin/bash", "-lc", "sleep infinity"]  # Não iniciar Isaac automaticamente
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu, compute, graphics, utility]
+

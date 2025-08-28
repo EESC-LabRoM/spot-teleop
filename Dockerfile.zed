@@ -1,0 +1,67 @@
+FROM stereolabs/zed:5.0-devel-cuda12.8-ubuntu22.04
+
+# Instalar ROS 2 Humble
+RUN apt-get update && apt-get install -y \
+    software-properties-common \
+    curl \
+    gnupg2 \
+    lsb-release \
+    && rm -rf /var/lib/apt/lists/*
+
+# Adicionar repositório ROS 2
+RUN curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key -o /usr/share/keyrings/ros-archive-keyring.gpg
+RUN echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] http://packages.ros.org/ros2/ubuntu $(. /etc/os-release && echo $UBUNTU_CODENAME) main" | tee /etc/apt/sources.list.d/ros2.list > /dev/null
+
+# Instalar ROS 2 Humble e todas as dependências necessárias
+RUN apt-get update && apt-get install -y \
+    ros-humble-desktop \
+    python3-colcon-common-extensions \
+    python3-rosdep \
+    python3-vcstool \
+    git \
+    ros-humble-xacro \
+    ros-humble-robot-localization \
+    ros-humble-point-cloud-transport \
+    ros-humble-diagnostic-updater \
+    ros-humble-geographic-msgs \
+    && rm -rf /var/lib/apt/lists/*
+    
+# Inicializar rosdep
+RUN rosdep init && rosdep update
+
+# Configurar ambiente ROS 2
+RUN echo "source /opt/ros/humble/setup.bash" >> /root/.bashrc
+
+# Criar workspace para ZED
+RUN mkdir -p /home/spot_ws/zed_ws/src
+
+WORKDIR /home/spot_ws/zed_ws
+############################################################
+# Instalar bibliotecas adicionais necessárias e opcionais
+RUN apt-get update && apt-get install -y libgflags-dev libgoogle-glog-dev \
+    libeigen3-dev libyaml-cpp-dev python3-vcstool
+############################################################
+# NVIDIA Jetson VPI 3 (x86_64 JAMMY 22.04) installation
+############################################################
+# 1) Adicionar chave do repositório NVIDIA
+RUN apt-get update && apt-get install -y --no-install-recommends gnupg2 wget \
+    && apt-key adv --fetch-key https://repo.download.nvidia.com/jetson/jetson-ota-public.asc
+
+# 2) Garantir utilitário para adicionar repositórios
+RUN apt-get update && apt-get install -y --no-install-recommends software-properties-common
+
+# 3) Adicionar repositório NVIDIA x86_64 JAMMY (22.04)
+RUN add-apt-repository 'deb https://repo.download.nvidia.com/jetson/x86_64/jammy r36.4 main'
+
+# 4) Atualizar e instalar VPI 3 (lib + dev + samples + python opcional)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libnvvpi3 vpi3-dev vpi3-samples python3.10-vpi3
+
+# Import submódulos e build
+COPY zed_ws/src /home/spot_ws/zed_ws/src
+RUN rosdep install --from-paths src --ignore-src -y -r --rosdistro=humble
+RUN colcon build --symlink-install
+
+# Configurar environment
+RUN echo 'source /opt/ros/humble/setup.bash' >> /root/.bashrc && \
+    echo 'source /home/spot_ws/zed_ws/install/setup.bash' >> /root/.bashrc

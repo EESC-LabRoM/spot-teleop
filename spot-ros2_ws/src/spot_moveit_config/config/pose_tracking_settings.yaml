@@ -1,0 +1,20 @@
+/**:
+  ros__parameters:
+    # Maximum value of error integral for all PID controllers
+    windup_limit: 0.1
+
+    # PID gains for linear axes (flat keys expected by moveit_servo)
+    x_proportional_gain: 0.8
+    y_proportional_gain: 0.8
+    z_proportional_gain: 0.8
+    x_integral_gain: 0.0
+    y_integral_gain: 0.0
+    z_integral_gain: 0.0
+    x_derivative_gain: 0.1
+    y_derivative_gain: 0.1
+    z_derivative_gain: 0.1
+
+    # PID gains for angular control (applies to yaw error magnitude)
+    angular_proportional_gain: 0.5
+    angular_integral_gain: 0.0
+    angular_derivative_gain: 0.05
