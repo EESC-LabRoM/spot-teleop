@@ -8,12 +8,14 @@ ENV ACCEPT_EULA=Y \
 # Instalar pacotes básicos
 RUN apt update && apt install -y git wget build-essential python3 libusb-1.0-0 libusb-1.0-0-dev
 
-# Clonar repositório ZED Isaac Sim
-RUN git clone https://github.com/stereolabs/zed-isaac-sim.git /workspace/zed-isaac-sim
+# Set correct workspace
+WORKDIR /home/spot_ws/isaac-sim_ws
 
-# Workspace opcional pra colocar mundos/assets/scripts
-WORKDIR /workspace
+# Copy zed-isaac-sim and execute build script
+COPY isaac-sim_ws/zed-isaac-sim /home/spot_ws/isaac-sim_ws/zed-isaac-sim
+RUN chmod +x /home/spot_ws/isaac-sim_ws/zed-isaac-sim/build.sh && \
+    /home/spot_ws/isaac-sim_ws/zed-isaac-sim/build.sh
 
 # Copiar apps e assets se quiser (senão só monta via volume no compose)
-# COPY isaac/apps/   /workspace/apps/
-# COPY isaac/assets/ /workspace/assets/
+# COPY isaac-sim_ws/apps/   /home/spot_ws/isaac-sim_ws/apps/
+# COPY isaac-sim_ws/assets/ /home/spot_ws/isaac-sim_ws/assets/
