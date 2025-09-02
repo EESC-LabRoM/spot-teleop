@@ -21,8 +21,14 @@ services:
     command: >
       bash -c "
         source /opt/ros/humble/setup.bash &&
-        source /home/spot_ws/spot-ros2_ws/install/setup.bash &&
+        if [ -f /home/spot_ws/spot-ros2_ws/install/setup.bash ]; then
+          echo 'Found existing build, sourcing setup...' &&
+          source /home/spot_ws/spot-ros2_ws/install/setup.bash
+        else
+          echo 'No existing build found. You can build manually with: colcon build --symlink-install'
+        fi &&
         echo '🎉 Container Spot ROS2 + RealSense pronto! ROS_DOMAIN_ID: 0' &&
+        echo 'Para buildar manualmente: colcon build --symlink-install' &&
         exec bash
       "
     stdin_open: true
@@ -67,8 +73,15 @@ services:
     command: >
       bash -c "
         source /opt/ros/humble/setup.bash &&
-        source /home/spot_ws/zed_ws/install/setup.bash &&
+        echo 'ZED workspace setup...' &&
+        if [ -f /home/spot_ws/zed_ws/install/setup.bash ]; then
+          echo 'Found existing build, sourcing setup...' &&
+          source /home/spot_ws/zed_ws/install/setup.bash
+        else
+          echo 'No existing build found. You can build manually with: colcon build --symlink-install'
+        fi &&
         echo '🎥 Container ZED + NVBlox pronto! ROS_DOMAIN_ID: 0' &&
+        echo 'Para buildar manualmente: colcon build --symlink-install' &&
         exec bash
       "
 

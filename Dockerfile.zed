@@ -1,25 +1,26 @@
-# ===== Plug-n-play Isaac ROS NITROS (x86_64 / Humble) =====
+# ===== ZED Camera Docker Image for Isaac ROS NITROS (x86_64 / Humble) =====
 FROM stereolabs/zed:5.0-devel-cuda12.8-ubuntu22.04
 
+# Environment configuration
 ENV DEBIAN_FRONTEND=noninteractive \
     TZ=Etc/UTC \
     LANG=C.UTF-8 \
     LC_ALL=C.UTF-8 \
-    # Garante que o LFS faça smudge automaticamente
+    # Ensure LFS performs automatic smudge
     GIT_LFS_SKIP_SMUDGE=0
 
-# Usar bash em RUN (pra permitir 'source')
+# Use bash shell for RUN commands (to allow 'source' command)
 SHELL ["/bin/bash", "-lc"]
 
-# 1) ROS 2 Humble + ferramentas de build + git-lfs
+# Install base build dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl gnupg2 lsb-release ca-certificates software-properties-common \
     build-essential cmake ninja-build \
     git git-lfs \
-    python3-pip python3-colcon-common-extensions python3-vcstool python3-rosdep \
+    python3-pip \
     && rm -rf /var/lib/apt/lists/*
 
-# Repositório do ROS 2 (sem apt-key legacy)
+# Add ROS 2 repository (without legacy apt-key)
 RUN install -m 0755 -d /etc/apt/keyrings && \
     curl -fsSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
     -o /etc/apt/keyrings/ros-archive-keyring.gpg && \
@@ -27,55 +28,30 @@ RUN install -m 0755 -d /etc/apt/keyrings && \
     http://packages.ros.org/ros2/ubuntu $(. /etc/os-release && echo $UBUNTU_CODENAME) main" \
     | tee /etc/apt/sources.list.d/ros2.list > /dev/null
 
+# Install ROS 2 Humble and development tools (colcon, vcstool, rosdep, etc.)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ros-humble-desktop ros-dev-tools \
     ros-humble-ament-cmake-auto \
     && rm -rf /var/lib/apt/lists/*
 
-# 2) rosdep (ok rodar como root em container)
-RUN rosdep init || true && rosdep update
-
-# 3) Workspace
+# Setup workspace directory
 ENV WS=/home/spot_ws/zed_ws
+ENV ISAAC_ROS_WS=/home/spot_ws/zed_ws
 RUN mkdir -p $WS/src
 WORKDIR $WS
 
-# 4) Clonar fontes (GXF + NITROS) e dependências de fonte
-#    - usa .repos se existir
-#    - inclui negotiated/negotiated_interfaces (às vezes o deb não vem)
-RUN set -e; \
-    cd $WS/src && \
-    git clone --depth=1 https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_gxf.git || true; \
-    git clone --depth=1 https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_nitros.git || true; \
-    # importar subdeps via .repos se disponíveis
-    (test -f isaac_ros_gxf/isaac_ros_gxf.repos && vcs import < isaac_ros_gxf/isaac_ros_gxf.repos) || true; \
-    (test -f isaac_ros_nitros/isaac_ros_nitros.repos && vcs import < isaac_ros_nitros/isaac_ros_nitros.repos) || true; \
-    # negotiated de fonte (garante presença)
-    git clone -b humble --depth=1 https://github.com/ros2/negotiated_interfaces.git || true; \
-    git clone -b humble --depth=1 https://github.com/ros2/negotiated.git || true; \
-    # ignora pacotes Jetson-only no host x86_64
-    mkdir -p isaac_ros_nitros/isaac_ros_gxf_extensions/gxf_isaac_segway && \
-    touch isaac_ros_nitros/isaac_ros_gxf_extensions/gxf_isaac_segway/COLCON_IGNORE
-
-# 5) Git LFS — puxa os binários reais (sem ponteiro)
-RUN set -e; \
-    git lfs install; \
-    cd $WS/src; \
-    for g in $(find . -name ".git" -type d); do \
-      repo=$(dirname "$g"); \
-      echo ">>> LFS em $repo"; \
-      (cd "$repo" && git lfs install && git lfs fetch --all && git lfs checkout && git lfs pull --include="*" --exclude=""); \
-    done; \
-    # Falha o build se sobrar ponteiro LFS nos .so
-    BAD=$(grep -RIl --include="*.so" '^version https://git-lfs.github.com/spec/v1' $WS/src || true); \
-    if [ -n "$BAD" ]; then echo "ERRO: LFS pointers ainda presentes em:"; echo "$BAD"; exit 1; fi
-
-# 5.1) Dependência extra para NVBLOX (Google Benchmark)
+# Install additional dependencies for NVBLOX (Google Benchmark)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libbenchmark-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# 5.2) CV-CUDA (NVCV): runtime + dev (fornece <nvcv/Tensor.hpp>)
+# Install gflags and glog libraries
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libgflags-dev \
+    libgoogle-glog-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install CV-CUDA (NVCV): runtime + dev packages (provides <nvcv/Tensor.hpp>)
 ARG CVCUDA_VER=v0.15.0-beta
 ARG CVCUDA_LIB_DEB=https://github.com/CVCUDA/CV-CUDA/releases/download/${CVCUDA_VER}/cvcuda-lib-0.15.0-cuda12-x86_64-linux.deb
 ARG CVCUDA_DEV_DEB=https://github.com/CVCUDA/CV-CUDA/releases/download/${CVCUDA_VER}/cvcuda-dev-0.15.0-cuda12-x86_64-linux.deb
@@ -86,27 +62,22 @@ RUN set -e; \
     wget -O cvcuda-dev.deb "${CVCUDA_DEV_DEB}" && \
     apt-get update && apt-get install -y ./cvcuda-lib.deb ./cvcuda-dev.deb && \
     rm -rf /var/lib/apt/lists/* && \
-    test -f /opt/nvidia/cvcuda/include/nvcv/Tensor.hpp
+    test -f /opt/nvidia/cvcuda0/include/nvcv/Tensor.hpp
 
-ENV CVCUDA_ROOT=/opt/nvidia/cvcuda
+# Set CV-CUDA environment variables
+ENV CVCUDA_ROOT=/opt/nvidia/cvcuda0
 ENV CMAKE_PREFIX_PATH=$CVCUDA_ROOT:$CMAKE_PREFIX_PATH
 ENV CPLUS_INCLUDE_PATH=$CVCUDA_ROOT/include:$CPLUS_INCLUDE_PATH
 
-# 6) Dependências do sistema via rosdep (pulando chaves periféricas)
-#    (essas chaves já te deram warning antes e não são necessárias pro NITROS)
-RUN rosdep update && \
-    rosdep install --from-paths src --ignore-src -y --rosdistro humble \
-      --skip-keys="posix_ipc ament_python isaac_ros_peoplenet_models_install" || true
+# Install VPI (Vision Programming Interface) packages
+RUN set -e; \
+    cd /tmp && \
+    wget https://repo.download.nvidia.com/jetson/x86_64/focal/pool/main/libn/libnvvpi2/libnvvpi2_2.3.9_amd64.deb && \
+    wget https://repo.download.nvidia.com/jetson/x86_64/focal/pool/main/v/vpi2-dev/vpi2-dev_2.3.9_amd64.deb && \
+    wget https://repo.download.nvidia.com/jetson/x86_64/focal/pool/main/v/vpi2-samples/vpi2-samples_2.3.9_amd64.deb && \
+    apt-get install -y ./libnvvpi2_2.3.9_amd64.deb ./vpi2-dev_2.3.9_amd64.deb ./vpi2-samples_2.3.9_amd64.deb || \
+    apt-get -f install -y && \
+    rm -f *.deb
 
-# 7) Build: NITROS + NVBLOX + ZED + encoder DNN (pula só o Jetson-only)
-RUN source /opt/ros/humble/setup.bash && \
-    colcon build --merge-install --symlink-install \
-      --packages-up-to isaac_ros_nvblox zed_wrapper custom_nitros_dnn_image_encoder \
-      --packages-skip gxf_isaac_segway \
-      --cmake-args -DCMAKE_BUILD_TYPE=RelWithDebInfo -DBUILD_TESTING=OFF
-
-# 8) Ambiente ao entrar no container
-RUN echo 'source /opt/ros/humble/setup.bash' >> /etc/bash.bashrc && \
-    echo "source $WS/install/setup.bash" >> /etc/bash.bashrc
-
+# Set working directory
 WORKDIR $WS
