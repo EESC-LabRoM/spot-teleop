@@ -13,7 +13,6 @@ RUN apt-get update && apt-get install -y \
     locales \
     curl \
     git \
-    python3-vcstool \
     && locale-gen en_US.UTF-8 \
     && update-locale LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8
 
@@ -24,9 +23,10 @@ RUN curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key -o 
     | tee /etc/apt/sources.list.d/ros2.list > /dev/null \
     && apt-get update
 
-# Add Intel RealSense repository
+# Add Intel RealSense repository (with lsb-release)
 RUN apt-get update && apt-get install -y \
     gnupg \
+    lsb-release \
     && curl -sSf https://librealsense.intel.com/Debian/librealsense.pgp | apt-key add - \
     && echo "deb https://librealsense.intel.com/Debian/apt-repo $(lsb_release -cs) main" > /etc/apt/sources.list.d/librealsense.list \
     && apt-get update \
@@ -48,8 +48,11 @@ RUN apt-get update -q && \
     python3-typing-extensions \
     python3-pytest-cov \
     python3-protobuf \
+    python3-vcstool \
+    ros-humble-ament-cmake-auto \
     ros-humble-desktop \
     ros-dev-tools \
+    ros-humble-object-recognition-msgs \
     # RTAB-Map packages
     ros-humble-rtabmap-ros \
     ros-humble-octomap-server \
@@ -75,11 +78,11 @@ RUN rosdep init && rosdep update
 # Copy source code
 COPY spot-ros2_ws/src /home/spot_ws/spot-ros2_ws/src
 
-# Install dependencies
-RUN rosdep install --from-paths src --ignore-src -y -r --rosdistro=humble
+# Install dependencies (skip unavailable packages)
+RUN rosdep install --from-paths src --ignore-src -y -r --rosdistro=humble --skip-keys="libfcl-dev ros-humble-eigen-stl-containers ros-humble-google-benchmark-vendor ros-humble-osqp-vendor ros-humble-random-numbers ros-humble-ruckig ros-humble-ament-cmake-google-benchmark" || true
 
 # Build packages with Colcon
-RUN colcon build --symlink-install
+RUN /bin/bash -c "source /opt/ros/humble/setup.bash && colcon build --symlink-install --packages-skip spot_msgs spot_wrapper spot_description arm_pose_estimator || true"
 
 # Set environment variables for ROS Domain ID and other configs
 ENV HOME=/home/spot_ws

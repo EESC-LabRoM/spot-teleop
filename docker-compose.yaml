@@ -6,7 +6,6 @@ services:
     volumes:
       - .:/home/spot_ws
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
-      - ./config/fastdds_no_shm_profile.xml:/home/spot_ws/fastdds_profile.xml
     working_dir: /home/spot_ws/spot-ros2_ws
     runtime: nvidia
     environment:
@@ -16,7 +15,6 @@ services:
       - ROS_DOMAIN_ID=0
       - HOME=/home/spot_ws
       - USER=root
-      - FASTRTPS_DEFAULT_PROFILES_FILE=/home/spot_ws/fastdds_profile.xml
       - RMW_IMPLEMENTATION=rmw_fastrtps_cpp
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=all
@@ -49,13 +47,11 @@ services:
       - ROS_DOMAIN_ID=0
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=all
-      - FASTRTPS_DEFAULT_PROFILES_FILE=/home/spot_ws/fastdds_profile.xml
       - RMW_IMPLEMENTATION=rmw_fastrtps_cpp
     volumes:
       - /tmp/.X11-unix:/tmp/.X11-unix
       - /dev:/dev
       - ./zed_ws:/home/spot_ws/zed_ws
-      - ./config/fastdds_no_shm_profile.xml:/home/spot_ws/fastdds_profile.xml
     working_dir: /home/spot_ws/zed_ws
     network_mode: host
     privileged: true
@@ -96,9 +92,7 @@ services:
       - __NGX_CONF_FILE=/usr/share/nvidia/nvidia-ngx-conf.json
     volumes:
       - /tmp/.X11-unix:/tmp/.X11-unix:rw  # GUI
-      - ./isaac-sim_ws:/isaac-sim:rw  # 🎯 Workspace persistente para suas alterações
-      - ./isaac-sim_ws/apps:/workspace/apps
-      - ./isaac-sim_ws/assets:/workspace/assets
+      - ./isaac-sim_ws:/workspace:rw  # 🎯 Workspace persistente montado em /workspace
       # caches (pra carregar + rápido)
       - ./isaac-sim_ws/cache/kit:/isaac-sim/kit/cache:rw
       - ./isaac-sim_ws/cache/ov:/root/.cache/ov:rw

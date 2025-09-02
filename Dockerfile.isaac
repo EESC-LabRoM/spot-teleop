@@ -8,14 +8,8 @@ ENV ACCEPT_EULA=Y \
 # Instalar pacotes básicos
 RUN apt update && apt install -y git wget build-essential python3 libusb-1.0-0 libusb-1.0-0-dev
 
-# Set correct workspace
-WORKDIR /home/spot_ws/isaac-sim_ws
+# Criar diretório de workspace separado dos binários do Isaac Sim
+RUN mkdir -p /workspace
 
-# Copy zed-isaac-sim and execute build script
-COPY isaac-sim_ws/zed-isaac-sim /home/spot_ws/isaac-sim_ws/zed-isaac-sim
-RUN chmod +x /home/spot_ws/isaac-sim_ws/zed-isaac-sim/build.sh && \
-    /home/spot_ws/isaac-sim_ws/zed-isaac-sim/build.sh
-
-# Copiar apps e assets se quiser (senão só monta via volume no compose)
-# COPY isaac-sim_ws/apps/   /home/spot_ws/isaac-sim_ws/apps/
-# COPY isaac-sim_ws/assets/ /home/spot_ws/isaac-sim_ws/assets/
+# Definir working directory como o workspace (não sobrescrever /isaac-sim)
+WORKDIR /workspace
