@@ -73,6 +73,13 @@ services:
     command: >
       bash -c "
         source /opt/ros/humble/setup.bash &&
+        echo 'Setting up rosdep...' &&
+        rosdep init || echo 'rosdep already initialized' &&
+        rosdep update &&
+        echo 'Updating package lists...' &&
+        apt-get update &&
+        echo 'Installing dependencies...' &&
+        rosdep install --from-paths src --ignore-src -r -y --rosdistro humble &&
         echo 'ZED workspace setup...' &&
         if [ -f /home/spot_ws/zed_ws/install/setup.bash ]; then
           echo 'Found existing build, sourcing setup...' &&

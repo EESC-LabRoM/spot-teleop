@@ -17,6 +17,12 @@ cd spot-teleop
 
 # Ou se já clonou, inicialize os submódulos
 git submodule update --init --recursive
+
+# Configurar Git LFS para isaac_ros_nitros
+cd zed_ws/src/isaac_ros_nitros
+git lfs install
+git lfs pull
+cd ../../..
 ```
 
 ## 🐳 Build com Docker
