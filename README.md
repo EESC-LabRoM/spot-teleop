@@ -4,9 +4,9 @@ This repository contains multiple ROS2 workspaces for robotics with Boston Dynam
 
 ## 📁 Workspace Structure
 
-* \`\` - Main workspace for Spot ROS2 + RealSense + MoveIt
-* \`\` - Workspace for ZED + Isaac ROS + NVBlox
-* \`\` - Workspace for Isaac Sim + ZED Isaac Sim
+* Main workspace for Spot ROS2 + RealSense + MoveIt
+* Workspace for ZED + Isaac ROS + NVBlox
+* Workspace for Isaac Sim + ZED Isaac Sim
 
 ## 🚀 Cloning
 
