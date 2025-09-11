@@ -1,122 +1,174 @@
 # Spot ROS2 Multi-Workspace
 
-Este repositório contém múltiplos workspaces ROS2 para robótica com Boston Dynamics Spot, câmeras ZED, RealSense e simulação Isaac Sim.
+This repository contains multiple ROS2 workspaces for robotics with Boston Dynamics Spot, ZED cameras, RealSense, and Isaac Sim simulation.
 
-## 📁 Estrutura dos Workspaces
+## 📁 Workspace Structure
 
-- **`spot-ros2_ws/`** - Workspace principal do Spot ROS2 + RealSense + MoveIt
-- **`zed_ws/`** - Workspace ZED + Isaac ROS + NVBlox  
-- **`isaac-sim_ws/`** - Workspace Isaac Sim + ZED Isaac Sim
+* Main workspace for Spot ROS2 + RealSense + MoveIt
+* Workspace for ZED + Isaac ROS + NVBlox
+* Workspace for Isaac Sim + ZED Isaac Sim
 
-## 🚀 Clonagem
+## 🚀 Cloning
 
 ```bash
-# Clone com todos os submódulos
+# Clone with all submodules
 git clone --recursive https://github.com/murilo-vinicius04/spot-teleop.git
 cd spot-teleop
 
-# Ou se já clonou, inicialize os submódulos
+# Or if you already cloned, initialize the submodules
 git submodule update --init --recursive
 
-# Configurar Git LFS para isaac_ros_nitros
+# Configure Git LFS for isaac_ros_nitros
 cd zed_ws/src/isaac_ros_nitros
 git lfs install
 git lfs pull
 cd ../../..
 ```
 
-## 🐳 Build com Docker
+## 🐳 Build with Docker
 
-### Pré-requisitos
-- Docker
-- Docker Compose
-- NVIDIA Docker Runtime (para GPU)
+### Prerequisites
 
-### Build dos Containers
+* Docker
+* Docker Compose
+* NVIDIA Docker Runtime (for GPU)
+
+### Building Containers
 
 ```bash
-# Build todos os containers
+# Build all containers
 docker-compose build
 
-# Ou build individual
+# Or build individually
 docker-compose build spot-ros2
 docker-compose build zed
 docker-compose build isaac-sim
 ```
 
-## 🏃 Execução
+## 🏃 Running
 
 ### Spot ROS2 + RealSense
+
 ```bash
-docker-compose up spot-ros2
+docker-compose up -d spot-ros2
 ```
 
 ### ZED + NVBlox
+
 ```bash
-docker-compose up zed
+docker-compose up -d zed
 ```
 
 ### Isaac Sim
+
 ```bash
-docker-compose up isaac-sim
+docker-compose up -d isaac-sim
 ```
 
-### Todos os serviços
+### All services
+
 ```bash
-docker-compose up
+docker-compose up -d
 ```
 
-## 📦 Submódulos Incluídos
+## 📦 Included Submodules
 
 ### ZED Workspace
-- `isaac_ros_nitros` - NVIDIA Isaac ROS Nitros
-- `negotiated` - Negotiated QoS
-- `zed-ros2-wrapper` - ZED ROS2 Wrapper
-- `isaac_ros_nvblox` - NVIDIA Isaac ROS NVBlox
-- `zed-ros2-interfaces` - ZED ROS2 Interfaces
-- `isaac_ros_common` - NVIDIA Isaac ROS Common
+
+* `isaac_ros_nitros` - NVIDIA Isaac ROS Nitros
+* `negotiated` - Negotiated QoS
+* `zed-ros2-wrapper` - ZED ROS2 Wrapper
+* `isaac_ros_nvblox` - NVIDIA Isaac ROS NVBlox
+* `zed-ros2-interfaces` - ZED ROS2 Interfaces
+* `isaac_ros_common` - NVIDIA Isaac ROS Common
 
 ### Spot ROS2 Workspace
-- `spot_ros2` - Boston Dynamics Spot ROS2
-- `moveit2` - MoveIt2 Motion Planning
-- `moveit_msgs` - MoveIt2 Messages
-- `moveit_resources` - MoveIt2 Resources
-- `moveit_task_constructor` - MoveIt Task Constructor
-- `moveit2_tutorials` - MoveIt2 Tutorials
+
+* `spot_ros2` - Boston Dynamics Spot ROS2
+* `moveit2` - MoveIt2 Motion Planning
+* `moveit_msgs` - MoveIt2 Messages
+* `moveit_resources` - MoveIt2 Resources
+* `moveit_task_constructor` - MoveIt Task Constructor
+* `moveit2_tutorials` - MoveIt2 Tutorials
 
 ### Isaac Sim Workspace
-- `zed-isaac-sim` - ZED Isaac Sim Integration
 
-## 🔧 Configuração
+* `zed-isaac-sim` - ZED Isaac Sim Integration
 
-### Variáveis de Ambiente
-```bash
-export SPOT_NAME=YourSpotName
-export ROS_DOMAIN_ID=0
-```
+---
 
-### GPU Support
-Certifique-se de ter o NVIDIA Docker runtime instalado:
-```bash
-# Ubuntu/Debian
-distribution=$(. /etc/os-release;echo $ID$VERSION_ID)
-curl -s -L https://nvidia.github.io/nvidia-docker/gpgkey | sudo apt-key add -
-curl -s -L https://nvidia.github.io/nvidia-docker/$distribution/nvidia-docker.list | sudo tee /etc/apt/sources.list.d/nvidia-docker.list
+## 🖥️ Setting Up Isaac Sim with ZED Integration (inside the isaac-sim container)
 
-sudo apt-get update && sudo apt-get install -y nvidia-docker2
-sudo systemctl restart docker
-```
+1. Navigate to the **`zed-isaac-sim`** folder and build:
 
-## 📝 Notas
+   ```bash
+   cd zed-isaac-sim
+   ./build.sh
+   ```
 
-- O container Isaac Sim requer aceitação da EULA da NVIDIA
-- Certifique-se de ter as permissões adequadas para dispositivos USB (RealSense, ZED)
-- Para desenvolvimento, monte volumes adequados conforme necessário
+2. After the build completes, start Isaac Sim:
 
-## 🤝 Contribuição
+   ```bash
+   cd /isaac-sim
+   ./runapp.sh
+   ```
 
-1. Fork o projeto
-2. Crie uma branch para sua feature
-3. Commit suas mudanças
-4. Push para a branch
-5. Abra um Pull Request
+3. When Isaac Sim opens, go to:
+
+   * `Windows -> Extensions -> Third Party -> Settings`
+   * Add a **User Dir** pointing to: `/workspace/zed-isaac-sim/exts`
+
+   (Follow the [official ZED Isaac Sim README](https://github.com/stereolabs/zed-isaac-sim) for reference.)
+
+4. Enable the extensions and set them to **Auto Load**.
+
+5. Restart Isaac Sim.
+
+6. Open the provided scene:
+
+   * `File -> Open`
+   * Select: `/workspace/zed_streamer_warehouse`
+
+7. The scene should load and be ready for streaming. Click **Play** and check the terminal where Isaac Sim was launched. If you see:
+
+   ```
+   [Streaming] Use Transport layer mode : 0
+   ```
+
+   ✅ The container is correctly set up.
+
+---
+
+## 🎥 Setting Up ZED Container and NVBlox Mapping
+
+1. Ensure the ROS2 environment is sourced:
+
+   ```bash
+   source /opt/ros/humble/setup.bash
+   ```
+
+2. Build the workspace with the recommended flags:
+
+   ```bash
+   colcon build --merge-install --symlink-install
+   ```
+
+3. Source the local install:
+
+   ```bash
+   source install/setup.bash
+   ```
+
+4. With Isaac Sim streaming, launch the ZED wrapper:
+
+   ```bash
+   ros2 launch zed_wrapper zed_camera.launch.py camera_model:=zedx sim_mode:=true
+   ```
+
+   > ⚠️ This will optimize the ZED neural mode for your GPU. It may take several minutes on the first run.
+
+5. To visualize the NVBlox map, run the ZED example:
+
+   ```bash
+   ros2 launch nvblox_examples_bringup zed_example.launch.py
+   ```
