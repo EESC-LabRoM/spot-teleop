@@ -30,15 +30,17 @@ def launch_setup(context, *args, **kwargs):
             PathJoinSubstitution([
                 FindPackageShare("spot_ros2_control"),
                 "launch",
-                "spot_ros2_control_with_arm.launch.py",
+                "spot_ros2_control.launch.py",
             ])
         ),
         launch_arguments={
             "hardware_interface": "mock" if sim else "robot",
+            "mock_arm": "true" if sim else "false",
             "auto_start": "true",
             "launch_rviz": "false",
             "spot_name": spot_name,
             "config_file": cfg_file,
+            "robot_controllers": "arm_controller",
         }.items(),
     )
 
