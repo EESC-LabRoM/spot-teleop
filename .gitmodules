@@ -34,18 +34,22 @@
 [submodule "spot-ros2_ws/src/moveit_msgs"]
 	path = spot-ros2_ws/src/moveit_msgs
 	url = https://github.com/ros-planning/moveit_msgs.git
+	branch = humble
 
 [submodule "spot-ros2_ws/src/moveit_resources"]
 	path = spot-ros2_ws/src/moveit_resources
 	url = https://github.com/ros-planning/moveit_resources.git
+	branch = humble
 
 [submodule "spot-ros2_ws/src/moveit_task_constructor"]
 	path = spot-ros2_ws/src/moveit_task_constructor
 	url = https://github.com/ros-planning/moveit_task_constructor.git
+	branch = humble
 
 [submodule "spot-ros2_ws/src/moveit2_tutorials"]
 	path = spot-ros2_ws/src/moveit2_tutorials
 	url = https://github.com/ros-planning/moveit2_tutorials.git
+	branch = humble
 
 [submodule "isaac-sim_ws/zed-isaac-sim"]
 	path = isaac-sim_ws/zed-isaac-sim

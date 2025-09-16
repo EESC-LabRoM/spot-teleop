@@ -2,18 +2,17 @@
   ros__parameters:
     move_group_name: "arm"
     planning_frame: "body"
-    robot_link_command_frame: "arm_link_wr1"
+    robot_link_command_frame: "body"   # comande no mesmo frame do planning
     ee_frame_name: "arm_link_wr1"
     command_in_type: "speed_units"
     cartesian_command_in_topic: "/servo_node/delta_twist_cmds"
-    target_pose_topic: "/servo_pose_target"  # Mudado para ser controlado pelo sistema híbrido
+    target_pose_topic: "/target_pose"  # Mudado para ser controlado pelo sistema híbrido
     status_topic: "/servo_node/status"
     scale:
-      linear: 0.8
-      rotational: 1.2
-      joint: 0.8
-    publish_period: 0.01   # 100 Hz (lower CPU load; steadier timing)
-    incoming_command_timeout: 0.05   # tolerate small jitter at runtime
+      linear: 0.6          # comece conservador
+      rotational: 0.6
+    publish_period: 0.02   # 50 Hz p/ não perder ciclo no pose_tracking
+    incoming_command_timeout: 0.20
     num_outgoing_halt_msgs_to_publish: 1
     joint_topic: "/joint_states"
     command_out_topic: "/arm_controller/joint_trajectory"
@@ -29,10 +28,10 @@
     self_collision_proximity_threshold: 0.05  # aumentei de 0.01 → 0.05
     scene_collision_proximity_threshold: 0.1  # aumentei de 0.02 → 0.1
 
-    # Singularity thresholds (completely disabled for mock testing)
-    check_singularity: false
-    lower_singularity_threshold: 0.00001   # extremely low to disable check
-    hard_stop_singularity_threshold: 0.00002  # extremely low to disable check
+    # Singularity handling (valores realistas)
+    lower_singularity_threshold: 100.0      # desacelera perto da singularidade
+    hard_stop_singularity_threshold: 250.0  # halt
+    leaving_singularity_threshold_multiplier: 1.2
 
     # Outros parâmetros opcionais que podem ajudar:
     low_pass_filter_coeff: 0.6   # menor lag
@@ -41,7 +40,7 @@
     override_velocity_scaling_factor: 1.0  # não reduzir velocidade internamente
 
     # Joint limit behavior: relax margin and avoid halting all joints
-    joint_limit_margin: 0.05
+    joint_limit_margin: 0.10
     halt_all_joints_in_cartesian_mode: false
     halt_all_joints_in_joint_mode: false
     
