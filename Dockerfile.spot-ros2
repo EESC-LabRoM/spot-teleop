@@ -16,6 +16,10 @@ RUN apt-get update && apt-get install -y \
     && locale-gen en_US.UTF-8 \
     && update-locale LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8
 
+# Install Node.js 22.x
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y nodejs
+
 # Add ROS 2 apt repository
 RUN curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key -o /usr/share/keyrings/ros-archive-keyring.gpg \
     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] \
@@ -70,31 +74,27 @@ RUN apt-get update -q && \
     && rm -rf /var/lib/apt/lists/*
 
 # Set up workspace
-WORKDIR /home/spot_ws/spot-ros2_ws
+WORKDIR /home/spot-teleop/spot-ros2_ws
 
 # Initialize rosdep
 RUN rosdep init && rosdep update
 
 # Copy source code
-COPY spot-ros2_ws/src /home/spot_ws/spot-ros2_ws/src
+COPY spot-ros2_ws/src /home/spot-teleop/spot-ros2_ws/src
+
+# Execute installation script
+RUN cd /home/spot-teleop/spot-ros2_ws/src/spot_ros2 && chmod +x install_spot_ros2.sh && ./install_spot_ros2.sh
 
 # Install dependencies (skip unavailable packages)
-RUN rosdep install --from-paths src --ignore-src -y -r --rosdistro=humble --skip-keys="libfcl-dev ros-humble-eigen-stl-containers ros-humble-google-benchmark-vendor ros-humble-osqp-vendor ros-humble-random-numbers ros-humble-ruckig ros-humble-ament-cmake-google-benchmark" || true
-
-# Build packages with Colcon
-RUN /bin/bash -c "source /opt/ros/humble/setup.bash && colcon build --symlink-install --packages-skip spot_msgs spot_wrapper spot_description arm_pose_estimator || true"
+RUN rosdep install --from-paths src --ignore-src -y -r --rosdistro=humble --skip-keys="ros-humble-warehouse-ros-mongo" || true
 
 # Set environment variables for ROS Domain ID and other configs
-ENV HOME=/home/spot_ws
+ENV HOME=/home/spot-teleop
 ENV USER=root
-ENV ROS_DOMAIN_ID=0
-ENV RMW_IMPLEMENTATION=rmw_fastrtps_cpp
-ENV FASTRTPS_DEFAULT_PROFILES_FILE=/home/spot_ws/fastdds_profile.xml
 
 # Create bashrc with ROS setup
 RUN echo 'source /opt/ros/humble/setup.bash' >> /root/.bashrc && \
-    echo 'source /home/spot_ws/spot-ros2_ws/install/setup.bash' >> /root/.bashrc && \
-    echo 'export ROS_DOMAIN_ID=0' >> /root/.bashrc
+    echo 'source /home/spot-teleop/spot-ros2_ws/install/setup.bash' >> /root/.bashrc
 
 # Set default command
 CMD ["/bin/bash"]

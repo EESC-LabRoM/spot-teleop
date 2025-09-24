@@ -6,7 +6,6 @@ services:
     volumes:
       - .:/home/spot-teleop
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
-      - ./dds:/dds:ro                     # <-- ADICIONE
     working_dir: /home/spot-teleop/spot-ros2_ws
     runtime: nvidia
     environment:
@@ -19,13 +18,6 @@ services:
       - RMW_IMPLEMENTATION=rmw_fastrtps_cpp
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=all
-      # ---------- ADIÇÕES PARA SUMIR OS WARNINGS ----------
-      - FASTDDS_DEFAULT_PROFILES_FILE=/dds/fastdds_profiles.xml
-      - FASTRTPS_DEFAULT_PROFILES_FILE=/dds/fastdds_profiles.xml
-      - RMW_FASTRTPS_USE_QOS_FROM_XML=1
-      # (Opcional) se ainda quiser ver menos log do Fast DDS:
-      - FASTDDS_LOG_VERBOSITY=error
-      # -----------------------------------------------------
     command: >
       bash -c "
         source /opt/ros/humble/setup.bash &&
@@ -89,7 +81,7 @@ services:
         echo 'Updating package lists...' &&
         apt-get update &&
         echo 'Installing dependencies...' &&
-        rosdep install --from-paths src --ignore-src -r -y --rosdistro humble &&
+        'rosdep install --from-paths src --ignore-src -r -y --rosdistro humble' &&
         echo 'ZED workspace setup...' &&
         if [ -f /home/spot-teleop/zed_ws/install/setup.bash ]; then
           echo 'Found existing build, sourcing setup...' &&
@@ -123,7 +115,7 @@ services:
       - __NGX_CONF_FILE=/usr/share/nvidia/nvidia-ngx-conf.json
     volumes:
       - /tmp/.X11-unix:/tmp/.X11-unix:rw  # GUI
-      - ./isaac-sim_ws:/workspace:rw  # 🎯 Workspace persistente montado em /workspace
+      - ./isaac-sim_ws:/workspace:rw 
       # caches (pra carregar + rápido)
       - ./isaac-sim_ws/cache/kit:/isaac-sim/kit/cache:rw
       - ./isaac-sim_ws/cache/ov:/root/.cache/ov:rw
@@ -131,7 +123,7 @@ services:
       - ./isaac-sim_ws/cache/glcache:/root/.cache/nvidia/GLCache:rw
       - ./isaac-sim_ws/cache/computecache:/root/.nv/ComputeCache:rw
 
-      # 🔥 NGX injection
+      # NGX injection
       - /usr/bin/nvidia-ngx-updater:/usr/bin/nvidia-ngx-updater:ro
       - /lib/x86_64-linux-gnu/libnvidia-ngx.so.1:/usr/lib/x86_64-linux-gnu/libnvidia-ngx.so.1:ro
       - /usr/share/nvidia/ngx:/usr/share/nvidia/ngx

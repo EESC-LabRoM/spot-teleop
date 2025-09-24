@@ -1,5 +1,7 @@
 import os
 from ament_index_python.packages import get_package_share_directory
+import os
+import yaml
 from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
@@ -86,16 +88,16 @@ def launch_setup(context, *args, **kwargs):
 
     # Isaac publisher node: publica /joint_states_isaac (installed entrypoint)
     try:
-        get_package_share_directory("spot_operation")
+        get_package_share_directory("spot_operation_ros2")
         isaac_pub_node = Node(
-            package="spot_operation",
+            package="spot_operation_ros2",
             executable="isaac_publisher",
             output="screen",
             parameters=[{'use_sim_time': True}],
         )
     except Exception:
         isaac_pub_node = ExecuteProcess(
-            cmd=['/home/spot_ws/spot-ros2_ws/install/spot_operation/lib/spot_operation/isaac_publisher'],
+            cmd=['/home/spot_ws/spot-ros2_ws/install/spot_operation_ros2/lib/spot_operation_ros2/isaac_publisher'],
             output='screen',
         )
 
@@ -104,16 +106,16 @@ def launch_setup(context, *args, **kwargs):
     # cannot be resolved in this environment, fall back to executing the installed
     # entrypoint binary directly so the launch still works.
     try:
-        get_package_share_directory("spot_operation")
+        get_package_share_directory("spot_operation_ros2")
         mapper_node = Node(
-            package="spot_operation",
+            package="spot_operation_ros2",
             executable="joint_state_mapper",
             output="screen",
             parameters=[{'use_sim_time': True}],
         )
     except Exception:
         mapper_node = ExecuteProcess(
-            cmd=['/home/spot_ws/spot-ros2_ws/install/spot_operation/lib/spot_operation/joint_state_mapper'],
+            cmd=['/home/spot_ws/spot-ros2_ws/install/spot_operation_ros2/lib/spot_operation_ros2/joint_state_mapper'],
             output='screen',
         )
 
@@ -143,16 +145,16 @@ def launch_setup(context, *args, **kwargs):
         }
     }
 
-    # Use MoveIt Servo pose tracking demo
+    # Use MoveIt2 servo pose tracking demo implementation
     servo_node = Node(
-        package="moveit_servo",
-        executable="servo_pose_tracking_demo",
-        name="servo_server",
+        package="spot_moveit_config",
+        executable="servo_pose_tracking_spot",
+        name="servo_pose_tracking_spot",
         output="screen",
         parameters=[
             moveit_cfg.to_dict(),
             servo_params,
-            {'use_sim_time': False},
+            {'use_sim_time': True},
         ],
         remappings=remappings,
     )
@@ -177,6 +179,8 @@ def launch_setup(context, *args, **kwargs):
         ],
     )
 
+    # Interactive Pose Marker node (defined below in servo section)
+
     # Grupo com use_sim_time=True para nós que consomem estado/TF/sensores
     sim_timer_actions = [
         robot_state_publisher_node,
@@ -186,13 +190,32 @@ def launch_setup(context, *args, **kwargs):
     if not servo:
         # inserir move_group entre RSP e RViz para manter ordem lógica
         sim_timer_actions.insert(1, move_group_node)
+    else:
+        # adicionar servo_node ao sim_group quando servo=true
+        sim_timer_actions.insert(1, servo_node)
+        # Add interactive marker for servo control. Prefer launching as a proper Node
+        # so we can set use_sim_time and remappings; fallback to ExecuteProcess.
+        # try:
+        #     get_package_share_directory("spot_operation_ros2")
+        #     interactive_marker_node = Node(
+        #         package="spot_operation_ros2",
+        #         executable="interactive_pose_marker",
+        #         output="screen",
+        #         parameters=[{'use_sim_time': True}],
+        #         remappings=remappings,
+        #     )
+        # except Exception:
+        #     interactive_marker_node = ExecuteProcess(
+        #         cmd=['python3', '-m', 'spot_operation_ros2.interactive_pose_marker'],
+        #         output='screen',
+        #     )
+        # sim_timer_actions.append(interactive_marker_node)
 
-    sim_nodes = [
-        TimerAction(period=2.0, actions=sim_timer_actions),
-    ]
+    # Nós que precisam de sim_time=True iniciados diretamente (sem timer)
+    sim_nodes = sim_timer_actions
     
     if sim:
-        # /clock e mapper sobem antes do TimerAction
+        # /clock e mapper sobem antes dos outros nós
         sim_nodes = [isaac_pub_node, mapper_node] + sim_nodes
     
     sim_group = GroupAction([
@@ -205,8 +228,6 @@ def launch_setup(context, *args, **kwargs):
         SetParameter(name='use_sim_time', value=False),
         ros2_control_launch,   # controller_manager e controladores em wall time
     ]
-    if servo:
-        wall_actions.append(servo_node)
 
     wall_group = GroupAction(wall_actions)
 
