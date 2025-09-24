@@ -97,6 +97,47 @@ docker-compose up -d
 
 ---
 
+## Setting Up Spot ROS2 (inside the spot-ros2 container)
+
+1. Source the ROS2 environment:
+
+   ```bash
+   source /opt/ros/humble/setup.bash
+   ```
+
+2. Build the workspace with symlink install:
+
+   ```bash
+   colcon build --symlink-install
+   ```
+
+3. If encountering any errors, update and install dependencies:
+
+   ```bash
+   rosdep update
+   rosdep install --from-paths src --ignore-src -r -y --rosdistro humble
+   ```
+
+4. Source the local install:
+
+   ```bash
+   source install/setup.bash
+   ```
+
+5. To plan and execute with MoveIt:
+
+   ```bash
+   ros2 launch spot_moveit_config spot_moveit_all.launch.py
+   ```
+
+6. To run MoveIt Servo:
+
+   ```bash
+   ros2 launch spot_moveit_config spot_pose_tracking.launch.py
+   ```
+
+---
+
 ## Setting Up Isaac Sim with ZED Integration (inside the isaac-sim container)
 
 1. Navigate to the **`zed-isaac-sim`** folder and build:
@@ -162,7 +203,7 @@ docker-compose up -d
 4. With Isaac Sim streaming, launch the ZED wrapper:
 
    ```bash
-   ros2 launch zed_wrapper zed_camera.launch.py camera_model:=zedx sim_mode:=true
+   ros2 launch zed_wrapper zed_camera.launch.py camera_model:=zedx sim_mode:=true use_sim_time:=true
    ```
 
    > This will optimize the ZED neural mode for your GPU. It may take several minutes on the first run.
@@ -170,5 +211,5 @@ docker-compose up -d
 5. To visualize the NVBlox map, run the ZED example:
 
    ```bash
-   ros2 launch nvblox_examples_bringup zed_example.launch.py
+   ros2 launch nvblox_examples_bringup zed_example.launch.py use_sim_time:=true
    ```
