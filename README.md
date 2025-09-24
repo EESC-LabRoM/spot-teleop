@@ -2,13 +2,13 @@
 
 This repository contains multiple ROS2 workspaces for robotics with Boston Dynamics Spot, ZED cameras, RealSense, and Isaac Sim simulation.
 
-## 📁 Workspace Structure
+## Workspace Structure
 
 * Main workspace for Spot ROS2 + RealSense + MoveIt
 * Workspace for ZED + Isaac ROS + NVBlox
 * Workspace for Isaac Sim + ZED Isaac Sim
 
-## 🚀 Cloning
+## Cloning
 
 ```bash
 # Clone with all submodules
@@ -25,7 +25,7 @@ git lfs pull
 cd ../../..
 ```
 
-## 🐳 Build with Docker
+## Build with Docker
 
 ### Prerequisites
 
@@ -45,7 +45,7 @@ docker-compose build zed
 docker-compose build isaac-sim
 ```
 
-## 🏃 Running
+## Running
 
 ### Spot ROS2 + RealSense
 
@@ -71,7 +71,7 @@ docker-compose up -d isaac-sim
 docker-compose up -d
 ```
 
-## 📦 Included Submodules
+## Included Submodules
 
 ### ZED Workspace
 
@@ -97,7 +97,7 @@ docker-compose up -d
 
 ---
 
-## 🖥️ Setting Up Isaac Sim with ZED Integration (inside the isaac-sim container)
+## Setting Up Isaac Sim with ZED Integration (inside the isaac-sim container)
 
 1. Navigate to the **`zed-isaac-sim`** folder and build:
 
@@ -135,11 +135,11 @@ docker-compose up -d
    [Streaming] Use Transport layer mode : 0
    ```
 
-   ✅ The container is correctly set up.
+   The container is correctly set up.
 
 ---
 
-## 🎥 Setting Up ZED Container and NVBlox Mapping
+## Setting Up ZED Container and NVBlox Mapping
 
 1. Ensure the ROS2 environment is sourced:
 
@@ -165,7 +165,7 @@ docker-compose up -d
    ros2 launch zed_wrapper zed_camera.launch.py camera_model:=zedx sim_mode:=true
    ```
 
-   > ⚠️ This will optimize the ZED neural mode for your GPU. It may take several minutes on the first run.
+   > This will optimize the ZED neural mode for your GPU. It may take several minutes on the first run.
 
 5. To visualize the NVBlox map, run the ZED example:
 
