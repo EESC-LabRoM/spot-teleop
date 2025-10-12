@@ -1,0 +1,119 @@
+{
+    "version": "1.0",
+    "file_records": [
+        {
+            "source_url": "omniverse://ov-isaac-dev.nvidia.com/Isaac/Robots/Franka/Props/panda_link0.usd",
+            "source_hash": "sha-256-flat;1048576;e4826bd2f4b5e8fe50b32427f4c6874af8a77d1f4f003c268596bc54098eea94",
+            "target_url": "./ov-isaac-dev.nvidia.com/Isaac/Robots/Franka/Props/panda_link0.usd",
+            "target_hash": "a03622ec44053ac4134d28ac11f2e7a42b022e34"
+        },
+        {
+            "source_url": "omniverse://ov-isaac-dev.nvidia.com/Isaac/Robots/Franka/Props/panda_link1.usd",
+            "source_hash": "sha-256-flat;1048576;297d5f4eb81d980885c7085460f849904aa84b9b36849da902cedbd26ba55234",
+            "target_url": "./ov-isaac-dev.nvidia.com/Isaac/Robots/Franka/Props/panda_link1.usd",
+            "target_hash": "d6efda2853b310f31dc8dabbf0ed4f8403a9705e"
+        },
+        {
+            "source_url": "omniverse://ov-isaac-dev.nvidia.com/Isaac/Robots/Franka/Props/panda_link2.usd",
+            "source_hash": "sha-256-flat;1048576;aaef4c6a8d5ae9d5167b8e8e9b28ff0912dccfc905ffc813b55a87072c6cec45",
+            "target_url": "./ov-isaac-dev.nvidia.com/Isaac/Robots/Franka/Props/panda_link2.usd",
+            "target_hash": "1428df5835c8d6415270b5cdbde1c0a93a439fb5"
+        },
+        {
+            "source_url": "omniverse://ov-isaac-dev.nvidia.com/Isaac/Robots/Franka/Props/panda_link3.usd",
+            "source_hash": "sha-256-flat;1048576;0298fbfad2dedd93da7b9624fab7074e41e07652ea264426d85aa178e0088639",
+            "target_url": "./ov-isaac-dev.nvidia.com/Isaac/Robots/Franka/Props/panda_link3.usd",
+            "target_hash": "b0c0ed52d2868ace0693b1ac3f6cbddf0d9a7c70"
+        },
+        {
+            "source_url": "omniverse://ov-isaac-dev.nvidia.com/Isaac/Robots/Franka/Props/panda_link4.usd",
+            "source_hash": "sha-256-flat;1048576;45df09ea2234ff11ab1303bdcf1db6d27b3a13ed66d6a074c8c4defc6f7ee8f5",
+            "target_url": "./ov-isaac-dev.nvidia.com/Isaac/Robots/Franka/Props/panda_link4.usd",
+            "target_hash": "9be54d331ddb24831832a506fc0374caa985e5a0"
+        },
+        {
+            "source_url": "omniverse://ov-isaac-dev.nvidia.com/Isaac/Robots/Franka/Props/panda_link5.usd",
+            "source_hash": "sha-256-flat;1048576;d3368dee40a5b139264ae4cbad91b3306f4cf542735c7c754dc68947399a38f0",
+            "target_url": "./ov-isaac-dev.nvidia.com/Isaac/Robots/Franka/Props/panda_link5.usd",
+            "target_hash": "3ed216184da1bbe6f2f38cbef3401ac802f81dde"
+        },
+        {
+            "source_url": "omniverse://ov-isaac-dev.nvidia.com/Isaac/Robots/Franka/Props/panda_link6.usd",
+            "source_hash": "sha-256-flat;1048576;c2658fc89070898c5beb10f64da5d4c612ea0d3fe15480f7a8e2f3d1df1ec562",
+            "target_url": "./ov-isaac-dev.nvidia.com/Isaac/Robots/Franka/Props/panda_link6.usd",
+            "target_hash": "9120f8bb8a2a30b828243885afbf7546eb6e5c3c"
+        },
+        {
+            "source_url": "omniverse://ov-isaac-dev.nvidia.com/Isaac/Robots/Franka/Props/panda_link7.usd",
+            "source_hash": "sha-256-flat;1048576;3431683ae3883f8dc70c76a67aa88ec1ff512a1d9375dd9d0beed14476af3917",
+            "target_url": "./ov-isaac-dev.nvidia.com/Isaac/Robots/Franka/Props/panda_link7.usd",
+            "target_hash": "f4881db9266003c1238264cac70c4e87a4e82e9b"
+        },
+        {
+            "source_url": "omniverse://isaac-dev.ov.nvidia.com/Library/Props/DataGen/Materials/Textures/color_mug_fce5a192-fa07-42b7-9a2f-9fb8c8233c14_png_002.png",
+            "source_hash": "sha-256-flat;1048576;2395c2e7f5dcd6b69f14721b1e4b550dae91e0ef499abc246d87aaee21b7499c",
+            "target_url": "./isaac-dev.ov.nvidia.com/Library/Props/DataGen/Materials/Textures/color_mug_fce5a192-fa07-42b7-9a2f-9fb8c8233c14_png_002.png",
+            "target_hash": "ee5a7ead102235540073fd743a1933d964f341e8"
+        },
+        {
+            "source_url": "omniverse://isaac-dev.ov.nvidia.com/Library/Props/DataGen/Materials/Textures/metallic_mug_fce5a192-fa07-42b7-9a2f-9fb8c8233c14_png_002.png",
+            "source_hash": "sha-256-flat;1048576;d984ad06844d41b5bbc5bb43f626dcfd5d394f569957b271cec225be129cbd0a",
+            "target_url": "./isaac-dev.ov.nvidia.com/Library/Props/DataGen/Materials/Textures/metallic_mug_fce5a192-fa07-42b7-9a2f-9fb8c8233c14_png_002.png",
+            "target_hash": "c80b6ac7dd895353e30da64f525dbf2167b23926"
+        },
+        {
+            "source_url": "omniverse://isaac-dev.ov.nvidia.com/Library/Props/DataGen/Materials/Textures/normal_mug_fce5a192-fa07-42b7-9a2f-9fb8c8233c14_png_002.png",
+            "source_hash": "sha-256-flat;1048576;c85057097f7030bcea6127ca7edd902b884ddc129818cbfe15cefbeaf083570c",
+            "target_url": "./isaac-dev.ov.nvidia.com/Library/Props/DataGen/Materials/Textures/normal_mug_fce5a192-fa07-42b7-9a2f-9fb8c8233c14_png_002.png",
+            "target_hash": "3bb6c33a4b4cc680797ff71c0a6a100212e7ae58"
+        },
+        {
+            "source_url": "omniverse://isaac-dev.ov.nvidia.com/Library/Props/DataGen/Materials/Textures/roughness_mug_fce5a192-fa07-42b7-9a2f-9fb8c8233c14_png_002.png",
+            "source_hash": "sha-256-flat;1048576;a3702fd001520d54d0fb4048022c1bd29afc50021c13c9004c084673a0688b39",
+            "target_url": "./isaac-dev.ov.nvidia.com/Library/Props/DataGen/Materials/Textures/roughness_mug_fce5a192-fa07-42b7-9a2f-9fb8c8233c14_png_002.png",
+            "target_hash": "b3062042c63d9cfc22f6b51e64472d02dc1865e9"
+        },
+        {
+            "source_url": "omniverse://isaac-dev.ov.nvidia.com/Library/Props/DataGen/Materials/basic_material_001.mdl",
+            "source_hash": "sha-256-flat;1048576;ffb9263ec5ba8fd25f4c0f6c8eb3f036e32a6f3813760fdcee12e5d782fd1ef3",
+            "target_url": "./isaac-dev.ov.nvidia.com/Library/Props/DataGen/Materials/basic_material_001.mdl",
+            "target_hash": "7bd0c73fe3172da0c1f8c9e3551f8bd28fb6d5a5"
+        },
+        {
+            "source_url": "omniverse://isaac-dev.ov.nvidia.com/Library/Props/DataGen/Materials/Textures/normal_ceiling_lamp_a6daa93c-5404-4ab1-b684-35d430db96d8_pn_000.png",
+            "source_hash": "sha-256-flat;1048576;8f584ef8165d6bad6668681608012250363eecbf870f096de07ff8925bbc51b5",
+            "target_url": "./isaac-dev.ov.nvidia.com/Library/Props/DataGen/Materials/Textures/normal_ceiling_lamp_a6daa93c-5404-4ab1-b684-35d430db96d8_pn_000.png",
+            "target_hash": "e3ec95963355931b47bc5a3cd88cc97054127309"
+        },
+        {
+            "source_url": "omniverse://isaac-dev.ov.nvidia.com/Library/Props/DataGen/Materials/Textures/color_ceiling_lamp_a6daa93c-5404-4ab1-b684-35d430db96d8_png_001.png",
+            "source_hash": "sha-256-flat;1048576;2bbf1de92a0da9950e8db7c940f369df97676280543e80b6895d40980a2b8230",
+            "target_url": "./isaac-dev.ov.nvidia.com/Library/Props/DataGen/Materials/Textures/color_ceiling_lamp_a6daa93c-5404-4ab1-b684-35d430db96d8_png_001.png",
+            "target_hash": "1464ac2c837f9b54f9bdcee8cd2530068dc19bed"
+        },
+        {
+            "source_url": "omniverse://isaac-dev.ov.nvidia.com/Library/Props/DataGen/Materials/Textures/metallic_ceiling_lamp_a6daa93c-5404-4ab1-b684-35d430db96d8__000.png",
+            "source_hash": "sha-256-flat;1048576;f5fcae1a49d690e5d584b36e2de501def98e60408f4039a64d2d554d26b4fb79",
+            "target_url": "./isaac-dev.ov.nvidia.com/Library/Props/DataGen/Materials/Textures/metallic_ceiling_lamp_a6daa93c-5404-4ab1-b684-35d430db96d8__000.png",
+            "target_hash": "99fd748d4c0fcd1d64bd596aa5db064df0e681e3"
+        },
+        {
+            "source_url": "omniverse://isaac-dev.ov.nvidia.com/Library/Props/DataGen/Materials/Textures/roughness_ceiling_lamp_a6daa93c-5404-4ab1-b684-35d430db96d8_000.png",
+            "source_hash": "sha-256-flat;1048576;e56884253e495424acb46a35f7dccc0d70a232bbf121ad1f2c7ef29efaf535e7",
+            "target_url": "./isaac-dev.ov.nvidia.com/Library/Props/DataGen/Materials/Textures/roughness_ceiling_lamp_a6daa93c-5404-4ab1-b684-35d430db96d8_000.png",
+            "target_hash": "3a191ca9632afc8e43bf71407a73b8989b49406f"
+        },
+        {
+            "source_url": "omniverse://isaac-dev.ov.nvidia.com/Library/Props/DataGen/Materials/OmniUe4Function.mdl",
+            "source_hash": "sha-256-flat;1048576;3d1aeb3cbdd0bc6d1d2f0e5374bb9e52066bebca1b1b3538c974124f055a2dc9",
+            "target_url": "./isaac-dev.ov.nvidia.com/Library/Props/DataGen/Materials/OmniUe4Function.mdl",
+            "target_hash": "67c6e5c70d7f8f8dcc0571377921bf369533a06d"
+        },
+        {
+            "source_url": "omniverse://isaac-dev.ov.nvidia.com/Library/Props/DataGen/Materials/OmniUe4Base.mdl",
+            "source_hash": "sha-256-flat;1048576;7afdfebe839a9358b018628e9b2e6cff2c2dcc3d6f172255aee3687b98a96e41",
+            "target_url": "./isaac-dev.ov.nvidia.com/Library/Props/DataGen/Materials/OmniUe4Base.mdl",
+            "target_hash": "3608b40c885b1e95d759d9baf5f4d64a4e7bcf48"
+        }
+    ]
+}

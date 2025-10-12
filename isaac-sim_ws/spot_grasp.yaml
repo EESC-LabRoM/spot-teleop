@@ -1,0 +1,16 @@
+format: isaac_grasp
+format_version: 1.0
+
+object_frame: /World/valvula/valvula/lever_pivot
+gripper_frame: /World/hand_spot/arm0_link_wr1
+
+grasps:
+   "grasp_0":
+      confidence: 1.0
+      position: [-0.03949440839531621, 0.22181017214514823, 0.020043054492801814]
+      orientation: {w: -0.7031567830485893, xyz: [-0.004227991175361395, 0.02248732534100338, 0.7106665763509552]}
+      cspace_position:
+         arm0_f1x: -0.19896012544631958
+      pregrasp_cspace_position:
+         arm0_f1x: -1.5707999467849731
+

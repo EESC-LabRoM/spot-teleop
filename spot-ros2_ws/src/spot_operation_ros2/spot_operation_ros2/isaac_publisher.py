@@ -3,6 +3,7 @@ import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
 from control_msgs.msg import JointTrajectoryControllerState
+from spot_msgs.msg import JointCommand
 
 
 class JointStateRelay(Node):
@@ -11,6 +12,9 @@ class JointStateRelay(Node):
 
         # Publisher para joint_command_isaac
         self.pub = self.create_publisher(JointState, "joint_command_isaac", 10)
+        
+        # Armazenar último comando do gripper
+        self.gripper_position = None
 
         # Parâmetro para tópico de entrada (default: /arm_controller/controller_state)
         self.declare_parameter("input_topic", "/arm_controller/controller_state")
@@ -23,9 +27,18 @@ class JointStateRelay(Node):
             self.joint_states_callback,
             10,
         )
+        
+        # Subscriber para comandos do gripper
+        self.gripper_sub = self.create_subscription(
+            JointCommand,
+            "/spot_joint_controller/joint_commands",
+            self.gripper_command_callback,
+            10,
+        )
 
         self.get_logger().info("Joint State Relay inicializado")
         self.get_logger().info(f"Subscrevendo em: {input_topic}")
+        self.get_logger().info("Subscrevendo em: /spot_joint_controller/joint_commands")
         self.get_logger().info("Publicando em: joint_command_isaac")
 
     def joint_states_callback(self, msg):
@@ -70,7 +83,29 @@ class JointStateRelay(Node):
         new_msg.velocity = [vel[i] for i in arm_joints_indices] if vel else []
         new_msg.effort = [eff[i] for i in arm_joints_indices] if eff else []
 
+        # Adicionar gripper se disponível
+        if self.gripper_position is not None:
+            new_msg.name.append("arm0_f1x")  # Renomear para Isaac
+            new_msg.position.append(self.gripper_position)
+            if new_msg.velocity:
+                new_msg.velocity.append(0.0)  # Velocity não disponível do comando
+            if new_msg.effort:
+                new_msg.effort.append(0.0)    # Effort não disponível do comando
+
         self.pub.publish(new_msg)
+
+    def gripper_command_callback(self, msg):
+        """Callback para comandos do gripper via spot_joint_controller"""
+        # msg: spot_msgs/msg/JointCommand
+        try:
+            # Procurar arm_f1x nos comandos
+            if "arm_f1x" in msg.name:
+                idx = msg.name.index("arm_f1x")
+                if idx < len(msg.position):
+                    self.gripper_position = msg.position[idx]
+                    self.get_logger().debug(f"Gripper command: {self.gripper_position}")
+        except Exception as e:
+            self.get_logger().warn(f"Erro ao processar comando do gripper: {e}")
 
 
 def main():

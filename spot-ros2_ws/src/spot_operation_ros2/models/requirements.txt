@@ -1,0 +1,20 @@
+# PyTorch e torchvision com suporte CUDA (confirme se a versão do PyTorch é compatível com o CUDA 12.4; pode ser necessário ajustar o extra-index-url de acordo com a documentação oficial)
+torch==2.0.1
+torchvision==0.15.2
+
+# Framework para YOLO - certifique-se de que essa versão atende às suas necessidades (YOLOv11 personalizado ou via Ultralytics)
+ultralytics==8.0.80
+
+# Bibliotecas para processamento e manipulação de imagens
+opencv-python==4.8.0.76
+numpy==1.23.5
+pycocotools==2.0.6
+Pillow==9.5.0
+
+# Utilitários para paralelização e manipulação de dados
+joblib==1.2.0
+pandas==1.5.3
+scikit-learn==1.2.2
+
+# Biblioteca para visualização e gráficos
+matplotlib==3.6.3
