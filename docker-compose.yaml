@@ -40,7 +40,8 @@ services:
       "
     stdin_open: true
     tty: true
-    network_mode: host
+    networks:             
+      - ros_net           
     ipc: host
     deploy:
       resources:
@@ -67,7 +68,8 @@ services:
       - /dev:/dev
       - ./zed_ws:/home/spot-teleop/zed_ws
     working_dir: /home/spot-teleop/zed_ws
-    network_mode: host
+    networks:
+      - ros_net
     ipc: host
     privileged: true
     tty: true
@@ -106,7 +108,8 @@ services:
       context: .
       dockerfile: Dockerfile.isaac
     runtime: nvidia
-    network_mode: host
+    networks:
+      - ros_net
     ipc: host
     privileged: true
     environment:
@@ -122,20 +125,18 @@ services:
       - __NGX_CONF_FILE=/usr/share/nvidia/nvidia-ngx-conf.json
     volumes:
       - /tmp/.X11-unix:/tmp/.X11-unix:rw  # GUI
-      - ./isaac-sim_ws:/workspace:rw 
+      - ./isaac-sim_ws:/workspace:rw
       # caches (pra carregar + rápido)
       - ./isaac-sim_ws/cache/kit:/isaac-sim/kit/cache:rw
       - ./isaac-sim_ws/cache/ov:/root/.cache/ov:rw
       - ./isaac-sim_ws/cache/pip:/root/.cache/pip:rw
       - ./isaac-sim_ws/cache/glcache:/root/.cache/nvidia/GLCache:rw
       - ./isaac-sim_ws/cache/computecache:/root/.nv/ComputeCache:rw
-
       # NGX injection
       - /usr/bin/nvidia-ngx-updater:/usr/bin/nvidia-ngx-updater:ro
       - /lib/x86_64-linux-gnu/libnvidia-ngx.so.1:/usr/lib/x86_64-linux-gnu/libnvidia-ngx.so.1:ro
       - /usr/share/nvidia/ngx:/usr/share/nvidia/ngx
       - /usr/share/nvidia/nvidia-ngx-conf.json:/usr/share/nvidia/nvidia-ngx-conf.json:ro
-      
       # Força as libs de vídeo do host dentro do container:
       - /lib/x86_64-linux-gnu/libnvcuvid.so.1:/usr/lib/x86_64-linux-gnu/libnvcuvid.so.1:ro
       - /lib/x86_64-linux-gnu/libnvcuvid.so:/usr/lib/x86_64-linux-gnu/libnvcuvid.so:ro
@@ -152,3 +153,6 @@ services:
               count: all
               capabilities: [gpu, compute, graphics, utility]
 
+networks:
+  ros_net:
+    driver: bridge

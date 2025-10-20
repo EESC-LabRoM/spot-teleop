@@ -1,0 +1,13 @@
+.ros
+.rviz2 
+isaac-sim_ws/cache
+spot-ros2_ws/build
+spot-ros2_ws/install
+spot-ros2_ws/log
+.bash_history
+.wget-hsts
+.lesshst
+*.pyc
+zed_ws/build
+zed_ws/install
+zed_ws/log
