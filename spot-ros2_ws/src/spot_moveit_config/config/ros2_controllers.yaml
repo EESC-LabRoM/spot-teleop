@@ -26,13 +26,3 @@ arm_controller:
     state_interfaces:
       - position
     interface_name: position
-
-gripper_controller:
-  ros__parameters:
-    joints:
-      - arm_f1x
-    command_interfaces:
-      - position
-    state_interfaces:
-      - position
-    interface_name: position

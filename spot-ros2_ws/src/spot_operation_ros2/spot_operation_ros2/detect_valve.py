@@ -36,14 +36,24 @@ class ValveDetectionNode(Node):
         self.model = YOLO(str(model_path))
         self.get_logger().info("Custom YOLO model loaded successfully")
         
+        # Inspeciona informações do modelo
+        self.get_logger().info(f"Ultralytics version: {__import__('ultralytics').__version__}")
+        self.get_logger().info(f"Model task: {self.model.task}")  # 'detect' | 'segment' | 'pose' | 'classify'
+        self.get_logger().info(f"Model names: {self.model.names}")  # dict id->nome
+        self.get_logger().info(f"Num classes: {len(self.model.names)}")
+        
         # (opcional) parametrizar tópicos e conf
         self.declare_parameter('rgb_topic', '/camera/rgb')
         self.declare_parameter('det_topic', '/detection2_d')
-        self.declare_parameter('conf_thres', 0.5)
+        self.declare_parameter('conf_thres', 0.65)  # Aumentado para reduzir FP
+        self.declare_parameter('iou_thres', 0.5)    # NMS threshold
+        self.declare_parameter('max_det', 10)       # Máximo de detecções
         self.declare_parameter('target_class', 'lever_10')  # Classe alvo para publicação
         rgb_topic = self.get_parameter('rgb_topic').get_parameter_value().string_value
         det_topic = self.get_parameter('det_topic').get_parameter_value().string_value
         self.conf_thres = self.get_parameter('conf_thres').get_parameter_value().double_value
+        self.iou_thres = self.get_parameter('iou_thres').get_parameter_value().double_value
+        self.max_det = self.get_parameter('max_det').get_parameter_value().integer_value
         self.target_class = self.get_parameter('target_class').get_parameter_value().string_value
         
         # Use default QoS (RELIABLE) for compatibility with Detection2DToMask
@@ -67,28 +77,34 @@ class ValveDetectionNode(Node):
         # Convert ROS Image message to OpenCV format
         cv_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
         
-        # Run YOLO inference on the frame
-        results = self.model(cv_image, conf=self.conf_thres, verbose=False)
+        # Run YOLO inference on the frame with NMS parameters
+        results = self.model(cv_image, conf=self.conf_thres, iou=self.iou_thres, 
+                           max_det=self.max_det, verbose=False)
         res = results[0]
         
-        # --- PUBLICA APENAS A MELHOR DETECÇÃO DA CLASSE ALVO ---
+        # ✅ Sanidade do desenho - verificar se shapes batem
+        if self.frame_count == 0:  # Log apenas no primeiro frame
+            self.get_logger().info(f"Original shape (YOLO): {res.orig_shape}")
+            self.get_logger().info(f"Image shape (OpenCV): {cv_image.shape}")
+            if hasattr(res, 'masks') and res.masks is not None:
+                self.get_logger().info(f"Model has masks (segmentation): YES")
+            else:
+                self.get_logger().info(f"Model has masks (segmentation): NO")
+        
+        # --- PUBLICA APENAS A MELHOR DETECÇÃO (QUALQUER CLASSE) ---
         if res.boxes is not None and len(res.boxes) > 0:
             xyxy = res.boxes.xyxy.cpu().numpy()
             conf = res.boxes.conf.cpu().numpy()
             cls  = res.boxes.cls.cpu().numpy().astype(int)
 
-            # Filtra apenas detecções da classe alvo
-            target_indices = []
-            for i in range(len(cls)):
-                class_name = self.model.names.get(cls[i], '')
-                if class_name == self.target_class:
-                    target_indices.append(i)
+            # Aceita qualquer classe (só tem uma mesmo)
+            target_indices = list(range(len(cls)))  # pega todas
             
-            # Se encontrou detecções da classe alvo
+            # Se encontrou detecções
             if len(target_indices) > 0:
-                # Pega as confidências apenas das detecções da classe alvo
+                # Pega as confidências de todas as detecções
                 target_conf = conf[target_indices]
-                # Encontra a melhor entre as detecções da classe alvo
+                # Encontra a melhor detecção
                 best_target_idx = target_indices[np.argmax(target_conf)]
                 
                 x1, y1, x2, y2 = xyxy[best_target_idx]
@@ -143,6 +159,18 @@ class ValveDetectionNode(Node):
             annotated_image: Image with bounding boxes and labels
         """
         annotated_image = image.copy()
+        
+        if hasattr(result, 'masks') and result.masks is not None:
+            masks_data = result.masks.data.cpu().numpy()
+            for mask in masks_data:
+                # Resize mask to image dimensions
+                mask_resized = cv2.resize(mask, (image.shape[1], image.shape[0]))
+                mask_uint8 = (mask_resized * 255).astype(np.uint8)
+                
+                # Create colored overlay (semi-transparent green)
+                overlay = annotated_image.copy()
+                overlay[mask_uint8 > 0] = (overlay[mask_uint8 > 0] * 0.5 + [0, 127, 0]).astype(np.uint8)
+                annotated_image = overlay
         
         # Check if there are any detections
         if result.boxes is not None and len(result.boxes.xyxy) > 0:

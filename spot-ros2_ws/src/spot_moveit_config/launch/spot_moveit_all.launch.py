@@ -44,7 +44,7 @@ def launch_setup(context, *args, **kwargs):
             "launch_rviz": "false",
             "spot_name": spot_name,
             "config_file": cfg_file,
-            "robot_controllers": "arm_controller",
+            "robot_controllers": "arm_controller spot_joint_controller",
             "control_only": "true" if sim else "false",
         }.items(),
     )

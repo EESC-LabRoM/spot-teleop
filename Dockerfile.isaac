@@ -1,9 +1,12 @@
 # Base oficial do Isaac Sim (ajuste a tag conforme a versão disponível no NGC)
-FROM nvcr.io/nvidia/isaac-sim:5.0.0
+FROM nvcr.io/nvidia/isaac-sim:5.1.0
 
 # Termos exigidos pelo container do Isaac
 ENV ACCEPT_EULA=Y \
     PRIVACY_CONSENT=Y
+
+# Mudar para root para instalar pacotes
+USER root
 
 # Instalar pacotes básicos
 RUN apt update && apt install -y git wget build-essential python3 libusb-1.0-0 libusb-1.0-0-dev

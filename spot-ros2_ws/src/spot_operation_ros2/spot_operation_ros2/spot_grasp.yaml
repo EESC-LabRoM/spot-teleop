@@ -1,7 +1,7 @@
 format: isaac_grasp
 format_version: 1.0
 
-object_frame: /World/valvula/valvula/lever_pivot_aligned
+object_frame: /World/valvula/valvula/lever_pivot
 gripper_frame: /World/hand_spot/arm0_link_wr1
 
 grasps:
