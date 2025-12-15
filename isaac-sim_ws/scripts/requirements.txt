@@ -1,0 +1,18 @@
+# Requirements for Isaac Sim to YOLO Dataset Conversion
+# Install with: pip install -r requirements.txt
+
+# Core dependencies
+numpy>=1.21.0
+Pillow>=9.0.0
+
+# YOLO training (optional, only if you want to train models)
+ultralytics>=8.0.0
+
+# Additional useful packages
+matplotlib>=3.5.0
+opencv-python>=4.6.0
+tqdm>=4.64.0
+
+# For visualization and debugging
+seaborn>=0.12.0
+pandas>=1.5.0

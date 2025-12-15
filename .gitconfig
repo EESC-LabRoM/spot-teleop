@@ -1,3 +1,15 @@
 [safe]
 	directory = /home/spot-teleop/spot-ros2_ws/src/moveit2
 	directory = /home/spot-teleop/spot-ros2_ws/src/moveit2
+[filter "lfs"]
+	clean = git-lfs clean -- %f
+	smudge = git-lfs smudge -- %f
+	process = git-lfs filter-process
+	required = true
+[safe]
+	directory = /home/nexus/spot-teleop/spot-ros2_ws
+[user]
+	email = murilo.mv4321@usp.br
+	name = murilo-vinicius04
+[credential]
+	helper = "!f() { /home/spot-teleop/.vscode-server/bin/7d842fb85a0275a4a8e4d7e040d2625abbf7f084/node /tmp/vscode-remote-containers-a69c8f74-cf11-4745-b861-b2979cb6cdb2.js git-credential-helper $*; }; f"

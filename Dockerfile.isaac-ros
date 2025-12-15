@@ -1,0 +1,32 @@
+# Dockerfile para Isaac ROS
+# Baseado na imagem NGC que já contém: base + ros2_humble (CUDA, TensorRT, MoveIt2, Nav2, etc.)
+
+ARG BASE_IMAGE=nvcr.io/nvidia/isaac/ros:x86_64-ros2_humble_f247dd1051869171c3fc53bb35f6b907
+FROM ${BASE_IMAGE}
+
+# Metadados
+LABEL maintainer="EESC-LabRoM"
+LABEL description="Isaac ROS container para spot-teleop"
+
+# Variáveis de ambiente para ROS 2
+ENV ROS_DISTRO=humble
+ENV RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+ENV ROS_DOMAIN_ID=8
+
+# Garantir que o ROS está no bashrc
+RUN echo "source /opt/ros/${ROS_DISTRO}/setup.bash" >> /etc/bash.bashrc
+
+# Workspace padrão
+ENV ISAAC_ROS_WS=/workspaces/isaac_ros-dev
+WORKDIR ${ISAAC_ROS_WS}
+
+# [OPCIONAL] Adicionar RealSense se necessário no futuro
+# Descomente as linhas abaixo para habilitar suporte ao RealSense
+# ARG LIBREALSENSE_SOURCE_VERSION=v2.55.1
+# ARG REALSENSE_ROS_VERSION=release/4.51.1-isaac
+# COPY scripts/build-librealsense.sh /opt/realsense/build-librealsense.sh
+# COPY scripts/install-realsense-dependencies.sh /opt/realsense/install-realsense-dependencies.sh
+# RUN chmod +x /opt/realsense/*.sh && /opt/realsense/install-realsense-dependencies.sh
+# RUN /opt/realsense/build-librealsense.sh -v ${LIBREALSENSE_SOURCE_VERSION}
+
+# Entrypoint padrão já está na imagem NGC: /usr/local/bin/scripts/workspace-entrypoint.sh

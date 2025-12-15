@@ -40,10 +40,12 @@ setup(
     license='Apache License 2.0',
     entry_points={
         'console_scripts': [
-            'arm_pose_estimator = arm_pose_estimator.realsense_pose_node:main',
+            'arm_pose_estimator = arm_pose_estimator.arm_pose_estimator:main',
             'hand_pose_estimator = arm_pose_estimator.hand_pose_estimator:main',
             'hand_orientation_estimator = arm_pose_estimator.hand_orientation_estimator:main',
             'finger_count = arm_pose_estimator.finger_count:main',
+            'body_wrist_tracker = arm_pose_estimator.body_wrist_tracker:main',
+            'wrist_detector = arm_pose_estimator.wrist_detector:main',
         ],
     },
 )

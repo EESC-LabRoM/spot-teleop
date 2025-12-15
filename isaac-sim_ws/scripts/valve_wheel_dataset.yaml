@@ -1,0 +1,92 @@
+# Synthetic Data Generation for Valve Wheel
+# Generates 30 images with bounding boxes for object detection training
+# Camera and valve randomize positions, camera always looks at valve
+
+# Stage settings (Isaac Sim defaults)
+stage_unit_setting:
+  settings.set_stage_meters_per_unit:
+    meters_per_unit: 1
+
+stage_up_axis_setting:
+  settings.set_stage_up_axis:
+    up_axis: "Z"
+
+# Load warehouse environment for realistic background
+warehouse:
+  create.from_usd:
+    usd: "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.0/Isaac/Environments/Simple_Warehouse/warehouse.usd"
+    semantics: [["class", "warehouse"]]
+
+# Load valve wheel USD with semantic label
+valve:
+  create.from_usd:
+    usd: "/workspace/valve_wheel_yellow.usd"
+    semantics: [["class", "valve_wheel"]]
+    position: [0, 0, 1.0]
+
+# Create camera
+camera:
+  create.camera:
+    position: [1.0, 0, 1.0]
+
+# Create render product with 1280x720 resolution (matches Python script)
+render_product:
+  create.render_product:
+    camera: camera
+    resolution: [1280, 720]
+
+# Setup BasicWriter with RGB and bounding boxes
+writer:
+  writers.get:
+    name: "BasicWriter"
+    init_params:
+      output_dir: "/workspace/datasets/valve_wheel"
+      rgb: True
+      bounding_box_2d_tight: True
+      semantic_segmentation: True
+      colorize_semantic_segmentation: False
+
+writer_attach:
+  writer.attach:
+    render_products: render_product
+
+# Register randomizer for valve pose
+register_randomize_valve:
+  randomizer.register:
+    randomize_valve:
+      valve_obj:
+        get.prims:
+          semantics: [['class', 'valve_wheel']]
+      with.valve_obj:
+        modify.pose:
+          position:
+            distribution.uniform:
+              lower: [-0.05, -0.05, 0.95]
+              upper: [0.05, 0.05, 1.05]
+          rotation:
+            distribution.uniform:
+              lower: [0, 0, 0]
+              upper: [360, 360, 360]
+          scale:
+            distribution.uniform:
+              lower: 0.95
+              upper: 1.05
+
+# Set trigger to generate 30 frames
+trigger:
+  trigger.on_frame:
+    max_execs: 30
+
+# On each trigger, randomize both valve and camera
+with_trigger:
+  with.trigger:
+    # Randomize valve pose
+    randomizer.randomize_valve: null
+    # Randomize camera position around valve, always looking at center
+    with.camera:
+      modify.pose:
+        position:
+          distribution.uniform:
+            lower: [-1.5, -1.5, 0.5]
+            upper: [1.5, 1.5, 2.0]
+        look_at: [0, 0, 1.0]

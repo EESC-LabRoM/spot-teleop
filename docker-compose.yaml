@@ -152,3 +152,44 @@ services:
               count: all
               capabilities: [gpu, compute, graphics, utility]
 
+  isaac-ros:
+    build:
+      context: .
+      dockerfile: Dockerfile.isaac-ros
+    container_name: isaac-ros-container
+    runtime: nvidia
+    privileged: true
+    network_mode: host
+    ipc: host
+    environment:
+      - DISPLAY=${DISPLAY}
+      - QT_X11_NO_MITSHM=1
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=all
+      - ROS_DOMAIN_ID=8
+      - RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+      - ISAAC_ROS_WS=/workspaces/isaac_ros-dev
+      - USERNAME=admin
+      - HOST_USER_UID=1000
+      - HOST_USER_GID=1000
+    volumes:
+      # X11 para GUI
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - ~/.Xauthority:/home/admin/.Xauthority:rw
+      # Workspace local
+      - ./isaac-ros_ws:/workspaces/isaac_ros-dev:rw
+      # Timezone
+      - /etc/localtime:/etc/localtime:ro
+    working_dir: /workspaces/isaac_ros-dev
+    stdin_open: true
+    tty: true
+    entrypoint: /usr/local/bin/scripts/workspace-entrypoint.sh
+    command: /bin/bash
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu, compute, graphics, utility]
+

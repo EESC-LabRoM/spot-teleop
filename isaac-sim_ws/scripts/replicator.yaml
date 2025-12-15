@@ -1,0 +1,49 @@
+# Configurações da câmera
+camera:
+  create.camera:
+    position: [500, 0, 200]
+
+render_product:
+  create.render_product:
+    camera: camera
+    resolution: [1280, 720]
+
+# Sua válvula
+valve:
+  create.from_usd:
+    usd: /workspace/valve_wheel_yellow.usd
+    semantics: [["class", "valve_wheel"]]
+    position: [0, 0, 0]
+
+# Luz
+light:
+  create.light:
+    light_type: "distant"
+    rotation: [315, 0, 0]
+    intensity: 3000
+
+# Randomização por frame
+trigger:
+  trigger.on_frame:
+    max_execs: 100
+
+with_trigger:
+  with.trigger:
+    modify.pose:
+      position:
+        distribution.uniform:
+          lower: [-100, -100, -50]
+          upper: [100, 100, 50]
+      rotation:
+        distribution.uniform:
+          lower: [0, 0, 0]
+          upper: [360, 360, 360]
+
+# Writer com bounding boxes
+writer:
+  writers.get:
+    name: "BasicWriter"
+    init_params:
+      output_dir: /workspace/datasets/valve_wheel
+      rgb: True
+      bounding_box_2d_tight: True

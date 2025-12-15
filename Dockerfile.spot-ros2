@@ -27,14 +27,12 @@ RUN curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key -o 
     | tee /etc/apt/sources.list.d/ros2.list > /dev/null \
     && apt-get update
 
-# Add Intel RealSense repository (with lsb-release)
-RUN apt-get update && apt-get install -y \
-    gnupg \
-    lsb-release \
-    && curl -sSf https://librealsense.intel.com/Debian/librealsense.pgp | apt-key add - \
-    && echo "deb https://librealsense.intel.com/Debian/apt-repo $(lsb_release -cs) main" > /etc/apt/sources.list.d/librealsense.list \
-    && apt-get update \
-    && rm -rf /var/lib/apt/lists/*
+# Add Intel RealSense repository (with lsb-release) - continue on error if repository is unavailable
+RUN apt-get update && apt-get install -y gnupg lsb-release && \
+    (curl -sSf https://librealsense.intel.com/Debian/librealsense.pgp | apt-key add - && \
+    echo "deb https://librealsense.intel.com/Debian/apt-repo $(lsb_release -cs) main" > /etc/apt/sources.list.d/librealsense.list && \
+    apt-get update || echo "Warning: Could not add Intel RealSense repository") && \
+    rm -rf /var/lib/apt/lists/*
 
 # Install dependencies
 RUN apt-get update -q && \
@@ -67,11 +65,17 @@ RUN apt-get update -q && \
     ros-humble-controller-interface \
     ros-humble-hardware-interface \
     ros-humble-forward-command-controller \
-    # RealSense packages
+    # System utilities for USB devices
     udev usbutils \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install RealSense packages (optional - continue on error if not available)
+RUN apt-get update && \
+    (apt-get install -yq --no-install-recommends \
     librealsense2-utils librealsense2-dev librealsense2-dbg \
     ros-humble-realsense2-camera ros-humble-realsense2-description \
-    && rm -rf /var/lib/apt/lists/*
+    || echo "Warning: Could not install RealSense packages") && \
+    rm -rf /var/lib/apt/lists/*
 
 # Set up workspace
 WORKDIR /home/spot-teleop/spot-ros2_ws
@@ -95,6 +99,9 @@ ENV USER=root
 # Create bashrc with ROS setup
 RUN echo 'source /opt/ros/humble/setup.bash' >> /root/.bashrc && \
     echo 'source /home/spot-teleop/spot-ros2_ws/install/setup.bash' >> /root/.bashrc
+
+# Install Python packages
+RUN python3 -m pip install bosdyn-client==5.0.1.2 bosdyn-mission==5.0.1.2 bosdyn-choreography-client==5.0.1.2 bosdyn-orbit==5.0.1.2 mediapipe ultralytics
 
 # Set default command
 CMD ["/bin/bash"]

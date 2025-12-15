@@ -1,0 +1,181 @@
+format: "xrdf"
+
+format_version: 1.0
+
+tool_frames: [arm_link_fngr]
+
+default_joint_positions:
+  arm_sh0: -0.0 
+  arm_sh1: -1e-04
+  arm_el0: -0.0
+  arm_el1: 0.0
+  arm_wr0: -0.0
+  arm_wr1: 0.0
+
+cspace: 
+  joint_names: [arm_sh0, arm_sh1, arm_el0, arm_el1, arm_wr0, arm_wr1]
+  acceleration_limits: [10, 10, 10, 10, 10, 10]
+  jerk_limits: [10000, 10000, 10000, 10000, 10000, 10000]
+  retract_config: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+  velocity_limits: [10.0, 10.0, 10.0, 10.0, 10.0, 10.0]
+  cspace_distance_weight: [1.0, 1.0, 1.0, 1.0, 1.2, 1.2]
+
+collision: 
+  geometry: "auto_generated_collision_sphere_group"
+
+self_collision: 
+  geometry: "auto_generated_collision_sphere_group"
+  ignore: 
+    base: 
+      - "arm_link_sh0"
+      - "fl_hip"
+      - "fr_hip"
+      - "hl_hip"
+      - "hr_hip"
+    arm_link_sh0: 
+      - "arm_link_sh1"
+      - "fl_hip"
+      - "fr_hip"
+      - "hl_hip"
+      - "hr_hip"
+    arm_link_sh1: 
+      - "arm_link_el0"
+    arm_link_el0: 
+      - "arm_link_el1"
+    arm_link_el1: 
+      - "arm_link_wr0"
+    arm_link_wr0: 
+      - "arm_link_wr1"
+    arm_link_wr1: 
+      - "arm_link_fngr"
+    fl_hip: 
+      - "fl_uleg"
+      - "fr_hip"
+      - "hl_hip"
+      - "hr_hip"
+    fl_uleg: 
+      - "fl_lleg"
+    fr_hip: 
+      - "fr_uleg"
+      - "hl_hip"
+      - "hr_hip"
+    fr_uleg: 
+      - "fr_lleg"
+    hl_hip: 
+      - "hl_uleg"
+      - "hr_hip"
+    hl_uleg: 
+      - "hl_lleg"
+    hr_hip: 
+      - "hr_uleg"
+    hr_uleg: 
+      - "hr_lleg"
+
+geometry: 
+  auto_generated_collision_sphere_group: 
+    spheres: 
+      arm_link_sh0: 
+        - center: [-0.025, -0.069, 0.0]
+          radius: 0.0415
+        - center: [-0.001, -0.0, -0.072]
+          radius: 0.0329
+        - center: [0.01, 0.078, 0.006]
+          radius: 0.0318
+        - center: [0.006, -0.072, -0.001]
+          radius: 0.0381
+        - center: [-0.031, 0.077, -0.012]
+          radius: 0.0312
+        - center: [-0.019, 0.078, 0.012]
+          radius: 0.0312
+        - center: [-0.005, 0.079, -0.014]
+          radius: 0.0301
+        - center: [-0.041, 0.018, -0.049]
+          radius: 0.0197
+        - center: [0.001, 0.002, -0.062]
+          radius: 0.0318
+        - center: [0.006, -0.064, 0.005]
+          radius: 0.0364
+        - center: [0.028, 0.003, -0.091]
+          radius: 0.0209
+        - center: [-0.038, 0.08, 0.01]
+          radius: 0.0283
+        - center: [-0.032, -0.066, 0.005]
+          radius: 0.0386
+        - center: [-0.06, -0.007, -0.05]
+          radius: 0.0186
+        - center: [-0.029, 0.013, -0.093]
+          radius: 0.0186
+      arm_link_sh1: 
+        - center: [0.159, -0.001, 0.001]
+          radius: 0.0442
+        - center: [0.235, 0.007, 0.0]
+          radius: 0.0442
+        - center: [0.337, -0.009, 0.0]
+          radius: 0.041
+        - center: [0.118, -0.01, 0.002]
+          radius: 0.041
+        - center: [0.211, -0.007, 0.0]
+          radius: 0.0442
+        - center: [0.25, -0.005, 0.001]
+          radius: 0.0442
+        - center: [0.011, -0.009, -0.007]
+          radius: 0.0322
+        - center: [0.134, 0.007, -0.0]
+          radius: 0.0442
+        - center: [0.039, -0.007, 0.007]
+          radius: 0.029
+        - center: [0.193, 0.008, 0.0]
+          radius: 0.0434
+      arm_link_el0: 
+        - center: [0.06, -0.002, 0.073]
+          radius: 0.0516
+        - center: [0.099, 0.004, 0.073]
+          radius: 0.0507
+        - center: [0.048, 0.011, 0.07]
+          radius: 0.047
+        - center: [0.038, -0.016, 0.063]
+          radius: 0.0415
+        - center: [0.094, -0.003, 0.073]
+          radius: 0.0516
+      arm_link_el1: 
+        - center: [-0.141, 0.003, -0.001]
+          radius: 0.0458
+        - center: [-0.082, 0.003, 0.001]
+          radius: 0.0458
+        - center: [-0.22, 0.009, -0.005]
+          radius: 0.0389
+      arm_link_wr0: 
+        - center: [0.012, -0.009, 0.003]
+          radius: 0.0417
+        - center: [-0.013, -0.008, 0.004]
+          radius: 0.041
+      arm_link_wr1: 
+        - center: [0.083, 0.0, 0.0]
+          radius: 0.05
+        - center: [0.22, 0.001, -0.047]
+          radius: 0.02
+        - center: [0.121, 0.0, -0.013]
+          radius: 0.0416
+        - center: [0.153, 0.001, -0.024]
+          radius: 0.0347
+        - center: [0.179, 0.001, -0.033]
+          radius: 0.0289
+        - center: [0.201, 0.001, -0.041]
+          radius: 0.024
+      arm_link_fngr: 
+        - center: [0.078, -0.023, -0.024]
+          radius: 0.0184
+        - center: [0.08, 0.019, -0.026]
+          radius: 0.0176
+        - center: [0.101, -0.014, -0.034]
+          radius: 0.0162
+        - center: [0.062, -0.031, -0.014]
+          radius: 0.0169
+        - center: [0.098, 0.016, -0.033]
+          radius: 0.0162
+        - center: [0.06, 0.034, -0.015]
+          radius: 0.0154
+        - center: [0.109, 0.007, -0.038]
+          radius: 0.014
+        - center: [0.112, -0.01, -0.038]
+          radius: 0.0147

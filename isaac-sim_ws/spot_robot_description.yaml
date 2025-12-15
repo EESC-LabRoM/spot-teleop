@@ -1,0 +1,136 @@
+# The robot description defines the generalized coordinates and how to map those
+# to the underlying URDF dofs.
+
+api_version: 1.0
+
+# Defines the generalized coordinates. Each generalized coordinate is assumed
+# to have an entry in the URDF.
+# Lula will only use these joints to control the robot position.
+cspace:
+    - arm_sh0
+    - arm_sh1
+    - arm_el0
+    - arm_el1
+    - arm_wr0
+    - arm_wr1
+default_q: [
+    -0.0,0.0199,0.0005,-0.0,0.0012,-0.0
+]
+
+acceleration_limits: [
+   10,10,10,10,10,10
+]
+
+jerk_limits: [
+   10000,10000,10000,10000,10000,10000
+]
+
+# Most dimensions of the cspace have a direct corresponding element
+# in the URDF. This list of rules defines how unspecified coordinates
+# should be extracted or how values in the URDF should be overwritten.
+
+cspace_to_urdf_rules:
+    - {name: arm_f1x, rule: fixed, value: 0.0}
+
+# Lula uses collision spheres to define the robot geometry in order to avoid
+# collisions with external obstacles.  If no spheres are specified, Lula will
+# not be able to avoid obstacles.
+
+collision_spheres:
+  - arm_link_sh0:
+    - "center": [-0.022, -0.068, -0.002]
+      "radius": 0.0663
+    - "center": [-0.01, 0.058, -0.0]
+      "radius": 0.0762
+  - arm_link_sh1:
+    - "center": [0.191, 0.007, 0.0]
+      "radius": 0.06224
+    - "center": [0.128, -0.001, 0.001]
+      "radius": 0.06224
+    - "center": [0.249, -0.007, 0.0]
+      "radius": 0.06224
+    - "center": [0.33, -0.01, 0.0]
+      "radius": 0.05904
+  - arm_link_el1:
+    - "center": [-0.218, 0.0, 0.001]
+      "radius": 0.05674
+    - "center": [-0.141, 0.001, 0.001]
+      "radius": 0.0558
+    - "center": [-0.085, 0.003, -0.001]
+      "radius": 0.05392
+    - "center": [0.002, -0.059, -0.018]
+      "radius": 0.02908
+    - "center": [-0.035, -0.056, 0.021]
+      "radius": 0.02908
+    - "center": [0.007, -0.058, 0.01]
+      "radius": 0.02908
+  - arm_link_el0:
+    - "center": [0.059, 0.0, 0.061]
+      "radius": 0.06594
+    - "center": [0.018, 0.011, 0.018]
+      "radius": 0.05494
+    - "center": [0.096, -0.003, 0.073]
+      "radius": 0.05952
+  - arm_link_wr1:
+    - "center": [0.098, -0.009, 0.005]
+      "radius": 0.04679
+    - "center": [0.1, -0.009, -0.041]
+      "radius": 0.03905
+    - "center": [0.111, 0.017, -0.04]
+      "radius": 0.03733
+    - "center": [0.112, 0.017, 0.01]
+      "radius": 0.04335
+    - "center": [0.068, 0.02, 0.012]
+      "radius": 0.03218
+    - "center": [0.215, -0.001, -0.048]
+      "radius": 0.0216
+    - "center": [0.183, -0.006, -0.048]
+      "radius": 0.02115
+    - "center": [0.168, 0.015, -0.047]
+      "radius": 0.02115
+    - "center": [0.16, -0.017, -0.047]
+      "radius": 0.02115
+    - "center": [0.157, 0.003, -0.049]
+      "radius": 0.02115
+    - "center": [0.186, 0.009, -0.047]
+      "radius": 0.02115
+    - "center": [0.157, 0.026, -0.046]
+      "radius": 0.01959
+    - "center": [0.174, -0.017, -0.047]
+      "radius": 0.02037
+    - "center": [0.224, -0.006, -0.035]
+      "radius": 0.02175
+  - arm_link_wr0:
+    - "center": [0.002, -0.009, 0.004]
+      "radius": 0.04966
+    - "center": [0.028, -0.01, 0.007]
+      "radius": 0.04966
+  - arm_link_fngr:
+    - "center": [0.003, -0.044, -0.0]
+      "radius": 0.02454
+    - "center": [0.079, -0.023, -0.025]
+      "radius": 0.02336
+    - "center": [0.084, 0.02, -0.026]
+      "radius": 0.02263
+    - "center": [0.069, 0.029, -0.02]
+      "radius": 0.0219
+    - "center": [0.106, -0.015, -0.036]
+      "radius": 0.02045
+    - "center": [0.065, -0.029, -0.012]
+      "radius": 0.02045
+    - "center": [0.109, 0.01, -0.037]
+      "radius": 0.01972
+    - "center": [0.09, -0.014, -0.03]
+      "radius": 0.02118
+    - "center": [0.061, 0.034, -0.016]
+      "radius": 0.02045
+    - "center": [0.091, 0.018, -0.029]
+      "radius": 0.0219
+    - "center": [0.088, 0.006, -0.032]
+      "radius": 0.019
+    - "center": [0.091, -0.022, -0.031]
+      "radius": 0.02118
+    - "center": [0.109, 0.019, -0.041]
+      "radius": 0.01827
+    - "center": [0.058, 0.03, -0.008]
+      "radius": 0.01827

@@ -1,5 +1,5 @@
 # Base oficial do Isaac Sim (ajuste a tag conforme a versão disponível no NGC)
-FROM nvcr.io/nvidia/isaac-sim:5.1.0
+FROM nvcr.io/nvidia/isaac-sim:5.0.0
 
 # Termos exigidos pelo container do Isaac
 ENV ACCEPT_EULA=Y \
