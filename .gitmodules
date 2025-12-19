@@ -54,3 +54,6 @@
 [submodule "isaac-sim_ws/zed-isaac-sim"]
 	path = isaac-sim_ws/zed-isaac-sim
 	url = https://github.com/stereolabs/zed-isaac-sim.git
+[submodule "isaac-sim_ws/spot_description"]
+	path = isaac-sim_ws/spot_description
+	url = https://github.com/murilo-vinicius04/spot-description.git
