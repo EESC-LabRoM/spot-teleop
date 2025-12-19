@@ -1,0 +1,58 @@
+##
+## Copyright (c) 2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+##
+## Adapted for Boston Dynamics Spot Arm
+##
+
+robot_cfg:
+  kinematics:
+    use_usd_kinematics: False
+    urdf_path: "standalone_arm_fixed.urdf"
+    asset_root_path: ""
+    external_asset_path: "/workspace/spot_description/urdf"
+    base_link: "body"
+    ee_link: "arm0_link_fngr"
+    collision_link_names:
+      [
+        "arm0_link_sh0",
+        "arm0_link_sh1",
+        "arm0_link_hr0",
+        "arm0_link_el0",
+        "arm0_link_el1",
+        "arm0_link_wr0",
+        "arm0_link_wr1",
+        "arm0_link_fngr",
+      ]
+    collision_spheres: "/workspace/config/spheres/spot_arm.yml"
+    collision_sphere_buffer: 0.005
+    use_global_cumul: True
+    self_collision_ignore:
+      {
+        "body": ["arm0_link_sh0"],
+        "arm0_link_sh0": ["arm0_link_sh1", "arm0_link_hr0"],
+        "arm0_link_sh1": ["arm0_link_hr0", "arm0_link_el0"],
+        "arm0_link_hr0": ["arm0_link_el0", "arm0_link_el1"],
+        "arm0_link_el0": ["arm0_link_el1", "arm0_link_wr0"],
+        "arm0_link_el1": ["arm0_link_wr0", "arm0_link_wr1"],
+        "arm0_link_wr0": ["arm0_link_wr1", "arm0_link_fngr"],
+        "arm0_link_wr1": ["arm0_link_fngr"],
+      }
+    self_collision_buffer:
+      {
+        "arm0_link_sh0": 0.02,
+        "arm0_link_sh1": 0.02,
+        "arm0_link_hr0": 0.0,
+        "arm0_link_el0": 0.0,
+        "arm0_link_el1": 0.0,
+        "arm0_link_wr0": 0.0,
+        "arm0_link_wr1": 0.01,
+        "arm0_link_fngr": 0.01,
+      }
+    lock_joints: {"arm0_f1x": 0.0}
+    cspace:
+      joint_names: ["arm0_sh0", "arm0_sh1", "arm0_el0", "arm0_el1", "arm0_wr0", "arm0_wr1"]
+      retract_config: [0.0, -1.0, 2.0, 0.0, -1.5, 0.0]
+      null_space_weight: [1, 1, 1, 1, 1, 1]
+      cspace_distance_weight: [1, 1, 1, 1, 1, 1]
+      max_acceleration: 10.0
+      max_jerk: 500.0
