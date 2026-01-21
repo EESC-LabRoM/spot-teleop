@@ -1,25 +1,17 @@
-[submodule "zed_ws/src/isaac_ros_nitros"]
-	path = zed_ws/src/isaac_ros_nitros
-	url = https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_nitros.git
-
-[submodule "zed_ws/src/negotiated"]
-	path = zed_ws/src/negotiated
-	url = https://github.com/osrf/negotiated.git
-
 [submodule "zed_ws/src/zed-ros2-wrapper"]
 	path = zed_ws/src/zed-ros2-wrapper
 	url = https://github.com/stereolabs/zed-ros2-wrapper.git
 
-[submodule "zed_ws/src/isaac_ros_nvblox"]
-	path = zed_ws/src/isaac_ros_nvblox
+[submodule "isaac_ros_ws/src/isaac_ros_nvblox"]
+	path = isaac_ros_ws/src/isaac_ros_nvblox
 	url = https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_nvblox.git
 
 [submodule "zed_ws/src/zed-ros2-interfaces"]
 	path = zed_ws/src/zed-ros2-interfaces
 	url = https://github.com/stereolabs/zed-ros2-interfaces.git
 
-[submodule "zed_ws/src/isaac_ros_common"]
-	path = zed_ws/src/isaac_ros_common
+[submodule "isaac_ros_ws/src/isaac_ros_common"]
+	path = isaac_ros_ws/src/isaac_ros_common
 	url = https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_common.git
 
 [submodule "spot-ros2_ws/src/spot_ros2"]
@@ -57,3 +49,6 @@
 [submodule "isaac-sim_ws/spot_description"]
 	path = isaac-sim_ws/spot_description
 	url = https://github.com/murilo-vinicius04/spot-description.git
+[submodule "spot-ros2_ws/src/curobo"]
+	path = spot-ros2_ws/src/curobo
+	url = https://github.com/NVlabs/curobo.git
