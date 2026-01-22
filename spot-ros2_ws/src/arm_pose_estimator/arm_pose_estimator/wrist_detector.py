@@ -84,9 +84,20 @@ class WristDetector(Node):
         self.wrist_color = tuple(color_param)
         self.tag_size = self.get_parameter('apriltag_size').value
         
+        # Scale factor to compensate human arm vs Spot arm length
+        # Spot arm reach: ~984mm, Human arm (shoulder to wrist): ~650mm
+        self.declare_parameter('scale_factor', 984.0 / 650.0)
+        self.scale_factor = self.get_parameter('scale_factor').value
+        
         # Output frame for wrist pose (robot's body frame)
         self.declare_parameter('output_frame', 'body')
         self.output_frame = self.get_parameter('output_frame').value
+        
+        # Shoulder offset: offset from body to arm_link_sh0 in body frame (REP-103: X=forward, Y=left, Z=up)
+        # From URDF: arm_sh0 is at xyz="0.292 0.0 0.188" relative to body
+        # Set to [0,0,0] to disable offset, or [0.292, 0.0, 0.188] to reference from shoulder
+        self.declare_parameter('shoulder_offset', [0.292, 0.0, 0.188])
+        self.shoulder_offset = np.array(self.get_parameter('shoulder_offset').value)
         
         # Publisher for wrist pose in body frame
         self.wrist_pose_pub = self.create_publisher(PoseStamped, '/wrist_pose', 10)
@@ -171,6 +182,8 @@ class WristDetector(Node):
         self.get_logger().info(f'Jump threshold: {self.jump_threshold*100:.1f} cm/frame')
         self.get_logger().info(f'Wrist jump threshold: {self.wrist_jump_threshold*100:.1f} cm/frame')
         self.get_logger().info(f'Axis jump threshold: {np.degrees(self.axis_jump_threshold):.1f} deg/frame')
+        self.get_logger().info(f'Scale factor (human to Spot arm): {self.scale_factor:.3f}')
+        self.get_logger().info(f'Shoulder offset (body->sh0): X={self.shoulder_offset[0]:.3f}, Y={self.shoulder_offset[1]:.3f}, Z={self.shoulder_offset[2]:.3f}')
         
         # Store last comparison results for logging
         self.last_position_error = None
@@ -479,8 +492,9 @@ class WristDetector(Node):
                             axis_z = -np.cross(axis_x, up_preliminary)
                             axis_z = axis_z / (np.linalg.norm(axis_z) + 1e-6)  # Normalize
                             
-                            # Axis Y (Vertical): Cross product of Z and X (ensures orthogonality)
-                            axis_y = np.cross(axis_z, axis_x)
+                            # Axis Y (Vertical): Cross product of X and Z (ensures orthogonality)
+                            # cross(right, forward) = up (right-hand rule)
+                            axis_y = np.cross(axis_x, axis_z)
                             axis_y = axis_y / (np.linalg.norm(axis_y) + 1e-6)  # Normalize
                             
                             # ========== CALCULATE ORIGIN ALIGNED WITH RIGHT SHOULDER ==========
@@ -582,13 +596,20 @@ class WristDetector(Node):
                                     )
                                     wrist_in_body = self.filtered_wrist_in_body
                                     
+                                    # Apply scale factor to compensate human arm vs Spot arm length
+                                    wrist_scaled = wrist_in_body * self.scale_factor
+                                    
+                                    # Apply shoulder offset to reference from arm base instead of body
+                                    # This adds the offset from body to arm_link_sh0
+                                    wrist_final = wrist_scaled + self.shoulder_offset
+                                    
                                     # Publish PoseStamped
                                     pose_msg = PoseStamped()
                                     pose_msg.header.stamp = self.get_clock().now().to_msg()
                                     pose_msg.header.frame_id = self.output_frame
-                                    pose_msg.pose.position.x = float(wrist_in_body[0])  # forward
-                                    pose_msg.pose.position.y = float(wrist_in_body[1])  # left
-                                    pose_msg.pose.position.z = float(wrist_in_body[2])  # up
+                                    pose_msg.pose.position.x = float(wrist_final[0])  # forward
+                                    pose_msg.pose.position.y = float(wrist_final[1])  # left
+                                    pose_msg.pose.position.z = float(wrist_final[2])  # up
                                     # Orientation: identity (no wrist orientation yet)
                                     pose_msg.pose.orientation.w = 1.0
                                     pose_msg.pose.orientation.x = 0.0
@@ -602,9 +623,9 @@ class WristDetector(Node):
                                     tf_msg.header.stamp = pose_msg.header.stamp
                                     tf_msg.header.frame_id = self.output_frame  # "body"
                                     tf_msg.child_frame_id = "wrist_target"
-                                    tf_msg.transform.translation.x = float(wrist_in_body[0])
-                                    tf_msg.transform.translation.y = float(wrist_in_body[1])
-                                    tf_msg.transform.translation.z = float(wrist_in_body[2])
+                                    tf_msg.transform.translation.x = float(wrist_final[0])
+                                    tf_msg.transform.translation.y = float(wrist_final[1])
+                                    tf_msg.transform.translation.z = float(wrist_final[2])
                                     tf_msg.transform.rotation.w = 1.0
                                     tf_msg.transform.rotation.x = 0.0
                                     tf_msg.transform.rotation.y = 0.0
@@ -667,6 +688,9 @@ class WristDetector(Node):
                                     if self.frame_count % 30 == 0:
                                         self.get_logger().info(
                                             f'Wrist in body: X={wrist_in_body[0]:.3f}, Y={wrist_in_body[1]:.3f}, Z={wrist_in_body[2]:.3f} m'
+                                        )
+                                        self.get_logger().info(
+                                            f'Wrist SCALED (x{self.scale_factor:.2f}): X={wrist_scaled[0]:.3f}, Y={wrist_scaled[1]:.3f}, Z={wrist_scaled[2]:.3f} m'
                                         )
                                 
                                 # Log depth info periodically
