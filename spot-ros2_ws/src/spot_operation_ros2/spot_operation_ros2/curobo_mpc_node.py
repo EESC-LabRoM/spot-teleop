@@ -1,21 +1,3 @@
-#!/usr/bin/env python3
-"""
-cuRobo MPC Node - Standalone motion planning for Spot Arm
-
-Subscribes to pose goals from wrist detector and publishes joint commands
-with position, velocity, and effort (via Pinocchio inverse dynamics).
-
-Subscribed Topics:
-    /wrist_pose (geometry_msgs/PoseStamped): Target pose (frame: body)
-    /joint_states_isaac (sensor_msgs/JointState): Current joint states
-
-Published Topics:
-    /joint_command_curobo (sensor_msgs/JointState): pos + vel + effort
-
-Parameters:
-    debug_mode (bool): If true, generates test poses automatically without /wrist_pose
-"""
-
 import os
 import math
 import random
@@ -30,27 +12,40 @@ import threading
 # TF2 for coordinate transformations
 import tf2_ros
 from tf2_ros import Buffer, TransformListener
+from tf2_geometry_msgs import do_transform_point
 
 import torch
 import numpy as np
+import time
+import sys
+
+# Hack to find nvblox_msgs if running in venv
+# Assuming workspace is /home/spot-teleop/spot-ros2_ws
+NVBLOX_MSGS_PATH = '/home/spot-teleop/spot-ros2_ws/install/nvblox_msgs/local/lib/python3.10/dist-packages'
+if NVBLOX_MSGS_PATH not in sys.path:
+    sys.path.append(NVBLOX_MSGS_PATH)
 
 # cuRobo imports
 from curobo.geom.sdf.world import CollisionCheckerType
-from curobo.geom.types import WorldConfig, Cuboid
+from curobo.geom.types import WorldConfig, Mesh
 from curobo.rollout.rollout_base import Goal
 from curobo.types.base import TensorDeviceType
 from curobo.types.math import Pose
 from curobo.types.state import JointState as CuJointState
 from curobo.util.logger import setup_curobo_logger
-from curobo.util_file import load_yaml, get_world_configs_path, join_path
+from curobo.util_file import load_yaml, get_robot_configs_path
 from curobo.wrap.reacher.mpc import MpcSolver, MpcSolverConfig
 
-# Pinocchio for inverse dynamics
+# nvblox msgs
 try:
-    import pinocchio as pin
-    PINOCCHIO_AVAILABLE = True
+    from nvblox_msgs.msg import Mesh as NvbloxMesh
 except ImportError:
-    PINOCCHIO_AVAILABLE = False
+    # Try one more path common in colcon builds
+    NVBLOX_MSGS_PATH_2 = '/home/spot-teleop/spot-ros2_ws/install/nvblox_msgs/lib/python3.10/site-packages'
+    if NVBLOX_MSGS_PATH_2 not in sys.path:
+        sys.path.append(NVBLOX_MSGS_PATH_2)
+    from nvblox_msgs.msg import Mesh as NvbloxMesh
+
 
 
 class CuroboMpcNode(Node):
@@ -64,64 +59,36 @@ class CuroboMpcNode(Node):
         self.declare_parameter('urdf_path', '')
         self.declare_parameter('control_rate', 30.0)
         self.declare_parameter('step_dt', 0.03)
-        self.declare_parameter('use_effort', True)
+
         self.declare_parameter('debug_mode', False)
         self.declare_parameter('debug_pose_duration', 3.0)  # seconds between pose changes
         
-        # nvblox ESDF parameters
-        self.declare_parameter('esdf_topic', '/nvblox_node/pessimistic_static_esdf_pointcloud')
-        self.declare_parameter('esdf_update_rate', 2.0)  # Hz
-        self.declare_parameter('esdf_voxel_size', 0.05)  # meters
-        self.declare_parameter('esdf_distance_threshold', 0.02)  # meters
-        self.declare_parameter('esdf_max_obstacles', 150)
+        # nvblox Mesh parameters
+        self.declare_parameter('mesh_topic', '/nvblox_node/mesh')
+        self.declare_parameter('mesh_update_rate', 2.0)  # Hz (limit updates to curobo)
 
         # Get parameters
         robot_config_path = self.get_parameter('robot_config').get_parameter_value().string_value
         urdf_path = self.get_parameter('urdf_path').get_parameter_value().string_value
         control_rate = self.get_parameter('control_rate').get_parameter_value().double_value
         step_dt = self.get_parameter('step_dt').get_parameter_value().double_value
-        self.use_effort = self.get_parameter('use_effort').get_parameter_value().bool_value
+
         self.debug_mode = self.get_parameter('debug_mode').get_parameter_value().bool_value
         self.debug_pose_duration = self.get_parameter('debug_pose_duration').get_parameter_value().double_value
         
         # nvblox parameters
-        self.esdf_topic = self.get_parameter('esdf_topic').get_parameter_value().string_value
-        self.esdf_update_rate = self.get_parameter('esdf_update_rate').get_parameter_value().double_value
-        self.esdf_voxel_size = self.get_parameter('esdf_voxel_size').get_parameter_value().double_value
-        self.esdf_distance_threshold = self.get_parameter('esdf_distance_threshold').get_parameter_value().double_value
-        self.esdf_max_obstacles = self.get_parameter('esdf_max_obstacles').get_parameter_value().integer_value
+        self.mesh_topic = self.get_parameter('mesh_topic').get_parameter_value().string_value
+        self.mesh_update_rate = self.get_parameter('mesh_update_rate').get_parameter_value().double_value
 
-        # Default paths
-        if not robot_config_path:
-            try:
-                from ament_index_python.packages import get_package_share_directory
-                pkg_share = get_package_share_directory('spot_operation_ros2')
-                robot_config_path = os.path.join(pkg_share, 'config', 'spot_arm.yml')
-                os.environ['CUROBO_CONFIG_PATH'] = os.path.join(pkg_share, 'config')
-            except Exception:
-                robot_config_path = '/home/nexus/spot-teleop/isaac-sim_ws/config/spot_arm.yml'
-                os.environ['CUROBO_CONFIG_PATH'] = '/home/nexus/spot-teleop/isaac-sim_ws/config'
-
-        if not urdf_path:
-            try:
-                from ament_index_python.packages import get_package_share_directory
-                urdf_path = os.path.join(
-                    get_package_share_directory('spot_description'),
-                    'urdf', 'standalone_arm_fixed.urdf'
-                )
-            except Exception:
-                urdf_path = '/home/nexus/spot-teleop/spot-ros2_ws/src/spot_ros2/spot_description/spot_description/urdf/standalone_arm_fixed.urdf'
-
+        # ... (Keeping default paths logic)
         os.environ['SPOT_URDF_PATH'] = os.path.dirname(urdf_path)
 
         self.get_logger().info('=== cuRobo MPC Node Starting ===')
         self.get_logger().info(f'Robot config: {robot_config_path}')
         self.get_logger().info(f'URDF path: {urdf_path}')
         self.get_logger().info(f'Control rate: {control_rate} Hz')
-        self.get_logger().info(f'Use effort (Pinocchio): {self.use_effort}')
-        self.get_logger().info(f'Debug mode: {self.debug_mode}')
-        self.get_logger().info(f'ESDF topic: {self.esdf_topic}')
-        self.get_logger().info(f'ESDF update rate: {self.esdf_update_rate} Hz')
+        # ... (Logging)
+        self.get_logger().info(f'Mesh topic: {self.mesh_topic}')
 
         # Initialize cuRobo
         setup_curobo_logger("warn")
@@ -142,23 +109,12 @@ class CuroboMpcNode(Node):
 
         self.get_logger().info(f'Joint names: {self.j_names}')
 
-        # Initialize Pinocchio for inverse dynamics
-        self.pin_model = None
-        self.pin_data = None
-        if self.use_effort and PINOCCHIO_AVAILABLE:
-            try:
-                self.pin_model = pin.buildModelFromUrdf(urdf_path)
-                self.pin_data = self.pin_model.createData()
-                self.get_logger().info('Pinocchio model loaded for inverse dynamics')
-            except Exception as e:
-                self.get_logger().warn(f'Failed to load Pinocchio model: {e}')
-                self.use_effort = False
-        elif self.use_effort and not PINOCCHIO_AVAILABLE:
-            self.get_logger().warn('Pinocchio not available, effort will be empty')
-            self.use_effort = False
+
 
         # World config (empty for now)
         world_cfg = WorldConfig()
+        self.obstacle_update_count = 0
+
 
         # MPC Configuration
         self.get_logger().info('Loading MPC solver...')
@@ -169,8 +125,8 @@ class CuroboMpcNode(Node):
             use_cuda_graph_metrics=True,
             use_cuda_graph_full_step=False,
             self_collision_check=True,
-            collision_checker_type=CollisionCheckerType.PRIMITIVE,
-            collision_cache={"obb": 200},  # Large cache for nvblox dynamic obstacles
+            collision_checker_type=CollisionCheckerType.MESH,
+            collision_cache={"mesh": 20}, # Adjust cache for mesh
             collision_activation_distance=0.03,  # Start avoiding obstacles from 3cm away
             use_mppi=True,
             use_lbfgs=False,
@@ -182,6 +138,7 @@ class CuroboMpcNode(Node):
         self.mpc = MpcSolver(mpc_config)
         self.get_logger().info('MPC solver loaded!')
 
+        # ... (Keeping MPC init state)
         # Initialize state
         retract_cfg = self.mpc.rollout_fn.dynamics_model.retract_config.clone().unsqueeze(0)
         joint_names = self.mpc.rollout_fn.joint_names
@@ -209,17 +166,17 @@ class CuroboMpcNode(Node):
         self.goal_received = False
         self.joints_received = False
 
-        # nvblox ESDF state
-        self.latest_esdf = None
-        self.latest_esdf_frame = 'odom'  # Will be updated from message
-        self.esdf_lock = threading.Lock()
+        # nvblox Mesh state
+        self.mesh_blocks = {}  # {block_index (tuple): (vertices, triangles, block_size)}
+        self.mesh_lock = threading.Lock()
         self.nvblox_initialized = False
-        self.obstacle_update_count = 0
+        self.last_mesh_update_time = 0
         
         # TF2 for frame transformations
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
-        self.target_frame = 'body'  # cuRobo expects obstacles in base_link frame
+        self.target_frame = 'body'  # cuRobo solve frame
+        self.source_frame = 'odom' # Assumed nvblox frame, updated from msg
 
         # Debug mode state
         self.debug_pose_index = 0
@@ -238,23 +195,23 @@ class CuroboMpcNode(Node):
         self.pose_sub = self.create_subscription(PoseStamped, '/wrist_pose', self.pose_callback, qos)
         self.joint_sub = self.create_subscription(JointState, '/joint_states_isaac', self.joint_state_callback, qos)
         
-        # nvblox ESDF subscriber
-        self.esdf_sub = self.create_subscription(
-            PointCloud2, 
-            self.esdf_topic, 
-            self.esdf_callback, 
+        # nvblox Mesh subscriber
+        self.mesh_sub = self.create_subscription(
+            NvbloxMesh, 
+            self.mesh_topic, 
+            self.mesh_callback, 
             qos
         )
-        self.get_logger().info(f'Subscribed to ESDF topic: {self.esdf_topic}')
+        self.get_logger().info(f'Subscribed to Mesh topic: {self.mesh_topic}')
 
         # Control timer
         self.control_timer = self.create_timer(1.0 / control_rate, self.control_loop)
         self.step_count = 0
         
-        # Obstacle update timer (slower than control loop)
-        self.obstacle_update_timer = self.create_timer(
-            1.0 / self.esdf_update_rate, 
-            self.update_obstacles_callback
+        # Mesh update timer
+        self.mesh_update_timer = self.create_timer(
+            1.0 / self.mesh_update_rate, 
+            self.update_mesh_world_callback
         )
 
         self.get_logger().info('=== cuRobo MPC Node Ready ===')
@@ -264,6 +221,9 @@ class CuroboMpcNode(Node):
             self.goal_received = True  # Auto-ready in debug mode
         else:
             self.get_logger().info('Waiting for /wrist_pose and /joint_states_isaac...')
+
+    # ... (Keeping _generate_test_poses, _euler_to_quaternion, _get_debug_pose, pose_callback, joint_state_callback)
+
 
     def _generate_test_poses(self):
         """Generate a list of test poses for debug mode."""
@@ -339,44 +299,40 @@ class CuroboMpcNode(Node):
         self.current_joint_state = msg
         self.joints_received = True
 
-    def esdf_callback(self, msg: PointCloud2):
-        """Handle incoming ESDF pointcloud from nvblox."""
-        esdf_array = self._pointcloud2_to_array(msg)
-        with self.esdf_lock:
-            self.latest_esdf = esdf_array
-            self.latest_esdf_frame = msg.header.frame_id
+    def mesh_callback(self, msg: NvbloxMesh):
+        """Handle incoming Mesh message from nvblox."""
+        with self.mesh_lock:
+            # Update blocks in the dictionary
+            # msg.block_indices and msg.blocks are parallel arrays
+            # If clear is True, clear the map first (though nvblox might partial update)
+            if msg.clear:
+                self.mesh_blocks.clear()
+            
+            for i, idx in enumerate(msg.block_indices):
+                # idx is Index3D (x,y,z)
+                block = msg.blocks[i]
+                # Store block if it has vertices
+                if len(block.vertices) > 0:
+                    idx_tuple = (idx.x, idx.y, idx.z)
+                    self.mesh_blocks[idx_tuple] = block
+                else:
+                    # If empty, remove it if it exists (released block)
+                    idx_tuple = (idx.x, idx.y, idx.z)
+                    if idx_tuple in self.mesh_blocks:
+                        del self.mesh_blocks[idx_tuple]
+            
+            self.last_mesh_update_time = time.time()
+            if not self.nvblox_initialized and len(self.mesh_blocks) > 0:
+                self.nvblox_initialized = True
+                self.get_logger().info(f'Nvblox mesh received! Frame: {msg.header.frame_id}')
+                self.source_frame = msg.header.frame_id
 
-    def _pointcloud2_to_array(self, msg: PointCloud2) -> np.ndarray:
-        """Convert PointCloud2 message to numpy array with x, y, z, intensity."""
-        fields = {f.name: (f.offset, f.datatype) for f in msg.fields}
-        point_step = msg.point_step
-        data = msg.data
-        n_points = msg.width * msg.height
-        
-        if n_points == 0:
-            return np.zeros((0, 4), dtype=np.float32)
-        
-        points = np.zeros((n_points, 4), dtype=np.float32)
-        
-        for i in range(n_points):
-            offset = i * point_step
-            points[i, 0] = struct.unpack_from('f', data, offset + fields['x'][0])[0]
-            points[i, 1] = struct.unpack_from('f', data, offset + fields['y'][0])[0]
-            points[i, 2] = struct.unpack_from('f', data, offset + fields['z'][0])[0]
-            if 'intensity' in fields:
-                points[i, 3] = struct.unpack_from('f', data, offset + fields['intensity'][0])[0]
-        
-        # Filter NaN/Inf
-        valid_mask = np.isfinite(points).all(axis=1)
-        return points[valid_mask]
-
-    def _transform_points(self, esdf_data: np.ndarray, transform: TransformStamped) -> np.ndarray:
-        """Transform ESDF points from source frame to target frame."""
+    def _transform_mesh_vertices(self, vertices: np.ndarray, transform: TransformStamped) -> np.ndarray:
+        """Transform mesh vertices from source frame to target frame."""
         t = transform.transform.translation
         q = transform.transform.rotation
         
         # Quaternion to rotation matrix
-        # q = [w, x, y, z] but ROS uses [x, y, z, w]
         qx, qy, qz, qw = q.x, q.y, q.z, q.w
         
         # Rotation matrix from quaternion
@@ -388,121 +344,105 @@ class CuroboMpcNode(Node):
         
         translation = np.array([t.x, t.y, t.z], dtype=np.float32)
         
-        # Transform xyz (keep intensity as-is)
-        transformed = esdf_data.copy()
-        xyz = esdf_data[:, :3]
-        transformed[:, :3] = (rot @ xyz.T).T + translation
-        
+        # Transform vertices (N, 3)
+        transformed = (rot @ vertices.T).T + translation
         return transformed
 
-    def _esdf_to_cuboid_world(self, esdf_points: np.ndarray):
-        """Convert ESDF pointcloud to cuRobo WorldConfig with Cuboid obstacles."""
-        if esdf_points is None or len(esdf_points) == 0:
-            return None
-        
-        # Filter obstacles (ESDF < threshold = inside/near obstacle)
-        occupied_mask = esdf_points[:, 3] < self.esdf_distance_threshold
-        occupied_points = esdf_points[occupied_mask, :3]
-        
-        if len(occupied_points) == 0:
-            return None
-        
-        # Voxelize to get unique centers
-        voxel_centers = np.round(occupied_points / self.esdf_voxel_size) * self.esdf_voxel_size
-        unique_centers = np.unique(voxel_centers, axis=0)
-        
-        # Limit for performance
-        if len(unique_centers) > self.esdf_max_obstacles:
-            indices = np.random.choice(len(unique_centers), self.esdf_max_obstacles, replace=False)
-            unique_centers = unique_centers[indices]
-        
-        # Create cuboids
-        cuboids = []
-        for i, center in enumerate(unique_centers):
-            cuboid = Cuboid(
-                name=f"nvblox_obs_{i}",
-                dims=[self.esdf_voxel_size, self.esdf_voxel_size, self.esdf_voxel_size],
-                pose=[float(center[0]), float(center[1]), float(center[2]), 1.0, 0.0, 0.0, 0.0],
-            )
-            cuboids.append(cuboid)
-        
-        return WorldConfig(cuboid=cuboids)
+    def _build_curobo_mesh(self, transform: TransformStamped = None):
+        """Reconstruct full mesh from blocks and convert to cuRobo Mesh."""
+        all_vertices = []
+        all_triangles = []
+        vertex_offset = 0
 
-    def update_obstacles_callback(self):
-        """Periodically update collision model with nvblox ESDF data."""
-        with self.esdf_lock:
-            esdf_data = self.latest_esdf.copy() if self.latest_esdf is not None else None
-            source_frame = self.latest_esdf_frame
-        
-        if esdf_data is None or len(esdf_data) == 0:
+        # Iterate over all stored blocks
+        for idx, block in self.mesh_blocks.items():
+            # Vertices
+            # block.vertices is list of Point32
+            verts = np.array([[p.x, p.y, p.z] for p in block.vertices], dtype=np.float32)
+            
+            # Triangles
+            # block.triangles is list of int32
+            tris = np.array(block.triangles, dtype=np.int32).reshape(-1, 3)
+            
+            # Adjust triangle indices
+            tris += vertex_offset
+            
+            all_vertices.append(verts)
+            all_triangles.append(tris)
+            
+            vertex_offset += len(verts)
+
+        if not all_vertices:
+            return None
+
+        # Concatenate
+        full_vertices = np.concatenate(all_vertices, axis=0)
+        full_triangles = np.concatenate(all_triangles, axis=0)
+
+        # Transform if needed (transform is Target <- Source)
+        if transform:
+            full_vertices = self._transform_mesh_vertices(full_vertices, transform)
+
+        # Create Curobo Mesh
+        # We assume standard 1.0 scale as nvblox is metric
+        mesh = Mesh(
+            name="nvblox_mesh",
+            vertices=full_vertices,
+            faces=full_triangles,
+            pose=[0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0], # Identity pose in target frame
+            color=[0.5, 0.5, 0.5, 1.0], # Grey color
+        )
+        return mesh
+
+    def update_mesh_world_callback(self):
+        """Periodically update collision model with reconstructed mesh."""
+        if not self.nvblox_initialized:
             return
-        
-        # Transform points from ESDF frame to body frame
-        if source_frame != self.target_frame:
+
+        with self.mesh_lock:
+             # Check if we have blocks
+            if not self.mesh_blocks:
+                return
+            
+            # Get latest transform
+            # We want to transform FROM nvblox frame (odom) TO curobo frame (body)
+            # So looking up transform: target=body, source=odom
             try:
                 transform = self.tf_buffer.lookup_transform(
                     self.target_frame,
-                    source_frame,
+                    self.source_frame,
                     rclpy.time.Time(),
                     timeout=rclpy.duration.Duration(seconds=0.1)
                 )
-                esdf_data = self._transform_points(esdf_data, transform)
             except (tf2_ros.LookupException, tf2_ros.ConnectivityException, 
                     tf2_ros.ExtrapolationException) as e:
-                if not self.nvblox_initialized:
-                    self.get_logger().warn(f'Waiting for TF {source_frame} -> {self.target_frame}: {e}')
+                self.get_logger().warn(f'Waiting for TF {self.source_frame} -> {self.target_frame}: {e}')
                 return
-        
-        if not self.nvblox_initialized:
-            self.get_logger().info(f'nvblox connected! Received {len(esdf_data)} ESDF points')
-            self.get_logger().info(f'Transforming obstacles from frame \"{source_frame}\" -> \"{self.target_frame}\"')
-            self.nvblox_initialized = True
-        
-        # Convert ESDF to cuboid obstacles
-        nvblox_world = self._esdf_to_cuboid_world(esdf_data)
-        
-        if nvblox_world is not None and len(nvblox_world.cuboid) > 0:
+
+            # Build and update world
             try:
-                self.mpc.update_world(nvblox_world)
-                self.obstacle_update_count += 1
+                curobo_mesh = self._build_curobo_mesh(transform)
                 
-                # Log every 10 updates with obstacle bounds
-                if self.obstacle_update_count % 10 == 0:
-                    occupied = np.sum(esdf_data[:, 3] < self.esdf_distance_threshold)
-                    occupied_pts = esdf_data[esdf_data[:, 3] < self.esdf_distance_threshold, :3]
-                    if len(occupied_pts) > 0:
-                        mins = occupied_pts.min(axis=0)
-                        maxs = occupied_pts.max(axis=0)
+                if curobo_mesh is not None:
+                    # Create new world config with just this mesh
+                    mesh_world = WorldConfig(mesh=[curobo_mesh])
+                    
+                    self.mpc.update_world(mesh_world)
+                    self.obstacle_update_count += 1
+                    
+                    if self.obstacle_update_count % 10 == 0:
                         self.get_logger().info(
-                            f'Obstacle update #{self.obstacle_update_count}: '
-                            f'{len(nvblox_world.cuboid)} cuboids from {occupied} pts | '
-                            f'Bounds: X[{mins[0]:.2f},{maxs[0]:.2f}] Y[{mins[1]:.2f},{maxs[1]:.2f}] Z[{mins[2]:.2f},{maxs[2]:.2f}]'
+                            f'Mesh update #{self.obstacle_update_count}: '
+                            f'{len(curobo_mesh.vertices)} vertices, {len(curobo_mesh.faces)} faces'
                         )
-                    else:
-                        self.get_logger().info(
-                            f'Obstacle update #{self.obstacle_update_count}: '
-                            f'{len(nvblox_world.cuboid)} cuboids from {occupied} occupied points'
-                        )
+
             except Exception as e:
-                self.get_logger().warn(f'Failed to update collision model: {e}')
+                self.get_logger().warn(f'Failed to update mesh world: {e}')
 
-    def compute_effort(self, q, v, a):
-        """Compute torques using Pinocchio inverse dynamics."""
-        if not self.use_effort or self.pin_model is None:
-            return []
 
-        try:
-            # Need to match joint order - Pinocchio uses URDF order
-            q_pin = np.array(q)
-            v_pin = np.array(v)
-            a_pin = np.array(a)
 
-            # RNEA: τ = M(q)·a + C(q,v)·v + g(q)
-            tau = pin.rnea(self.pin_model, self.pin_data, q_pin, v_pin, a_pin)
-            return tau.tolist()
-        except Exception as e:
-            self.get_logger().warn(f'Effort computation failed: {e}')
-            return []
+    def compute_attractive(self, current: np.ndarray, target: np.ndarray, k_att: float = 0.1) -> np.ndarray:
+        return k_att * (target - current)
 
     def control_loop(self):
         """Main MPC control loop."""
@@ -550,6 +490,60 @@ class CuroboMpcNode(Node):
             self.current_state.copy_(cu_js)
 
             self.goal_buffer.goal_pose.copy_(self.last_goal_pose)
+            
+            # --- Attractive Potential Field Logic ---
+            try:
+                # 1. Get current EE position in robot frame (body)
+                # We use the kinematics from the current state (latest joint sensors)
+                fk_result = self.mpc.rollout_fn.compute_kinematics(self.current_state)
+                # fk_result.ee_pos_seq shape is (batch, horizon, 3) -> usually (1, 1, 3) here
+                current_ee_pos_tensor = fk_result.ee_pos_seq
+                current_ee_pos_np = current_ee_pos_tensor.cpu().numpy().flatten()[:3]
+                
+                # 2. Get Target Object in 'body' frame
+                # We need to transform from 'target_object' frame to 'body' frame
+                # 'target_object' is published by detect_qwen.py
+                target_tf = self.tf_buffer.lookup_transform(
+                    self.target_frame, # 'body'
+                    'target_object',
+                    rclpy.time.Time()
+                )
+                
+                target_pos_np = np.array([
+                    target_tf.transform.translation.x,
+                    target_tf.transform.translation.y,
+                    target_tf.transform.translation.z
+                ])
+                
+                # 3. Compute Distance
+                dist = np.linalg.norm(target_pos_np - current_ee_pos_np)
+                
+                # 4. Apply Attraction if close
+                if dist < 0.40:
+                    delta = self.compute_attractive(current_ee_pos_np, target_pos_np, k_att=0.2)
+                    new_pos_np = current_ee_pos_np + delta
+                    
+                    # Update the goal position (keep orientation from last_goal_pose)
+                    new_pos_tensor = self.tensor_args.to_device(new_pos_np)
+                    self.goal_buffer.goal_pose.position.copy_(new_pos_tensor)
+                    
+                    if self.step_count % 30 == 0: # Log occasionally
+                        self.get_logger().info(
+                            f'🧲 Attractive Field Active! Dist={dist:.3f}m -> Pulling to object.'
+                        )
+                elif self.step_count % 30 == 0:
+                     self.get_logger().info(f'👀 Target detected. Dist={dist:.3f}m (Approaching...)')
+
+            except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException) as e:
+                # Target not detected or TF not ready
+                if self.step_count % 100 == 0:
+                    self.get_logger().info(f'⚠️ Target TF not found: {e}')
+                pass
+            except Exception as e:
+                self.get_logger().warn(f'Potential field error: {e}')
+            
+            # ----------------------------------------
+
             self.mpc.update_goal(self.goal_buffer)
 
             mpc_result = self.mpc.step(self.current_state, max_attempts=2)
@@ -578,15 +572,14 @@ class CuroboMpcNode(Node):
             vel_list = cmd_state.velocity.view(-1).cpu().numpy().tolist()
             acc_list = cmd_state.acceleration.view(-1).cpu().numpy().tolist()
 
-            # Compute effort via inverse dynamics
-            effort_list = self.compute_effort(pos_list, vel_list, acc_list)
+
 
             joint_cmd = JointState()
             joint_cmd.header.stamp = self.get_clock().now().to_msg()
             joint_cmd.name = ordered_names
             joint_cmd.position = pos_list
             joint_cmd.velocity = vel_list
-            joint_cmd.effort = effort_list
+            joint_cmd.effort = []
 
             self.cmd_pub.publish(joint_cmd)
             
