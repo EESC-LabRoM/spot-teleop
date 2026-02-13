@@ -39,6 +39,7 @@ setup(
             'grasp_valve = spot_operation_ros2.grasp_valve:main',
             'gripper_controller = spot_operation_ros2.gripper_controller:main',
             'curobo_mpc_node = spot_operation_ros2.curobo_mpc_node:main',
+            'detect_qwen = spot_operation_ros2.detect_qwen:main',
         ],
     },
 )

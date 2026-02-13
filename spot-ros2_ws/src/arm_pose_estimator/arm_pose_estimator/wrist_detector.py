@@ -136,11 +136,11 @@ class WristDetector(Node):
         self.alpha_wrist = self.get_parameter('filter_alpha_wrist').value
         
         # Jump filter parameters (max allowed movement per frame in meters)
-        self.declare_parameter('jump_threshold', 0.05)  # 5cm max jump per frame
+        self.declare_parameter('jump_threshold', 0.15)  # 15cm max jump per frame
         self.jump_threshold = self.get_parameter('jump_threshold').value
         
         # Wrist jump filter (higher threshold since wrist moves faster)
-        self.declare_parameter('wrist_jump_threshold', 0.15)  # 15cm max jump per frame
+        self.declare_parameter('wrist_jump_threshold', 0.40)  # 40cm max jump per frame
         self.wrist_jump_threshold = self.get_parameter('wrist_jump_threshold').value
         
         # Angular jump filter (max allowed rotation per frame in degrees)

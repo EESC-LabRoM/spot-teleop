@@ -31,7 +31,7 @@ def generate_launch_description():
 
     use_effort_arg = DeclareLaunchArgument(
         'use_effort',
-        default_value='true',
+        default_value='false',
         description='Use Pinocchio for effort computation'
     )
 
@@ -60,6 +60,16 @@ def generate_launch_description():
         description='Obstacle update rate from ESDF in Hz'
     )
 
+    use_sim_time_arg = DeclareLaunchArgument(
+        'use_sim_time',
+        default_value='false',
+        description='Use simulation (Gazebo/Isaac) clock if true'
+    )
+
+    # Config paths
+    spot_config_dir = get_package_share_directory('spot_operation_ros2')
+    robot_config_path = os.path.join(spot_config_dir, 'config', 'spot_arm.yml')
+
     # cuRobo MPC Node - Must use venv Python because cuRobo is installed there
     curobo_mpc_process = ExecuteProcess(
         cmd=[
@@ -73,6 +83,9 @@ def generate_launch_description():
             '-p', ['debug_pose_duration:=', LaunchConfiguration('debug_pose_duration')],
             '-p', ['esdf_topic:=', LaunchConfiguration('esdf_topic')],
             '-p', ['esdf_update_rate:=', LaunchConfiguration('esdf_update_rate')],
+            '-p', f'robot_config:={robot_config_path}',
+            '-p', f'urdf_path:={xacro_file}',
+            '-p', ['use_sim_time:=', LaunchConfiguration('use_sim_time')],
         ],
         name='curobo_mpc_node',
         output='screen',
@@ -80,6 +93,7 @@ def generate_launch_description():
             'PYTHONPATH': '/opt/ros/humble/lib/python3.10/site-packages:/opt/ros/humble/local/lib/python3.10/dist-packages',
             'PATH': '/usr/local/cuda-12.8/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
             'CUDA_HOME': '/usr/local/cuda-12.8',
+            'CUROBO_CONFIG_PATH': os.path.join(spot_config_dir, 'config'),
         }
     )
 
@@ -89,7 +103,7 @@ def generate_launch_description():
         executable='isaac_publisher',
         name='isaac_publisher',
         output='screen',
-        parameters=[{'teleop': True}]
+        parameters=[{'teleop': True, 'use_sim_time': LaunchConfiguration('use_sim_time')}]
     )
 
     # Joint State Mapper
@@ -97,7 +111,8 @@ def generate_launch_description():
         package='spot_operation_ros2',
         executable='joint_state_mapper',
         name='joint_state_mapper',
-        output='screen'
+        output='screen',
+        parameters=[{'use_sim_time': LaunchConfiguration('use_sim_time')}]
     )
 
     # Joint State Remapper - converts arm0_* to arm_* for robot_state_publisher
@@ -105,7 +120,8 @@ def generate_launch_description():
         package='spot_operation_ros2',
         executable='joint_state_remapper',
         name='joint_state_remapper',
-        output='screen'
+        output='screen',
+        parameters=[{'use_sim_time': LaunchConfiguration('use_sim_time')}]
     )
 
     # Robot State Publisher - publishes TF from URDF + joint states
@@ -122,6 +138,7 @@ def generate_launch_description():
                 value_type=str
             ),
             'publish_frequency': 50.0,
+            'use_sim_time': LaunchConfiguration('use_sim_time')
         }],
         remappings=[
             ('/joint_states', '/joint_states_rsp'),
@@ -135,7 +152,8 @@ def generate_launch_description():
         executable='static_transform_publisher',
         name='base_to_body_tf',
         arguments=['0', '0', '0', '0', '0', '0', 'base', 'body'],
-        output='screen'
+        output='screen',
+        parameters=[{'use_sim_time': LaunchConfiguration('use_sim_time')}]
     )
 
     return LaunchDescription([
@@ -145,6 +163,7 @@ def generate_launch_description():
         debug_pose_duration_arg,
         esdf_topic_arg,
         esdf_update_rate_arg,
+        use_sim_time_arg,
         base_to_body_tf,
         curobo_mpc_process,
         isaac_publisher_node,

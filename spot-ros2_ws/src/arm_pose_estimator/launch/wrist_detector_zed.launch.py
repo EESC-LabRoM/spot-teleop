@@ -60,6 +60,12 @@ def generate_launch_description():
         description='AprilTag size in meters (default 10cm)'
     )
 
+    use_sim_time_arg = DeclareLaunchArgument(
+        'use_sim_time',
+        default_value='false',
+        description='Use simulation (Gazebo/Isaac) clock if true'
+    )
+
     # Wrist Detector Node
     wrist_detector_node = Node(
         package='arm_pose_estimator',
@@ -74,6 +80,7 @@ def generate_launch_description():
             'wrist_circle_radius': LaunchConfiguration('radius'),
             'wrist_circle_color': [0, 255, 0],  # Green in BGR
             'apriltag_size': LaunchConfiguration('tag_size'),
+            'use_sim_time': LaunchConfiguration('use_sim_time'),
         }],
         emulate_tty=True,
     )
@@ -85,5 +92,6 @@ def generate_launch_description():
         show_all_arg,
         radius_arg,
         apriltag_size_arg,
+        use_sim_time_arg,
         wrist_detector_node,
     ])
