@@ -101,7 +101,7 @@ RUN echo 'source /opt/ros/humble/setup.bash' >> /root/.bashrc && \
     echo 'source /home/spot-teleop/spot-ros2_ws/install/setup.bash' >> /root/.bashrc
 
 # Install Python packages
-RUN python3 -m pip install bosdyn-client==5.0.1.2 bosdyn-mission==5.0.1.2 bosdyn-choreography-client==5.0.1.2 bosdyn-orbit==5.0.1.2 mediapipe ultralytics
+RUN python3 -m pip install bosdyn-client==5.0.1.2 bosdyn-mission==5.0.1.2 bosdyn-choreography-client==5.0.1.2 bosdyn-orbit==5.0.1.2 mediapipe==0.10.21 ultralytics
 
 # Set default command
 CMD ["/bin/bash"]
