@@ -14,6 +14,7 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, ExecuteProcess
 from launch.substitutions import LaunchConfiguration, Command
 from launch_ros.actions import Node
+from launch.conditions import IfCondition, UnlessCondition
 from launch_ros.parameter_descriptions import ParameterValue
 
 
@@ -66,11 +67,37 @@ def generate_launch_description():
         description='Use simulation (Gazebo/Isaac) clock if true'
     )
 
+    use_sim_arg = DeclareLaunchArgument(
+        'use_sim',
+        default_value='true',
+        description='True for sim (arm0_ joint prefix), False for real robot (arm_ joint prefix)'
+    )
+
+    use_nvblox_arg = DeclareLaunchArgument(
+        'use_nvblox',
+        default_value='true',
+        description='Enable nvblox mesh subscription for obstacle avoidance'
+    )
+
+    static_mesh_arg = DeclareLaunchArgument(
+        'static_mesh',
+        default_value='false',
+        description='If true, freeze mesh after first update. If false, update continuously.'
+    )
+
+    mesh_topic_arg = DeclareLaunchArgument(
+        'mesh_topic',
+        default_value='/nvblox_node/mesh',
+        description='nvblox mesh topic'
+    )
+
     # Config paths
     spot_config_dir = get_package_share_directory('spot_operation_ros2')
     robot_config_path = os.path.join(spot_config_dir, 'config', 'spot_arm.yml')
 
     # cuRobo MPC Node - Must use venv Python because cuRobo is installed there
+    use_sim = LaunchConfiguration('use_sim')
+    
     curobo_mpc_process = ExecuteProcess(
         cmd=[
             '/home/spot-teleop/spot-ros2_ws/curobo_venv/bin/python',
@@ -86,6 +113,10 @@ def generate_launch_description():
             '-p', f'robot_config:={robot_config_path}',
             '-p', f'urdf_path:={xacro_file}',
             '-p', ['use_sim_time:=', LaunchConfiguration('use_sim_time')],
+            '-p', ['use_sim:=', use_sim],
+            '-p', ['use_nvblox:=', LaunchConfiguration('use_nvblox')],
+            '-p', ['static_mesh:=', LaunchConfiguration('static_mesh')],
+            '-p', ['mesh_topic:=', LaunchConfiguration('mesh_topic')],
         ],
         name='curobo_mpc_node',
         output='screen',
@@ -103,7 +134,8 @@ def generate_launch_description():
         executable='isaac_publisher',
         name='isaac_publisher',
         output='screen',
-        parameters=[{'teleop': True, 'use_sim_time': LaunchConfiguration('use_sim_time')}]
+        parameters=[{'teleop': True, 'use_sim_time': LaunchConfiguration('use_sim_time')}],
+        condition=IfCondition(use_sim)
     )
 
     # Joint State Mapper
@@ -112,7 +144,8 @@ def generate_launch_description():
         executable='joint_state_mapper',
         name='joint_state_mapper',
         output='screen',
-        parameters=[{'use_sim_time': LaunchConfiguration('use_sim_time')}]
+        parameters=[{'use_sim_time': LaunchConfiguration('use_sim_time')}],
+        condition=IfCondition(use_sim)
     )
 
     # Joint State Remapper - converts arm0_* to arm_* for robot_state_publisher
@@ -121,7 +154,8 @@ def generate_launch_description():
         executable='joint_state_remapper',
         name='joint_state_remapper',
         output='screen',
-        parameters=[{'use_sim_time': LaunchConfiguration('use_sim_time')}]
+        parameters=[{'use_sim_time': LaunchConfiguration('use_sim_time')}],
+        condition=IfCondition(use_sim)
     )
 
     # Robot State Publisher - publishes TF from URDF + joint states
@@ -142,7 +176,8 @@ def generate_launch_description():
         }],
         remappings=[
             ('/joint_states', '/joint_states_rsp'),
-        ]
+        ],
+        condition=IfCondition(use_sim)
     )
 
     # Static TF: base -> body (simulation uses 'base', cuRobo expects 'body')
@@ -164,6 +199,10 @@ def generate_launch_description():
         esdf_topic_arg,
         esdf_update_rate_arg,
         use_sim_time_arg,
+        use_sim_arg,
+        use_nvblox_arg,
+        static_mesh_arg,
+        mesh_topic_arg,
         base_to_body_tf,
         curobo_mpc_process,
         isaac_publisher_node,
@@ -171,3 +210,4 @@ def generate_launch_description():
         joint_state_remapper_node,
         robot_state_publisher_node,
     ])
+

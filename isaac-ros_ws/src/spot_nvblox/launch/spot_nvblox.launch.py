@@ -16,14 +16,16 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Launch file para nvblox com 3 câmeras do Boston Dynamics Spot.
-Câmeras: frontleft, frontright, hand
+Launch file para nvblox com 2 câmeras do Boston Dynamics Spot.
+Câmeras: frontleft, frontright
 """
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
-from launch.substitutions import LaunchConfiguration
-from launch_ros.actions import Node
+from launch.substitutions import LaunchConfiguration, PythonExpression
+from launch_ros.actions import Node, ComposableNodeContainer
+from launch_ros.descriptions import ComposableNode
+from launch.conditions import UnlessCondition
 import os
 from ament_index_python.packages import get_package_share_directory
 
@@ -43,33 +45,46 @@ def generate_launch_description():
         description='Global frame for nvblox'
     )
 
+    sim_arg = DeclareLaunchArgument(
+        'sim',
+        default_value='true',
+        description='Whether to use simulation'
+    )
+
+    # Launch Configurations
+    sim = LaunchConfiguration('sim')
+    use_sim_time = LaunchConfiguration('use_sim_time')
+
     # Remappings das câmeras do Spot para o formato do nvblox
-    # Spot publica: /{camera}/rgb, /{camera}/depth, /{camera}/camera_info
-    # nvblox espera: camera_{i}/color/image, camera_{i}/depth/image, camera_{i}/*/camera_info
-    remappings = [
-        # Câmera 0 - frontleft
-        ('camera_0/depth/image', '/frontleft/depth'),
-        ('camera_0/depth/camera_info', '/frontleft/camera_info'),
-        ('camera_0/color/image', '/frontleft/rgb'),
-        ('camera_0/color/camera_info', '/frontleft/camera_info'),
-        
-        # Câmera 1 - frontright
-        ('camera_1/depth/image', '/frontright/depth'),
-        ('camera_1/depth/camera_info', '/frontright/camera_info'),
-        ('camera_1/color/image', '/frontright/rgb'),
-        ('camera_1/color/camera_info', '/frontright/camera_info'),
-        
-        # Câmera 2 - hand
-        ('camera_2/depth/image', '/hand/depth'),
-        ('camera_2/depth/camera_info', '/hand/camera_info'),
-        ('camera_2/color/image', '/hand/rgb'),
-        ('camera_2/color/camera_info', '/hand/camera_info'),
-    ]
+    # Sim: /{camera}/rgb, /{camera}/depth, /{camera}/camera_info
+    # Real: /camera/{camera}/image, /depth/{camera}/image, /camera/{camera}/camera_info
+    camera_names = ['frontleft', 'frontright']
+    remappings = []
+    for i, cam in enumerate(camera_names):
+        # Simulation topics
+        sim_depth = f'/{cam}/depth'
+        sim_rgb = f'/{cam}/rgb'
+        sim_info = f'/{cam}/camera_info'
+
+        # Real topics (from user ros2 topic list)
+        real_depth = f'/depth_registered/{cam}/image'
+        real_rgb = f'/camera/{cam}/image_rgb' # Converted to RGB8
+        real_rgb_info = f'/camera/{cam}/camera_info'
+        real_depth_info = f'/depth_registered/{cam}/camera_info'
+
+
+
+        remappings.extend([
+            (f'camera_{i}/depth/image', PythonExpression([f"'{sim_depth}' if '", sim, "' == 'true' else '", real_depth, "'"])),
+            (f'camera_{i}/depth/camera_info', PythonExpression([f"'{sim_info}' if '", sim, "' == 'true' else '", real_depth_info, "'"])),
+            (f'camera_{i}/color/image', PythonExpression([f"'{sim_rgb}' if '", sim, "' == 'true' else '", real_rgb, "'"])),
+            (f'camera_{i}/color/camera_info', PythonExpression([f"'{sim_info}' if '", sim, "' == 'true' else '", real_rgb_info, "'"]))
+        ])
 
     # Parâmetros do nvblox - MODO ALTA PRECISÃO (SAFE)
     nvblox_params = {
         # Número de câmeras
-        'num_cameras': 3,
+        'num_cameras': 2,
         
         'global_frame': LaunchConfiguration('global_frame'),
         'use_tf_transforms': True,
@@ -102,7 +117,7 @@ def generate_launch_description():
         
         # Limpeza
         'map_clearing_radius_m': 5.0,  # Limpa o que ficar muito longe pra liberar RAM
-        'map_clearing_frame_id': 'base',
+        'map_clearing_frame_id': 'body',
         
         # Visualização
         'layer_visualization_exclusion_height_m': 100.0,
@@ -136,8 +151,31 @@ def generate_launch_description():
         remappings=remappings,
     )
 
+
+
+    # RGB Conversion Nodes (BGR8 -> RGB8) for real cameras
+    rgb_converters = []
+    for cam in camera_names:
+        rgb_converters.append(
+            Node(
+                package='spot_nvblox',
+                executable='republish_rgb.py',
+                name=f'rgb_converter_{cam}',
+                remappings=[
+                    ('image_in', f'/camera/{cam}/image'),
+                    ('image_out', f'/camera/{cam}/image_rgb'),
+                ],
+                parameters=[{'use_sim_time': use_sim_time}],
+                condition=UnlessCondition(sim),
+                output='screen'
+            )
+        )
+
     return LaunchDescription([
         use_sim_time_arg,
+        sim_arg,
         global_frame_arg,
+
+        *rgb_converters,
         nvblox_node,
     ])

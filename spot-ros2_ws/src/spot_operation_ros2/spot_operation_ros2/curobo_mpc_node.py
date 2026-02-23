@@ -1,9 +1,13 @@
 import os
+import tempfile
+import yaml
 import math
 import random
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
+from rclpy.executors import MultiThreadedExecutor 
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from geometry_msgs.msg import PoseStamped, TransformStamped
 from sensor_msgs.msg import JointState, PointCloud2
 import struct
@@ -26,7 +30,7 @@ if NVBLOX_MSGS_PATH not in sys.path:
     sys.path.append(NVBLOX_MSGS_PATH)
 
 # cuRobo imports
-from curobo.geom.sdf.world import CollisionCheckerType
+from curobo.geom.sdf.world import CollisionCheckerType, CollisionQueryBuffer
 from curobo.geom.types import WorldConfig, Mesh
 from curobo.rollout.rollout_base import Goal
 from curobo.types.base import TensorDeviceType
@@ -62,10 +66,13 @@ class CuroboMpcNode(Node):
 
         self.declare_parameter('debug_mode', False)
         self.declare_parameter('debug_pose_duration', 3.0)  # seconds between pose changes
+        self.declare_parameter('use_sim', True)  # True=sim (arm0_ prefix), False=real (arm_ prefix)
         
         # nvblox Mesh parameters
+        self.declare_parameter('use_nvblox', False)  # If True, subscribe to mesh
         self.declare_parameter('mesh_topic', '/nvblox_node/mesh')
         self.declare_parameter('mesh_update_rate', 2.0)  # Hz (limit updates to curobo)
+        self.declare_parameter('static_mesh', True)  # If True, update mesh only once
 
         # Get parameters
         robot_config_path = self.get_parameter('robot_config').get_parameter_value().string_value
@@ -75,10 +82,13 @@ class CuroboMpcNode(Node):
 
         self.debug_mode = self.get_parameter('debug_mode').get_parameter_value().bool_value
         self.debug_pose_duration = self.get_parameter('debug_pose_duration').get_parameter_value().double_value
+        self.use_sim = self.get_parameter('use_sim').get_parameter_value().bool_value
         
         # nvblox parameters
+        self.use_nvblox = self.get_parameter('use_nvblox').get_parameter_value().bool_value
         self.mesh_topic = self.get_parameter('mesh_topic').get_parameter_value().string_value
         self.mesh_update_rate = self.get_parameter('mesh_update_rate').get_parameter_value().double_value
+        self.static_mesh = self.get_parameter('static_mesh').get_parameter_value().bool_value
 
         # ... (Keeping default paths logic)
         os.environ['SPOT_URDF_PATH'] = os.path.dirname(urdf_path)
@@ -87,8 +97,12 @@ class CuroboMpcNode(Node):
         self.get_logger().info(f'Robot config: {robot_config_path}')
         self.get_logger().info(f'URDF path: {urdf_path}')
         self.get_logger().info(f'Control rate: {control_rate} Hz')
-        # ... (Logging)
-        self.get_logger().info(f'Mesh topic: {self.mesh_topic}')
+        self.get_logger().info(f'Use sim: {self.use_sim} ({"arm0_ prefix" if self.use_sim else "arm_ prefix"})')
+        self.get_logger().info(f'Use sim: {self.use_sim} ({"arm0_ prefix" if self.use_sim else "arm_ prefix"})')
+        self.get_logger().info(f'Use nvblox: {self.use_nvblox}')
+        if self.use_nvblox:
+            self.get_logger().info(f'Mesh topic: {self.mesh_topic}')
+            self.get_logger().info(f'Static mesh: {self.static_mesh}')
 
         # Initialize cuRobo
         setup_curobo_logger("warn")
@@ -100,14 +114,24 @@ class CuroboMpcNode(Node):
         # Update paths in config
         robot_cfg_raw["kinematics"]["external_asset_path"] = os.path.dirname(urdf_path)
         spheres_path = os.path.join(os.environ['CUROBO_CONFIG_PATH'], 'spheres', 'spot_arm.yml')
-        robot_cfg_raw["kinematics"]["collision_spheres"] = spheres_path
+
+        # Config and spheres use arm0_ (sim naming). URDF always uses arm_.
+        # Remap config arm0_ -> arm_ to match URDF, and create temp spheres file.
+        robot_cfg_raw = self._remap_config_prefix(robot_cfg_raw, 'arm0_', 'arm_')
+        spheres_data = load_yaml(spheres_path)
+        spheres_data = self._remap_config_prefix(spheres_data, 'arm0_', 'arm_')
+        tmp_spheres = tempfile.NamedTemporaryFile(mode='w', suffix='.yml', delete=False)
+        yaml.dump(spheres_data, tmp_spheres)
+        tmp_spheres.close()
+        robot_cfg_raw["kinematics"]["collision_spheres"] = tmp_spheres.name
+        self.get_logger().info(f'Remapped config arm0_ -> arm_ (URDF match). Temp spheres: {tmp_spheres.name}')
         
         self.robot_cfg = robot_cfg_raw
         self.j_names = self.robot_cfg["kinematics"]["cspace"]["joint_names"]
         self.default_config = self.robot_cfg["kinematics"]["cspace"]["retract_config"]
         self.robot_cfg["kinematics"]["collision_sphere_buffer"] += 0.02
 
-        self.get_logger().info(f'Joint names: {self.j_names}')
+        self.get_logger().info(f'Joint names (URDF): {self.j_names}')
 
 
 
@@ -117,6 +141,8 @@ class CuroboMpcNode(Node):
 
 
         # MPC Configuration
+        # NOTE: RTX A2000 12GB has 70W TDP limit -> thermal throttling at ~80C.
+        # Reduce GPU load: smaller collision cache, fewer seeds.
         self.get_logger().info('Loading MPC solver...')
         mpc_config = MpcSolverConfig.load_from_robot_config(
             self.robot_cfg,
@@ -125,9 +151,9 @@ class CuroboMpcNode(Node):
             use_cuda_graph_metrics=True,
             use_cuda_graph_full_step=False,
             self_collision_check=True,
-            collision_checker_type=CollisionCheckerType.MESH,
-            collision_cache={"mesh": 20}, # Adjust cache for mesh
-            collision_activation_distance=0.03,  # Start avoiding obstacles from 3cm away
+            collision_checker_type=CollisionCheckerType.VOXEL,  # Switch to Voxel (GPU ESDF) for performance
+            collision_cache={"obb": 10, "mesh": 10}, # Voxelization needs obb+mesh cache
+            override_particle_file=os.path.join(os.path.dirname(robot_config_path), 'mpc_override.yml'),
             use_mppi=True,
             use_lbfgs=False,
             use_es=False,
@@ -182,37 +208,107 @@ class CuroboMpcNode(Node):
         self.debug_pose_index = 0
         self.debug_last_pose_time = self.get_clock().now()
         self.debug_test_poses = self._generate_test_poses()
+        
+        # Mesh settings
+        self.MAX_MESH_VERTICES = 15000
 
-        # QoS for real-time
+
+        # QoS for real-time sensors (joint states, pose)
         qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
             durability=DurabilityPolicy.VOLATILE,
             depth=1
         )
 
-        # Publishers/Subscribers
-        self.cmd_pub = self.create_publisher(JointState, '/joint_command_curobo', 10)
-        self.pose_sub = self.create_subscription(PoseStamped, '/wrist_pose', self.pose_callback, qos)
-        self.joint_sub = self.create_subscription(JointState, '/joint_states_isaac', self.joint_state_callback, qos)
-        
-        # nvblox Mesh subscriber
-        self.mesh_sub = self.create_subscription(
-            NvbloxMesh, 
-            self.mesh_topic, 
-            self.mesh_callback, 
-            qos
+        # QoS for nvblox mesh - MUST be RELIABLE to match nvblox publisher
+        # nvblox publishes with RELIABLE+VOLATILE; BEST_EFFORT subscriber won't connect!
+        qos_mesh = QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.VOLATILE,
+            depth=1
         )
-        self.get_logger().info(f'Subscribed to Mesh topic: {self.mesh_topic}')
 
-        # Control timer
-        self.control_timer = self.create_timer(1.0 / control_rate, self.control_loop)
+        # Publishers/Subscribers
+        if self.use_sim:
+            cmd_topic = '/joint_command_curobo'
+            joint_topic = '/joint_states_isaac'
+        else:
+            cmd_topic = '/arm_joint_trajectory_commands'
+            joint_topic = '/joint_states'
+            
+        # Callback Groups:
+        # mpc_group: Handles control loop, joint states, and pose updates (critical path)
+        # mesh_group: Handles heavy mesh deserialization (can block without affecting control)
+        self.mpc_group = MutuallyExclusiveCallbackGroup()
+        self.mesh_group = MutuallyExclusiveCallbackGroup()
+
+        self.cmd_pub = self.create_publisher(JointState, cmd_topic, 10)
+        
+        # Subscribe to sensors in the MPC group (fast updates)
+        self.pose_sub = self.create_subscription(
+            PoseStamped, 
+            '/wrist_pose', 
+            self.pose_callback, 
+            qos,
+            callback_group=self.mpc_group
+        )
+        self.joint_sub = self.create_subscription(
+            JointState, 
+            joint_topic, 
+            self.joint_state_callback, 
+            qos,
+            callback_group=self.mpc_group
+        )
+        
+        # nvblox Mesh subscriber - RELIABLE QoS to match nvblox publisher
+        if self.use_nvblox:
+            self.mesh_sub = self.create_subscription(
+                NvbloxMesh, 
+                self.mesh_topic, 
+                self.mesh_callback, 
+                qos_mesh,
+                callback_group=self.mesh_group
+            )
+            self.get_logger().info(f'Subscribed to Mesh topic: {self.mesh_topic} (separate thread)')
+        else:
+            self.mesh_sub = None
+            self.get_logger().info('Nvblox disabled (use_nvblox=False). Mesh updates OFF.')
+        self.get_logger().info(f'Subscribed to Joint topic: {joint_topic}')
+        self.get_logger().info(f'Publishing to Command topic: {cmd_topic}')
+
+        # Control timer in MPC group
+        self.control_timer = self.create_timer(
+            1.0 / control_rate, 
+            self.control_loop, 
+            callback_group=self.mpc_group
+        )
         self.step_count = 0
         
-        # Mesh update timer
-        self.mesh_update_timer = self.create_timer(
-            1.0 / self.mesh_update_rate, 
-            self.update_mesh_world_callback
-        )
+        # Mesh update is done INLINE in control_loop (cuRobo is NOT thread-safe)
+        self.mesh_update_interval = 1.0 / self.mesh_update_rate  # seconds between updates
+        self.last_mesh_update_time = time.time()
+        self.pending_mesh_update = False  # flag set by mesh_callback
+
+        # Performance monitoring
+        self._last_loop_time = time.time()
+        self._loop_times = []  # track last N loop durations
+        self._step_times = []  # track mpc.step() durations
+        self._publish_count = 0
+        self._joint_state_age = 0.0  # how old is the joint state data
+        self._last_joint_stamp = None
+
+        # GPU monitoring via pynvml - use same device as torch
+        self._gpu_monitor_available = False
+        try:
+            import pynvml
+            pynvml.nvmlInit()
+            gpu_idx = torch.cuda.current_device()
+            self._gpu_handle = pynvml.nvmlDeviceGetHandleByIndex(gpu_idx)
+            gpu_name = pynvml.nvmlDeviceGetName(self._gpu_handle)
+            self._gpu_monitor_available = True
+            self.get_logger().info(f'GPU monitoring enabled: GPU {gpu_idx} ({gpu_name})')
+        except Exception as e:
+            self.get_logger().warn(f'pynvml not available, using torch.cuda only: {e}')
 
         self.get_logger().info('=== cuRobo MPC Node Ready ===')
         if self.debug_mode:
@@ -220,9 +316,26 @@ class CuroboMpcNode(Node):
             self.get_logger().info(f'Will cycle through {len(self.debug_test_poses)} test positions')
             self.goal_received = True  # Auto-ready in debug mode
         else:
-            self.get_logger().info('Waiting for /wrist_pose and /joint_states_isaac...')
+            # Get joint topic name for the log message
+            joint_topic = '/joint_states_isaac' if self.use_sim else '/joint_states'
+            self.get_logger().info(f'Waiting for /wrist_pose and {joint_topic}...')
 
     # ... (Keeping _generate_test_poses, _euler_to_quaternion, _get_debug_pose, pose_callback, joint_state_callback)
+
+    def _remap_config_prefix(self, config, old_prefix, new_prefix):
+        """Recursively remap string prefixes in a config dict/list."""
+        if isinstance(config, dict):
+            return {
+                (k.replace(old_prefix, new_prefix) if isinstance(k, str) else k):
+                self._remap_config_prefix(v, old_prefix, new_prefix)
+                for k, v in config.items()
+            }
+        elif isinstance(config, list):
+            return [self._remap_config_prefix(item, old_prefix, new_prefix) for item in config]
+        elif isinstance(config, str):
+            return config.replace(old_prefix, new_prefix)
+        return config
+
 
 
     def _generate_test_poses(self):
@@ -296,7 +409,11 @@ class CuroboMpcNode(Node):
 
     def joint_state_callback(self, msg: JointState):
         """Handle incoming joint state."""
+        # In sim, joints arrive as arm0_* -> remap to arm_ to match URDF/cuRobo
+        if self.use_sim:
+            msg.name = [n.replace('arm0_', 'arm_') for n in msg.name]
         self.current_joint_state = msg
+        self._last_joint_stamp = time.time()
         self.joints_received = True
 
     def mesh_callback(self, msg: NvbloxMesh):
@@ -321,7 +438,7 @@ class CuroboMpcNode(Node):
                     if idx_tuple in self.mesh_blocks:
                         del self.mesh_blocks[idx_tuple]
             
-            self.last_mesh_update_time = time.time()
+            self.pending_mesh_update = True  # Signal control loop to update
             if not self.nvblox_initialized and len(self.mesh_blocks) > 0:
                 self.nvblox_initialized = True
                 self.get_logger().info(f'Nvblox mesh received! Frame: {msg.header.frame_id}')
@@ -348,14 +465,19 @@ class CuroboMpcNode(Node):
         transformed = (rot @ vertices.T).T + translation
         return transformed
 
-    def _build_curobo_mesh(self, transform: TransformStamped = None):
-        """Reconstruct full mesh from blocks and convert to cuRobo Mesh."""
+    def _build_curobo_mesh(self, blocks_snapshot: dict, transform: TransformStamped = None):
+        """Reconstruct full mesh from blocks snapshot and convert to cuRobo Mesh.
+        
+        Args:
+            blocks_snapshot: A copied dict of {idx: block} (so we don't hold the lock).
+            transform: Optional TF to apply.
+        """
         all_vertices = []
         all_triangles = []
         vertex_offset = 0
 
         # Iterate over all stored blocks
-        for idx, block in self.mesh_blocks.items():
+        for idx, block in blocks_snapshot.items():
             # Vertices
             # block.vertices is list of Point32
             verts = np.array([[p.x, p.y, p.z] for p in block.vertices], dtype=np.float32)
@@ -379,6 +501,33 @@ class CuroboMpcNode(Node):
         full_vertices = np.concatenate(all_vertices, axis=0)
         full_triangles = np.concatenate(all_triangles, axis=0)
 
+        # Decimate if too many vertices
+        total_verts = len(full_vertices)
+        if total_verts > self.MAX_MESH_VERTICES:
+            # Uniform subsampling: keep every N-th vertex
+            stride = total_verts // self.MAX_MESH_VERTICES
+            # Build a mask of which vertices to keep
+            keep_mask = np.zeros(total_verts, dtype=bool)
+            keep_mask[::stride] = True
+            
+            # Remap vertex indices
+            new_indices = np.full(total_verts, -1, dtype=np.int32)
+            new_indices[keep_mask] = np.arange(keep_mask.sum(), dtype=np.int32)
+            
+            # Filter triangles: keep only those where all 3 vertices are kept
+            tri_mask = (
+                keep_mask[full_triangles[:, 0]] &
+                keep_mask[full_triangles[:, 1]] &
+                keep_mask[full_triangles[:, 2]]
+            )
+            full_triangles = new_indices[full_triangles[tri_mask]]
+            full_vertices = full_vertices[keep_mask]
+            
+            self.get_logger().debug(
+                f'Decimated mesh: {total_verts} -> {len(full_vertices)} verts, '
+                f'{tri_mask.sum()} faces'
+            )
+
         # Transform if needed (transform is Target <- Source)
         if transform:
             full_vertices = self._transform_mesh_vertices(full_vertices, transform)
@@ -394,58 +543,224 @@ class CuroboMpcNode(Node):
         )
         return mesh
 
-    def update_mesh_world_callback(self):
-        """Periodically update collision model with reconstructed mesh."""
-        if not self.nvblox_initialized:
+    def _try_update_mesh(self):
+        """Try to update mesh world inline (called from control_loop). cuRobo is NOT thread-safe."""
+        if not self.nvblox_initialized or not self.pending_mesh_update:
             return
 
+        # If static mesh mode is enabled and we already have a mesh, skip
+        if self.static_mesh and self.obstacle_update_count > 0:
+            return
+
+        # Snapshot blocks under lock (fast)
         with self.mesh_lock:
-             # Check if we have blocks
             if not self.mesh_blocks:
                 return
-            
-            # Get latest transform
-            # We want to transform FROM nvblox frame (odom) TO curobo frame (body)
-            # So looking up transform: target=body, source=odom
-            try:
-                transform = self.tf_buffer.lookup_transform(
-                    self.target_frame,
-                    self.source_frame,
-                    rclpy.time.Time(),
-                    timeout=rclpy.duration.Duration(seconds=0.1)
-                )
-            except (tf2_ros.LookupException, tf2_ros.ConnectivityException, 
-                    tf2_ros.ExtrapolationException) as e:
+            blocks_snapshot = dict(self.mesh_blocks)
+
+        self.pending_mesh_update = False
+
+        # TF lookup
+        try:
+            transform = self.tf_buffer.lookup_transform(
+                self.target_frame,
+                self.source_frame,
+                rclpy.time.Time(),
+                timeout=rclpy.duration.Duration(seconds=0.05)
+            )
+        except (tf2_ros.LookupException, tf2_ros.ConnectivityException,
+                tf2_ros.ExtrapolationException) as e:
+            if self.obstacle_update_count == 0:
                 self.get_logger().warn(f'Waiting for TF {self.source_frame} -> {self.target_frame}: {e}')
-                return
+            return
 
-            # Build and update world
-            try:
-                curobo_mesh = self._build_curobo_mesh(transform)
-                
-                if curobo_mesh is not None:
-                    # Create new world config with just this mesh
-                    mesh_world = WorldConfig(mesh=[curobo_mesh])
-                    
-                    self.mpc.update_world(mesh_world)
-                    self.obstacle_update_count += 1
-                    
-                    if self.obstacle_update_count % 10 == 0:
-                        self.get_logger().info(
-                            f'Mesh update #{self.obstacle_update_count}: '
-                            f'{len(curobo_mesh.vertices)} vertices, {len(curobo_mesh.faces)} faces'
-                        )
+        # Build and update (same thread as mpc.step - safe!)
+        try:
+            t0 = time.time()
+            curobo_mesh = self._build_curobo_mesh(blocks_snapshot, transform)
 
-            except Exception as e:
-                self.get_logger().warn(f'Failed to update mesh world: {e}')
+            if curobo_mesh is not None:
+                mesh_world = WorldConfig(mesh=[curobo_mesh])
+                self.mpc.update_world(mesh_world)
+                self.obstacle_update_count += 1
+                elapsed = time.time() - t0
+                self.last_mesh_update_time = time.time()
+
+                self.get_logger().info(
+                    f'Mesh update #{self.obstacle_update_count}: '
+                    f'{len(curobo_mesh.vertices)} verts, {len(curobo_mesh.faces)} faces '
+                    f'({elapsed:.3f}s)'
+                )
+
+                if self.static_mesh and self.obstacle_update_count > 0:
+                    self.get_logger().info("Mesh update COMPLETED. FREEZING updates (static_mesh=True).")
+
+        except Exception as e:
+            self.get_logger().warn(f'Failed to update mesh world: {e}')
 
 
 
     def compute_attractive(self, current: np.ndarray, target: np.ndarray, k_att: float = 0.1) -> np.ndarray:
         return k_att * (target - current)
 
+    def _get_gpu_stats(self):
+        """Get GPU utilization and memory stats."""
+        gpu_util = -1
+        gpu_mem_used = 0
+        gpu_mem_total = 0
+        gpu_temp = -1
+        
+        if self._gpu_monitor_available:
+            try:
+                import pynvml
+                util = pynvml.nvmlDeviceGetUtilizationRates(self._gpu_handle)
+                mem = pynvml.nvmlDeviceGetMemoryInfo(self._gpu_handle)
+                temp = pynvml.nvmlDeviceGetTemperature(self._gpu_handle, pynvml.NVML_TEMPERATURE_GPU)
+                gpu_util = util.gpu
+                gpu_mem_used = mem.used // (1024 * 1024)  # MB
+                gpu_mem_total = mem.total // (1024 * 1024)  # MB
+                gpu_temp = temp
+            except Exception:
+                pass
+        
+        # Also get torch CUDA memory
+        torch_alloc = torch.cuda.memory_allocated() // (1024 * 1024)  # MB
+        torch_reserved = torch.cuda.memory_reserved() // (1024 * 1024)  # MB
+        
+        return gpu_util, gpu_mem_used, gpu_mem_total, gpu_temp, torch_alloc, torch_reserved
+
+    def _get_sphere_distances(self) -> list:
+        """Returns distance from each collision sphere to nearest obstacle."""
+        # Access world collision checker inside MPC
+        world_coll = None
+        if hasattr(self.mpc.rollout_fn, 'world_coll_checker'):
+            world_coll = self.mpc.rollout_fn.world_coll_checker
+        
+        # Fallback search if path varies
+        if world_coll is None:
+            # self.get_logger().debug('Searching for world_coll_checker...')
+            for attr in dir(self.mpc.rollout_fn):
+                if 'prim' in attr.lower():
+                    prim = getattr(self.mpc.rollout_fn, attr)
+                    if hasattr(prim, 'world_coll_checker'):
+                        world_coll = prim.world_coll_checker
+                        break
+
+        if world_coll is None:
+            return []
+
+        # FK to get current sphere positions
+        # rollout_fn.kinematics is CudaRobotModel which returns CudaRobotModelState with spheres
+        pos = self.current_state.position.view(-1)  # [dof]
+        if len(pos.shape) == 1:
+            pos = pos.unsqueeze(0)  # [1, dof]
+            
+        # Using kinematics directly
+        kin_state = self.mpc.rollout_fn.kinematics.get_state(pos)
+
+        # Sphere positions: (batch, n_spheres, 4) -> [x, y, z, radius]
+        spheres = kin_state.link_spheres_tensor
+
+        if spheres is None:
+             if not hasattr(self, '_sphere_none_logged'):
+                 self.get_logger().error("sphere_dist error: link_spheres_tensor is None")
+                 self._sphere_none_logged = True
+             return []
+        
+        # CollisionQueryBuffer expects [batch, horizon, n_spheres, 4]
+        # Current shape is [batch, n_spheres, 4] (batch=1)
+        if len(spheres.shape) == 3:
+            spheres = spheres.unsqueeze(1)
+
+        # Query buffer (lazy init)
+        if not hasattr(self, '_query_buffer') or self._query_buffer is None:
+            # Increase max_distance so ESDF reports distances beyond 10cm (default 0.1)
+            world_coll.max_distance = self.tensor_args.to_device([0.5])
+            try:
+                # Initialize buffer for ALL types (voxel, mesh, primitive) to prevent fallbacks crashing
+                self._query_buffer = CollisionQueryBuffer.initialize_from_shape(
+                    spheres.shape, self.tensor_args,
+                    collision_types={'voxel': True, 'mesh': True, 'primitive': True}
+                )
+            except Exception as e:
+                self.get_logger().error(f"CollisionQueryBuffer init error: {e}")
+                return []
+
+        # MANUAL FALLBACK: Ensure buffers exist if init failed to create them
+        from curobo.geom.sdf.world import CollisionBuffer
+        if self._query_buffer.voxel_collision_buffer is None:
+             self._query_buffer.voxel_collision_buffer = CollisionBuffer.initialize_from_shape(
+                 spheres.shape, self.tensor_args
+             )
+             self._query_buffer.voxel_collision_buffer.sparsity_index_buffer[:] = 0
+             
+        if self._query_buffer.mesh_collision_buffer is None:
+             self._query_buffer.mesh_collision_buffer = CollisionBuffer.initialize_from_shape(
+                 spheres.shape, self.tensor_args
+             )
+
+        if self._query_buffer.primitive_collision_buffer is None:
+             self._query_buffer.primitive_collision_buffer = CollisionBuffer.initialize_from_shape(
+                 spheres.shape, self.tensor_args
+             )
+
+        # act_distance = search radius (returns 0 outside range)
+        act_dist = 0.5  # 50cm
+        # Activation distance for Mesh Collision (Warp) expects 1D tensor [n_spheres]
+        act_distance = torch.full(
+            (spheres.shape[2],), 
+            act_dist, 
+            device=self.tensor_args.device, 
+            dtype=self.tensor_args.dtype
+        )
+        
+        # Weight for Mesh Collision (Warp) expects 1D tensor [n_spheres]
+        weight = torch.ones(
+            (spheres.shape[2],), 
+            device=self.tensor_args.device, 
+            dtype=self.tensor_args.dtype
+        )
+
+        try:
+            # Reset distance buffer before each query to avoid stale values
+            self._query_buffer.mesh_collision_buffer.distance_buffer.zero_()
+            if self._query_buffer.primitive_collision_buffer is not None:
+                self._query_buffer.primitive_collision_buffer.distance_buffer.zero_()
+
+            # compute_esdf=True -> returns real distance (not just collision bool)
+            # Args order: spheres, buffer, weight, activation_distance
+            dist = world_coll.get_sphere_distance(
+                spheres, self._query_buffer, weight, act_distance, compute_esdf=True
+            )
+            
+            result_list = dist.squeeze().cpu().tolist()
+            
+            # If dist is scalar (0-d), tolist returns float, not list
+            if not isinstance(result_list, list):
+                result_list = [result_list]
+                
+            return result_list
+        except Exception as e:
+            if not hasattr(self, '_sphere_dist_calc_logged'):
+                self.get_logger().error(f"get_sphere_distance error: {e}")
+                import traceback
+                self.get_logger().error(traceback.format_exc())
+                self._sphere_dist_calc_logged = True
+            return []
+
     def control_loop(self):
         """Main MPC control loop."""
+        t_loop_start = time.time()
+        loop_gap = t_loop_start - self._last_loop_time  # time since last call
+        self._last_loop_time = t_loop_start
+
+        # Update mesh world inline (cuRobo is NOT thread-safe for world updates)
+        # The heavy deserialization happens in mesh_callback (separate thread),
+        # so this just takes the lock and updates the world (fast).
+        t_mesh_start = time.time()
+        self._try_update_mesh()
+        t_mesh_end = time.time()
+
         # In debug mode, we don't need external goal
         if self.debug_mode:
             self.last_goal_pose = self._get_debug_pose()
@@ -462,6 +777,18 @@ class CuroboMpcNode(Node):
             if not self.goal_received or not self.joints_received:
                 return
             if self.current_joint_state is None or self.last_goal_pose is None:
+                return
+
+        # Guard: skip MPC if joint state is too stale (Isaac Sim stopped publishing)
+        JS_STALE_THRESHOLD = 2.0  # seconds
+        if self._last_joint_stamp is not None:
+            js_age_now = time.time() - self._last_joint_stamp
+            if js_age_now > JS_STALE_THRESHOLD:
+                if self.step_count % 30 == 0:
+                    self.get_logger().warn(
+                        f'⚠️ Joint state is STALE ({js_age_now*1000:.0f}ms)! '
+                        f'Isaac Sim may have stopped publishing. Skipping MPC step.'
+                    )
                 return
 
         try:
@@ -546,7 +873,12 @@ class CuroboMpcNode(Node):
 
             self.mpc.update_goal(self.goal_buffer)
 
+            t_step_start = time.time()
             mpc_result = self.mpc.step(self.current_state, max_attempts=2)
+            torch.cuda.synchronize()  # Ensure GPU work is done before timing
+            t_step_end = time.time()
+            step_dt = t_step_end - t_step_start
+            self._step_times.append(step_dt)
             
             # Get collision/feasibility info
             is_feasible = mpc_result.metrics.feasible.item()
@@ -558,13 +890,49 @@ class CuroboMpcNode(Node):
                 coll_constraint = mpc_result.metrics.constraint.item()
             
             self.step_count += 1
+            self._publish_count += 1
             
+            # --- Deviation Cost Logic ---
+            evasion_dev = 0.0
+            try:
+                # We need the current EE pos
+                fk_current = self.mpc.rollout_fn.compute_kinematics(self.current_state)
+                current_ee_pos_tensor = fk_current.ee_pos_seq
+                current_ee_pos_np = current_ee_pos_tensor.cpu().numpy().flatten()[:3]
+                
+                # And the goal pos
+                goal_pos_tensor = self.goal_buffer.goal_pose.position
+                goal_pos_np = goal_pos_tensor.cpu().numpy().flatten()[:3]
+                
+                # If goal shifted by more than 5cm, or no anchor exists, reset the straight-line anchor
+                if not hasattr(self, 'anchor_goal_np') or np.linalg.norm(goal_pos_np - self.anchor_goal_np) > 0.05:
+                    self.anchor_goal_np = goal_pos_np.copy()
+                    self.anchor_start_np = current_ee_pos_np.copy()
+                
+                # The ideal Euclidean path is from anchor_start to anchor_goal
+                line_vec = self.anchor_goal_np - self.anchor_start_np
+                line_len = np.linalg.norm(line_vec)
+                
+                if line_len > 1e-3:
+                    line_dir = line_vec / line_len
+                    # Vector from start to current
+                    point_vec = current_ee_pos_np - self.anchor_start_np
+                    # Project current position onto the ideal line
+                    proj = np.dot(point_vec, line_dir)
+                    closest_pt = self.anchor_start_np + max(0.0, min(line_len, proj)) * line_dir
+                    
+                    # Deflection distance from the ideal straight line
+                    evasion_dev = np.linalg.norm(current_ee_pos_np - closest_pt)
+            except Exception as e:
+                pass
+            # ---------------------------
+
             # Always use MPC result - it will slide along obstacle surfaces
             self.cmd_state_full = mpc_result.js_action
 
-            ordered_names = [n for n in joint_names_msg if n in self.cmd_state_full.joint_names]
-            if not ordered_names:
-                return
+            # Enforce using ONLY the configured controlled joints (e.g. 6 arm joints)
+            # This explicitly filters out locked joints (like arm_f1x) from the command
+            ordered_names = list(self.j_names)
 
             cmd_state = self.cmd_state_full.get_ordered_joint_state(ordered_names)
 
@@ -572,28 +940,67 @@ class CuroboMpcNode(Node):
             vel_list = cmd_state.velocity.view(-1).cpu().numpy().tolist()
             acc_list = cmd_state.acceleration.view(-1).cpu().numpy().tolist()
 
-
-
             joint_cmd = JointState()
             joint_cmd.header.stamp = self.get_clock().now().to_msg()
-            joint_cmd.name = ordered_names
+            # In sim, restore arm0_ prefix for Isaac Sim
+            if self.use_sim:
+                joint_cmd.name = [n.replace('arm_', 'arm0_') for n in ordered_names]
+            else:
+                joint_cmd.name = ordered_names
             joint_cmd.position = pos_list
             joint_cmd.velocity = vel_list
             joint_cmd.effort = []
 
             self.cmd_pub.publish(joint_cmd)
             
-            # Rate-limited logging
-            if self.step_count % 100 == 0:
+            t_loop_end = time.time()
+            total_loop_dt = t_loop_end - t_loop_start
+            mesh_dt = t_mesh_end - t_mesh_start
+            self._loop_times.append(total_loop_dt)
+
+            # Compute joint state age
+            js_age = -1.0
+            if self._last_joint_stamp is not None:
+                js_age = t_loop_start - self._last_joint_stamp
+
+            # Keep only last 50 samples
+            if len(self._loop_times) > 50:
+                self._loop_times = self._loop_times[-50:]
+            if len(self._step_times) > 50:
+                self._step_times = self._step_times[-50:]
+
+            # DETAILED LOGGING every 10 steps
+            if self.step_count % 10 == 0:
+                avg_loop = sum(self._loop_times) / len(self._loop_times)
+                avg_step = sum(self._step_times) / len(self._step_times)
+                effective_hz = 1.0 / avg_loop if avg_loop > 0 else 0
+                
+                gpu_util, gpu_mem_used, gpu_mem_total, gpu_temp, torch_alloc, torch_reserved = self._get_gpu_stats()
+                
+                # Get sphere distances
+                sphere_dists = self._get_sphere_distances()
+                # cuRobo ESDF: positive = inside obstacle, negative = outside
+                # max() gives the sphere CLOSEST to (or inside) an obstacle  
+                min_dist = max(sphere_dists) if sphere_dists else -1.0
+                closest_sphere = sphere_dists.index(max(sphere_dists)) if sphere_dists else -1
+                
                 status = "BLOCKED" if not is_feasible else "OK"
                 self.get_logger().info(
-                    f'Step {self.step_count} [{status}]: '
-                    f'Error={mpc_result.metrics.pose_error.item():.4f}, '
-                    f'Constraint={coll_constraint:.4f}'
+                    f'\n'
+                    f'  === Step {self.step_count} [{status}] ===\n'
+                    f'  MPC: error={mpc_result.metrics.pose_error.item():.4f}, constraint={coll_constraint:.4f}, coll_cost={coll_cost:.4f}, evasion_dev={evasion_dev:.4f}m\n'
+                    f'  TIMING: loop={total_loop_dt*1000:.0f}ms, mpc.step={step_dt*1000:.0f}ms, mesh={mesh_dt*1000:.0f}ms, gap={loop_gap*1000:.0f}ms\n'
+                    f'  AVG: loop={avg_loop*1000:.0f}ms, step={avg_step*1000:.0f}ms, effective={effective_hz:.1f}Hz\n'
+                    f'  GPU: util={gpu_util}%, mem={gpu_mem_used}/{gpu_mem_total}MB, temp={gpu_temp}C\n'
+                    f'  TORCH: alloc={torch_alloc}MB, reserved={torch_reserved}MB\n'
+                    f'  DATA: js_age={js_age*1000:.0f}ms, pub_count={self._publish_count}\n'
+                    f'  OBST: min_dist={min_dist:.4f}m, sphere_idx={closest_sphere}\n'
+                    f'  CMD: pos=[{pos_list[0]:.3f},{pos_list[1]:.3f},{pos_list[2]:.3f},{pos_list[3]:.3f},{pos_list[4]:.3f},{pos_list[5]:.3f}]'
                 )
 
         except Exception as e:
-            self.get_logger().error(f'Control loop error: {e}')
+            import traceback
+            self.get_logger().error(f'Control loop error: {e}\n{traceback.format_exc()}')
 
 
 def main(args=None):
@@ -605,13 +1012,20 @@ def main(args=None):
 
     node = CuroboMpcNode()
 
+    executor = MultiThreadedExecutor(num_threads=3)
+    executor.add_node(node)
+
     try:
-        rclpy.spin(node)
+        executor.spin()
     except KeyboardInterrupt:
         pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        executor.shutdown()
+        try:
+            rclpy.shutdown()
+        except Exception:
+            pass  # Already shut down
 
 
 if __name__ == '__main__':
