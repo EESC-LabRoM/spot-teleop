@@ -32,6 +32,7 @@ try:
     from rclpy.node import Node
     from sensor_msgs.msg import Image as RosImage, CameraInfo
     from geometry_msgs.msg import TransformStamped, PointStamped
+    from std_srvs.srv import Trigger
     from cv_bridge import CvBridge
     import cv2
     import tf2_ros
@@ -165,6 +166,73 @@ def append_frame_to_state(inference_state, predictor, pil_img):
     return frame_idx
 
 
+def save_triposr_crop(img_pil, mask_np, output_path="/tmp/triposr_crop.png", foreground_ratio=0.85):
+    """
+    Cria um crop da imagem centrado no mask_np, usando o foreground_ratio especificado.
+    """
+    # Extract tight bounding box of the mask
+    ys, xs = np.where(mask_np > 0)
+    if len(ys) == 0 or len(xs) == 0:
+        return None
+        
+    x_min, x_max = np.min(xs), np.max(xs)
+    y_min, y_max = np.min(ys), np.max(ys)
+    
+    # Calculate object size
+    obj_w = x_max - x_min
+    obj_h = y_max - y_min
+    
+    # Calculate target image size to achieve the foreground_ratio
+    max_obj_dim = max(obj_w, obj_h)
+    target_size = int(max_obj_dim / foreground_ratio)
+    
+    # Calculate center of the object
+    cx = (x_min + x_max) // 2
+    cy = (y_min + y_max) // 2
+    
+    # Calculate crop coordinates based on target_size square
+    half_size = target_size // 2
+    crop_x1 = cx - half_size
+    crop_y1 = cy - half_size
+    crop_x2 = crop_x1 + target_size
+    crop_y2 = crop_y1 + target_size
+    
+    # Pad handling
+    orig_w, orig_h = img_pil.size
+    
+    src_x1 = max(0, crop_x1)
+    src_y1 = max(0, crop_y1)
+    src_x2 = min(orig_w, crop_x2)
+    src_y2 = min(orig_h, crop_y2)
+    
+    if src_x1 >= src_x2 or src_y1 >= src_y2:
+        return None
+        
+    dst_x1 = src_x1 - crop_x1
+    dst_y1 = src_y1 - crop_y1
+    
+    # Crop the original image
+    src_crop = img_pil.crop((src_x1, src_y1, src_x2, src_y2))
+    
+    mask_patch = mask_np[src_y1:src_y2, src_x1:src_x2]
+    mask_crop = Image.fromarray((mask_patch * 255).astype(np.uint8)).convert("L")
+    
+    src_rgba = src_crop.convert("RGBA")
+    src_rgba.putalpha(mask_crop)
+    
+    # We want a gray background for TripoSR (it expects RGB with ~0.5 background)
+    img_padded_rgba = Image.new("RGBA", (target_size, target_size), (127, 127, 127, 0))
+    img_padded_rgba.paste(src_rgba, (dst_x1, dst_y1), src_rgba) # paste with alpha
+    
+    # Remove alpha to just have gray bg
+    final_rgb = Image.new("RGB", (target_size, target_size), (127, 127, 127))
+    final_rgb.paste(img_padded_rgba, mask=img_padded_rgba.split()[3])
+    
+    final_rgb.save(output_path)
+    print(f"Salvou crop para TripoSR em {output_path}")
+    return output_path
+
+
 def create_crop_mosaic(image_pil, masks, bbox, output_path="debug_mosaic.jpg"):
     """
     Cria um mosaico com crops das mascarras para decisao do Qwen.
@@ -256,12 +324,11 @@ def ask_qwen_selection(mosaic_path, object_name):
     
     prompt = f"""Look at the 3 images labeled 1, 2, and 3.
 They show different segmentation masks (green overlay) for a '{object_name}'.
-Which mask highlights the part where a robot gripper should grasp to manipulate this object?
-For example, for a valve, the robot should grab the lever/handle, not the entire valve body.
+Which mask represents the best mask segmentation?
 Return ONLY the digit: 1, 2, or 3."""
 
     payload = {
-        "model": "Qwen/Qwen2.5-VL-7B-Instruct", 
+        "model": "Qwen/Qwen3-VL-8B-Instruct", 
         "messages": [
             {
                 "role": "user",
@@ -333,11 +400,14 @@ def segment_result(image_input, boxes: list[dict], output_path: str):
     
     print(f"Segmenting box: {bbox} for label: {label}")
 
-    # Use center point of bbox as prompt (NO box).
-    # Point-only prompts give SAM2 maximum ambiguity, producing
-    # genuinely different scale masks (subpart, part, whole).
-    cx = int((x1 + x2) / 2)
-    cy = int((y1 + y2) / 2)
+    g1000 = box_data.get('grasp_1000')
+    if g1000:
+        cx = int((g1000[0] / 1000.0) * w)
+        cy = int((g1000[1] / 1000.0) * h)
+    else:
+        # Use center point of bbox as prompt (NO box).
+        cx = int((x1 + x2) / 2)
+        cy = int((y1 + y2) / 2)
 
     try:
         # Official SAM2: set_image expects RGB uint8 numpy array (3 channels)
@@ -440,25 +510,41 @@ def parse_qwen_response(response_text: str, image_size: tuple[int, int] = None) 
         data = json.loads(clean_text)
         if isinstance(data, list):
             print("DEBUG: Detectado formato JSON.")
+            if len(data) == 0:
+                print("DEBUG: Lista vazia retornada (objeto não encontrado pelo Qwen).")
+                return []
             for item in data:
                 if 'bbox_2d' in item:
                     # JSON bbox_2d is typically [xmin, ymin, xmax, ymax] in PIXELS
                     b = item['bbox_2d']
                     label = item.get('label', 'object')
+                    confidence = float(item.get('confidence', 1.0))
                     
-                    # Normalize pixels to 0-1000 based on supplied image_size (which matches the image model saw)
-                    xmin = (b[0] / w) * 1000
-                    ymin = (b[1] / h) * 1000
-                    xmax = (b[2] / w) * 1000
-                    ymax = (b[3] / h) * 1000
+                    # Try to get 3 points, fallback to old single point format just in case
+                    grasp_points = item.get('grasp_point_2ds', None)
+                    if not grasp_points:
+                        gp = item.get('grasp_point_2d', None)
+                        if gp: grasp_points = [gp]
+                    
+                    # O prompt já pede no formato [0-1000], portanto os valores já vêm normalizados!
+                    # Não devemos dividir pelo tamanho da imagem novamente.
+                    xmin, ymin, xmax, ymax = b[0], b[1], b[2], b[3]
+                    
+                    grasps_1000 = []
+                    if grasp_points:
+                        for pt in grasp_points:
+                            gx, gy = pt[0], pt[1]
+                            grasps_1000.append([int(gx), int(gy)])
                     
                     boxes.append({
                         'label': label,
-                        'bbox_1000': [int(xmin), int(ymin), int(xmax), int(ymax)]
+                        'bbox_1000': [int(xmin), int(ymin), int(xmax), int(ymax)],
+                        'grasps_1000': grasps_1000,
+                        'confidence': confidence
                     })
             if boxes:
                 return boxes
-    except json.JSONDecodeError:
+    except Exception as e:
         pass
 
     # regexes
@@ -625,6 +711,16 @@ def draw_result(image_input, boxes: list[dict], output_path: str):
         draw.rectangle([x1, y1 - text_h - 4, x1 + text_w + 4, y1], fill=color)
         draw.text((x1 + 2, y1 - text_h - 2), label, fill='black', font=font)
 
+        if box_data.get('grasps_1000'):
+            for g1000 in box_data['grasps_1000']:
+                gx = int((g1000[0] / 1000.0) * w)
+                gy = int((g1000[1] / 1000.0) * h)
+                gx = max(0, min(w-1, gx))
+                gy = max(0, min(h-1, gy))
+                # Desenha Ponto de Grasp (Vermelho)
+                r = 5
+                draw.ellipse([gx-r, gy-r, gx+r, gy+r], fill='red')
+
     if img.mode == 'RGBA':
         img = img.convert('RGB')
     img.save(output_path)
@@ -638,14 +734,17 @@ def detect_object(image_input, object_prompt, vllm_url):
     """
     base64_img = encode_image_to_base64(image_input)
     
-    # Prompt GENERALISTA
-    # Usamos o prompt para guiar a detecção do que o usuário pediu
-    prompt = f"""Detect: {object_prompt}
-Return the bounding box in the format: <ref>{object_prompt}</ref><box>[[ymin, xmin, ymax, xmax]]</box>
-Ensure coordinates are normalized to [0-1000] scale."""
+    # Prompt focado em JSON para extrair Confiança e permitir rejeição
+    prompt = f"""Task: Detect '{object_prompt}'.
+If the object is clearly visible, return its bounding box, a confidence score (0.0 to 1.0), and exactly 3 distinct 2D grasping points.
+The 3 grasp points MUST be physically far apart from each other, representing different valid locations where a robot could grasp the object.
+Output STRICTLY in JSON format as a list of dictionaries:
+[ {{"label": "{object_prompt}", "bbox_2d": [xmin, ymin, xmax, ymax], "grasp_point_2ds": [[x1, y1], [x2, y2], [x3, y3]], "confidence": 0.95}} ]
+If the object is NOT present or mostly occluded, return an empty list: []
+Ensure bounding box and grasp point coordinates are normalized to [0-1000] scale."""
 
     payload = {
-        "model": "Qwen/Qwen2.5-VL-7B-Instruct", 
+        "model": "Qwen/Qwen3-VL-8B-Instruct", 
         "messages": [
             {
                 "role": "user",
@@ -655,7 +754,7 @@ Ensure coordinates are normalized to [0-1000] scale."""
                 ]
             }
         ],
-        "max_tokens": 256,
+        "max_tokens": 512,
         "temperature": 0.01 
     }
     
@@ -746,16 +845,18 @@ class DetectQwenNode(Node):
         super().__init__('detect_qwen_node')
         
         # Parameters
-        self.declare_parameter('object_prompt', 'valve lever')
+        self.declare_parameter('object_prompt', 'lever valve')
         self.declare_parameter('confidence_threshold', 0.3)
         self.declare_parameter('target_frame', 'target_object')
         self.declare_parameter('rgb_topic', '/hand/rgb')
         self.declare_parameter('depth_topic', '/hand/depth')
         self.declare_parameter('camera_info_topic', '/hand/camera_info')
+        self.declare_parameter('visualize', True)
         
         self.object_prompt = self.get_parameter('object_prompt').value
         self.confidence_threshold = self.get_parameter('confidence_threshold').value
         self.target_frame_name = self.get_parameter('target_frame').value
+        self.visualize = self.get_parameter('visualize').value
         rgb_topic = self.get_parameter('rgb_topic').value
         depth_topic = self.get_parameter('depth_topic').value
         camera_info_topic = self.get_parameter('camera_info_topic').value
@@ -774,6 +875,14 @@ class DetectQwenNode(Node):
         self.initial_detection_done = False
         
         # Tracking state
+        self.declare_parameter('depth_segmented_topic', '/hand/depth_segmented')
+        depth_segmented_topic = self.get_parameter('depth_segmented_topic').value
+        self.depth_seg_pub = self.create_publisher(RosImage, depth_segmented_topic, 10)
+        
+        # TripoSR integration: publish crop image + call mesh generation service
+        self.triposr_img_pub = self.create_publisher(RosImage, '/triposr/input_image', 1)
+        self.mesh_client = self.create_client(Trigger, '/generate_mesh')
+        
         self.video_predictor = None
         self.inference_state = None
         self.tracking_active = False
@@ -841,6 +950,7 @@ class DetectQwenNode(Node):
             self.latest_rgb = Image.fromarray(cv_rgb)
             
             self.latest_depth = self.bridge.imgmsg_to_cv2(depth_msg, desired_encoding='32FC1')
+            self.latest_depth_header = depth_msg.header
             self.new_frame_available = True
             
             # Trigger initial detection on first image
@@ -869,6 +979,7 @@ class DetectQwenNode(Node):
             return
         
         self.detection_running = True
+        self.new_frame_available = False
         t_start = time.time()
         self.get_logger().info(f"🔍 Running initial detection for '{self.object_prompt}'...")
         
@@ -892,16 +1003,24 @@ class DetectQwenNode(Node):
             
             boxes = parse_qwen_response(response_text, image_size=(new_w, new_h))
             if not boxes:
-                self.get_logger().warn("No bounding box found.")
+                self.get_logger().warn("No bounding box found (Qwen rejected or no object).")
                 self.detection_running = False
                 return
-            
-            draw_result(img_pil, boxes, "camera_capture_detected.jpg")
             
             # Extract box data
             box_data = boxes[0]
             label = box_data['label']
             b1000 = box_data['bbox_1000']
+            qwen_conf = box_data.get('confidence', 1.0)
+            g1000_list = box_data.get('grasps_1000', [])
+            
+            if qwen_conf < self.confidence_threshold:
+                self.get_logger().warn(f"Qwen confidence ({qwen_conf:.2f}) < threshold ({self.confidence_threshold}). Rejecting.")
+                self.detection_running = False
+                return
+                
+            draw_result(img_pil, boxes, "camera_capture_detected.jpg")
+            
             x1 = int((b1000[0] / 1000.0) * orig_w)
             y1 = int((b1000[1] / 1000.0) * orig_h)
             x2 = int((b1000[2] / 1000.0) * orig_w)
@@ -909,32 +1028,52 @@ class DetectQwenNode(Node):
             x1, y1 = max(0, x1), max(0, y1)
             x2, y2 = min(orig_w - 1, x2), min(orig_h - 1, y2)
             bbox = [x1, y1, x2, y2]
-            cx, cy = (x1+x2)//2, (y1+y2)//2
             
-            # Step 2: Generate Candidate Masks & Select Best (Mosaic)
+            grasp_points_uv = []
+            if g1000_list:
+                for g1000 in g1000_list:
+                    gu = int((g1000[0] / 1000.0) * orig_w)
+                    gv = int((g1000[1] / 1000.0) * orig_h)
+                    gu, gv = max(0, min(orig_w - 1, gu)), max(0, min(orig_h - 1, gv))
+                    grasp_points_uv.append([gu, gv])
+            else:
+                grasp_points_uv = [[(x1+x2)//2, (y1+y2)//2]]
+                
+            # Keep the primary grasp for offset calculation downstream
+            grasp_u, grasp_v = grasp_points_uv[0]
+            
+            # Step 2: Generate Candidate Masks & Select Best
             t2 = time.time()
-            self.get_logger().info("Generating candidate masks for selection...")
+            self.get_logger().info("Generating candidate masks using SAM2 based on Qwen points...")
             
             sam_img_predictor = load_sam_model()
             if sam_img_predictor:
-                # Use center point prompt to force ambiguity resolution
                 sam_img_predictor.set_image(np.array(img_pil))
-                masks, scores, _ = sam_img_predictor.predict(
-                    point_coords=np.array([[cx, cy]]),
-                    point_labels=np.array([1]),
-                    multimask_output=True,
-                )
+                
+                all_masks = []
+                # Combine points into a batch or query them one by one. One by one is easier to pick highest.
+                for pt in grasp_points_uv:
+                    masks, scores, _ = sam_img_predictor.predict(
+                        point_coords=np.array([pt]),
+                        point_labels=np.array([1]),
+                        multimask_output=True,
+                    )
+                    # For each point, take the highest scoring mask according to SAM2
+                    best_local_idx = np.argmax(scores)
+                    all_masks.append(masks[best_local_idx])
                 
                 # Check ambiguity
                 best_idx = 0
-                if len(masks) > 1:
-                    mosaic_path = create_crop_mosaic(img_pil, masks, bbox, "debug_mosaic.jpg")
+                if len(all_masks) > 1:
+                    mosaic_path = create_crop_mosaic(img_pil, all_masks, bbox, "debug_mosaic.jpg")
                     if mosaic_path:
-                        self.get_logger().info("Asking Qwen to select best mask...")
+                        self.get_logger().info("Asking Qwen to select best mask from multiple generated choices...")
                         best_idx = ask_qwen_selection(mosaic_path, label)
                         self.get_logger().info(f"✅ Qwen selected mask {best_idx+1}")
                 
-                best_mask = masks[best_idx]
+                best_mask = all_masks[best_idx]
+                # Update our primary tracking grasp point based on what Qwen picked
+                grasp_u, grasp_v = grasp_points_uv[best_idx]
             else:
                 self.get_logger().warn("ImagePredictor failed to load. Skipping selection step.")
                 best_mask = None
@@ -977,19 +1116,39 @@ class DetectQwenNode(Node):
             # Extract initial mask result
             mask_logit = out_mask_logits[0]
             mask_prob = torch.sigmoid(mask_logit)
-            score = mask_prob.max().item()
-            mask_np = (mask_prob[0] > 0.5).cpu().numpy().astype(np.uint8)
+            
+            mask_pixels = mask_prob[0] > 0.5
+            if mask_pixels.any():
+                score = mask_prob[0][mask_pixels].mean().item()
+            else:
+                score = 0.0
+                
+            mask_np = mask_pixels.cpu().numpy().astype(np.uint8)
+            
+            # Publish crop for TripoSR service
+            self._publish_triposr_crop(img_pil, mask_np, bbox)
             
             self.last_tracking_score = score
             self.tracking_active = True
             self.tracking_frame_count = 1
-            self.new_frame_available = False
+            
+            # Save grasp point offset for continuous TF tracking
+            M = cv2.moments(mask_np)
+            if M["m00"] != 0:
+                mask_u = int(M["m10"] / M["m00"])
+                mask_v = int(M["m01"] / M["m00"])
+                self.grasp_offset = (grasp_u - mask_u, grasp_v - mask_v)
+            else:
+                self.grasp_offset = (0, 0)
             
             # Compute centroid and update TF
             centroid_uv = self._mask_to_tf(mask_np, self.latest_depth.copy(), score)
             
+            self._publish_segmented_depth(mask_np, self.latest_depth.copy())
+            
             # Visualization
-            self._update_display(self.latest_rgb, mask_np, score, centroid_uv)
+            if self.visualize:
+                self._update_display(self.latest_rgb, mask_np, score, centroid_uv)
             
             total_ms = (time.time() - t_start) * 1000
             self.get_logger().info(
@@ -1005,13 +1164,19 @@ class DetectQwenNode(Node):
             self.detection_running = False
     def _tracking_timer_cb(self):
         """Process new frames for SAM2 tracking at 5 Hz."""
-        if not self.tracking_active or not self.new_frame_available:
-            return
         if self.detection_running:
             return
         if self.latest_rgb is None or self.latest_depth is None:
             return
         if self.camera_intrinsics is None:
+            return
+            
+        if not self.tracking_active:
+            if self.new_frame_available:
+                self._run_initial_detection()
+            return
+            
+        if not self.new_frame_available:
             return
         
         self.new_frame_available = False
@@ -1038,8 +1203,14 @@ class DetectQwenNode(Node):
                 # out_mask_logits: (num_objects, 1, H, W)
                 mask_logit = out_mask_logits[0]  # first (only) object
                 mask_prob = torch.sigmoid(mask_logit)
-                score = mask_prob.max().item()
-                mask_np = (mask_prob[0] > 0.5).cpu().numpy().astype(np.uint8)
+                
+                mask_pixels = mask_prob[0] > 0.5
+                if mask_pixels.any():
+                    score = mask_prob[0][mask_pixels].mean().item()
+                else:
+                    score = 0.0
+                    
+                mask_np = mask_pixels.cpu().numpy().astype(np.uint8)
             
             self.last_tracking_score = score
             tracking_ms = (time.time() - t_start) * 1000
@@ -1058,8 +1229,11 @@ class DetectQwenNode(Node):
             # Compute centroid and update TF
             centroid_uv = self._mask_to_tf(mask_np, depth_map, score)
             
+            self._publish_segmented_depth(mask_np, depth_map)
+            
             # Visualization
-            self._update_display(self.latest_rgb, mask_np, score, centroid_uv)
+            if self.visualize:
+                self._update_display(self.latest_rgb, mask_np, score, centroid_uv)
             
             # Log periodically (every 5th frame to avoid spam)
             if self.tracking_frame_count % 5 == 0:
@@ -1125,6 +1299,91 @@ class DetectQwenNode(Node):
         except Exception as e:
             self.get_logger().warn(f"Visualization error: {e}")
 
+    def _publish_segmented_depth(self, mask_np, depth_map):
+        """Publish the segmented depth image."""
+        if self.depth_seg_pub.get_subscription_count() > 0:
+            seg_depth = np.full_like(depth_map, np.nan, dtype=depth_map.dtype)
+            seg_depth[mask_np > 0] = depth_map[mask_np > 0]
+            
+            try:
+                msg = self.bridge.cv2_to_imgmsg(seg_depth, encoding='32FC1')
+                if hasattr(self, 'latest_depth_header'):
+                    msg.header = self.latest_depth_header
+                else:
+                    msg.header.stamp = self.get_clock().now().to_msg()
+                    msg.header.frame_id = 'hand_cam'
+                self.depth_seg_pub.publish(msg)
+            except Exception as e:
+                self.get_logger().error(f"Error publishing segmented depth: {e}")
+
+    def _publish_triposr_crop(self, img_pil, mask_np, bbox, foreground_ratio=0.85):
+        """
+        Crop RGB image using the mask bounding box with margin,
+        publish it, and call the TripoSR mesh generation service.
+        """
+        # Find exact mask bounds
+        y_indices, x_indices = np.where(mask_np > 0)
+        if len(y_indices) == 0 or len(x_indices) == 0:
+            return
+            
+        y1, y2 = y_indices.min(), y_indices.max()
+        x1, x2 = x_indices.min(), x_indices.max()
+        
+        # Center of the mask
+        cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
+        
+        # Size of the mask
+        w, h = x2 - x1, y2 - y1
+        size = max(w, h)
+        
+        # Add margin
+        padded_size = int(size / foreground_ratio)
+        half_size = padded_size // 2
+        
+        # Crop bounds with padding
+        img_w, img_h = img_pil.size
+        crop_x1 = max(0, cx - half_size)
+        crop_y1 = max(0, cy - half_size)
+        crop_x2 = min(img_w, cx + half_size)
+        crop_y2 = min(img_h, cy + half_size)
+        # Apply mask and replace background with flat gray (127, 127, 127) for TripoSR
+        img_np = np.array(img_pil)  # RGB
+        gray_bg = np.full_like(img_np, 127)
+        mask_3d = mask_np[:, :, np.newaxis]
+        img_masked = np.where(mask_3d > 0, img_np, gray_bg)
+        
+        # Crop the masked image
+        img_crop = Image.fromarray(img_masked).crop((crop_x1, crop_y1, crop_x2, crop_y2))
+        
+        # Publish
+        try:
+            cv_crop = np.array(img_crop) # Already RGB from PIL
+            msg = self.bridge.cv2_to_imgmsg(cv_crop, encoding='rgb8')
+            self.triposr_img_pub.publish(msg)
+            self.get_logger().info("Published crop image for TripoSR.")
+            
+            # Call service
+            if not self.mesh_client.wait_for_service(timeout_sec=1.0):
+                self.get_logger().warn("TripoSR service not available, skipping mesh generation.")
+                return
+                
+            req = Trigger.Request()
+            future = self.mesh_client.call_async(req)
+            future.add_done_callback(self._mesh_service_cb)
+            
+        except Exception as e:
+            self.get_logger().error(f"Error publishing TripoSR crop: {e}")
+            
+    def _mesh_service_cb(self, future):
+        try:
+            response = future.result()
+            if response.success:
+                self.get_logger().info(f"✨ TripoSR mesh generated: {response.message}")
+            else:
+                self.get_logger().error(f"TripoSR mesh failed: {response.message}")
+        except Exception as e:
+            self.get_logger().error(f"Service call failed: {e}")
+
     def _reset_tracking(self):
         """Reset the tracking state for a fresh start."""
         self.tracking_active = False
@@ -1145,6 +1404,10 @@ class DetectQwenNode(Node):
         
         u = int(M["m10"] / M["m00"])
         v = int(M["m01"] / M["m00"])
+        
+        if hasattr(self, 'grasp_offset'):
+            u += self.grasp_offset[0]
+            v += self.grasp_offset[1]
         
         # Clamp to bounds
         v = min(max(0, v), depth_map.shape[0] - 1)
