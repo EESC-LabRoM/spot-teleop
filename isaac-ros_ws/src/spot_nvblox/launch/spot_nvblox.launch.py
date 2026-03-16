@@ -41,7 +41,7 @@ def generate_launch_description():
     
     global_frame_arg = DeclareLaunchArgument(
         'global_frame',
-        default_value='odom',
+        default_value='vision',
         description='Global frame for nvblox'
     )
 

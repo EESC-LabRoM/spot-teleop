@@ -6,9 +6,7 @@ import random
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
-from rclpy.executors import MultiThreadedExecutor 
-from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
-from geometry_msgs.msg import PoseStamped, TransformStamped
+from geometry_msgs.msg import PoseStamped, TransformStamped, Quaternion
 from sensor_msgs.msg import JointState, PointCloud2
 import struct
 import threading
@@ -50,6 +48,12 @@ except ImportError:
         sys.path.append(NVBLOX_MSGS_PATH_2)
     from nvblox_msgs.msg import Mesh as NvbloxMesh
 
+# spot_msgs for spot_joint_controller integration
+try:
+    from spot_msgs.msg import JointCommand
+except ImportError:
+    JointCommand = None
+
 
 
 class CuroboMpcNode(Node):
@@ -61,12 +65,14 @@ class CuroboMpcNode(Node):
         # Declare parameters
         self.declare_parameter('robot_config', '')
         self.declare_parameter('urdf_path', '')
-        self.declare_parameter('control_rate', 30.0)
-        self.declare_parameter('step_dt', 0.03)
+        self.declare_parameter('control_rate', 50.0)
+        self.declare_parameter('step_dt', 0.02)
 
         self.declare_parameter('debug_mode', False)
         self.declare_parameter('debug_pose_duration', 3.0)  # seconds between pose changes
         self.declare_parameter('use_sim', True)  # True=sim (arm0_ prefix), False=real (arm_ prefix)
+        self.declare_parameter('use_ros2_control', False)  # True=publish JointCommand to spot_joint_controller
+        self.declare_parameter('startup_delay', 5.0)  # Wait N seconds before considering obstacles
         
         # nvblox Mesh parameters
         self.declare_parameter('use_nvblox', False)  # If True, subscribe to mesh
@@ -77,12 +83,14 @@ class CuroboMpcNode(Node):
         # Get parameters
         robot_config_path = self.get_parameter('robot_config').get_parameter_value().string_value
         urdf_path = self.get_parameter('urdf_path').get_parameter_value().string_value
-        control_rate = self.get_parameter('control_rate').get_parameter_value().double_value
-        step_dt = self.get_parameter('step_dt').get_parameter_value().double_value
+        self.control_rate = self.get_parameter('control_rate').get_parameter_value().double_value
+        self.step_dt = self.get_parameter('step_dt').get_parameter_value().double_value
 
         self.debug_mode = self.get_parameter('debug_mode').get_parameter_value().bool_value
         self.debug_pose_duration = self.get_parameter('debug_pose_duration').get_parameter_value().double_value
         self.use_sim = self.get_parameter('use_sim').get_parameter_value().bool_value
+        self.use_ros2_control = self.get_parameter('use_ros2_control').get_parameter_value().bool_value
+        self.startup_delay = self.get_parameter('startup_delay').get_parameter_value().double_value
         
         # nvblox parameters
         self.use_nvblox = self.get_parameter('use_nvblox').get_parameter_value().bool_value
@@ -96,7 +104,7 @@ class CuroboMpcNode(Node):
         self.get_logger().info('=== cuRobo MPC Node Starting ===')
         self.get_logger().info(f'Robot config: {robot_config_path}')
         self.get_logger().info(f'URDF path: {urdf_path}')
-        self.get_logger().info(f'Control rate: {control_rate} Hz')
+        self.get_logger().info(f'Control rate: {self.control_rate} Hz')
         self.get_logger().info(f'Use sim: {self.use_sim} ({"arm0_ prefix" if self.use_sim else "arm_ prefix"})')
         self.get_logger().info(f'Use sim: {self.use_sim} ({"arm0_ prefix" if self.use_sim else "arm_ prefix"})')
         self.get_logger().info(f'Use nvblox: {self.use_nvblox}')
@@ -158,7 +166,7 @@ class CuroboMpcNode(Node):
             use_lbfgs=False,
             use_es=False,
             store_rollouts=False,
-            step_dt=step_dt,
+            step_dt=self.step_dt,
         )
 
         self.mpc = MpcSolver(mpc_config)
@@ -184,6 +192,9 @@ class CuroboMpcNode(Node):
         self.goal_buffer = self.mpc.setup_solve_single(goal, 1)
         self.mpc.update_goal(self.goal_buffer)
         _ = self.mpc.step(self.current_state, max_attempts=2)  # Warm up
+
+        # Initialize goal pose to use current robot position initially
+        self.last_goal_pose = retract_pose
 
         # State variables
         self.last_goal_pose = None
@@ -232,32 +243,33 @@ class CuroboMpcNode(Node):
         if self.use_sim:
             cmd_topic = '/joint_command_curobo'
             joint_topic = '/joint_states_isaac'
+        elif self.use_ros2_control:
+            cmd_topic = '/spot_joint_controller/joint_commands'
+            joint_topic = '/joint_states'
         else:
             cmd_topic = '/arm_joint_trajectory_commands'
             joint_topic = '/joint_states'
             
-        # Callback Groups:
-        # mpc_group: Handles control loop, joint states, and pose updates (critical path)
-        # mesh_group: Handles heavy mesh deserialization (can block without affecting control)
-        self.mpc_group = MutuallyExclusiveCallbackGroup()
-        self.mesh_group = MutuallyExclusiveCallbackGroup()
-
-        self.cmd_pub = self.create_publisher(JointState, cmd_topic, 10)
+        if self.use_ros2_control and not self.use_sim:
+            if JointCommand is None:
+                self.get_logger().fatal('use_ros2_control=True but spot_msgs.msg.JointCommand not found!')
+                raise ImportError('spot_msgs.msg.JointCommand not available')
+            self.cmd_pub = self.create_publisher(JointCommand, cmd_topic, 10)
+        else:
+            self.cmd_pub = self.create_publisher(JointState, cmd_topic, 10)
         
-        # Subscribe to sensors in the MPC group (fast updates)
+        # Subscribe to sensors (fast updates)
         self.pose_sub = self.create_subscription(
             PoseStamped, 
             '/wrist_pose', 
             self.pose_callback, 
-            qos,
-            callback_group=self.mpc_group
+            qos
         )
         self.joint_sub = self.create_subscription(
             JointState, 
             joint_topic, 
             self.joint_state_callback, 
-            qos,
-            callback_group=self.mpc_group
+            qos
         )
         
         # nvblox Mesh subscriber - RELIABLE QoS to match nvblox publisher
@@ -266,8 +278,7 @@ class CuroboMpcNode(Node):
                 NvbloxMesh, 
                 self.mesh_topic, 
                 self.mesh_callback, 
-                qos_mesh,
-                callback_group=self.mesh_group
+                qos_mesh
             )
             self.get_logger().info(f'Subscribed to Mesh topic: {self.mesh_topic} (separate thread)')
         else:
@@ -276,13 +287,12 @@ class CuroboMpcNode(Node):
         self.get_logger().info(f'Subscribed to Joint topic: {joint_topic}')
         self.get_logger().info(f'Publishing to Command topic: {cmd_topic}')
 
-        # Control timer in MPC group
-        self.control_timer = self.create_timer(
-            1.0 / control_rate, 
-            self.control_loop, 
-            callback_group=self.mpc_group
-        )
+        # Latest joint states used for tracking age
+        self.latest_js_age = 0.0
+
+        self.timer = self.create_timer(1.0 / self.control_rate, self.control_loop)
         self.step_count = 0
+        self.start_time = time.time()
         
         # Mesh update is done INLINE in control_loop (cuRobo is NOT thread-safe)
         self.mesh_update_interval = 1.0 / self.mesh_update_rate  # seconds between updates
@@ -296,6 +306,21 @@ class CuroboMpcNode(Node):
         self._publish_count = 0
         self._joint_state_age = 0.0  # how old is the joint state data
         self._last_joint_stamp = None
+
+        # CSV auto-save
+        import csv as _csv, datetime as _dt
+        _ts = _dt.datetime.now().strftime('%Y%m%d_%H%M%S')
+        self._csv_path = os.path.join(
+            os.path.expanduser('~'), f'curobo_run_{_ts}.csv')
+        self._csv_file = open(self._csv_path, 'w', newline='')
+        self._csv_writer = _csv.writer(self._csv_file)
+        self._csv_writer.writerow([
+            'step', 'status', 'loop_time_ms', 'mpc_step_ms',
+            'gpu_util', 'js_age_ms', 'min_dist',
+            'mpc_error', 'mpc_constraint', 'coll_cost', 'evasion_dev',
+            'joint_tracking_err',
+        ])
+        self.get_logger().info(f'CSV logging -> {self._csv_path}')
 
         # GPU monitoring via pynvml - use same device as torch
         self._gpu_monitor_available = False
@@ -394,17 +419,27 @@ class CuroboMpcNode(Node):
         return Pose(position=position, quaternion=quaternion)
 
     def pose_callback(self, msg: PoseStamped):
-        """Handle incoming pose goal."""
+        """Handle incoming pose goal (position + orientation)."""
         if self.debug_mode:
             return  # Ignore external poses in debug mode
 
+        # Only accept external goals after startup delay to prevent sudden jumps
+        if time.time() - self.start_time < self.startup_delay:
+            return
+
         pos = msg.pose.position
         ori = msg.pose.orientation
-
+        
         position = self.tensor_args.to_device([pos.x, pos.y, pos.z])
         quaternion = self.tensor_args.to_device([ori.w, ori.x, ori.y, ori.z])
 
-        self.last_goal_pose = Pose(position=position, quaternion=quaternion)
+        if self.last_goal_pose is not None:
+            # Update both position and orientation
+            self.last_goal_pose.position.copy_(position)
+            self.last_goal_pose.quaternion.copy_(quaternion)
+        else:
+            self.last_goal_pose = Pose(position=position, quaternion=quaternion)
+
         self.goal_received = True
 
     def joint_state_callback(self, msg: JointState):
@@ -559,6 +594,11 @@ class CuroboMpcNode(Node):
             blocks_snapshot = dict(self.mesh_blocks)
 
         self.pending_mesh_update = False
+        
+        # Check startup delay before adding obstacles
+        if time.time() - self.start_time < self.startup_delay:
+            self.get_logger().info('Startup delay active: ignoring obstacles for now.', once=True)
+            return
 
         # TF lookup
         try:
@@ -774,9 +814,60 @@ class CuroboMpcNode(Node):
                     self.current_joint_state.velocity = [0.0] * len(self.j_names)
                     self.joints_received = True
         else:
-            if not self.goal_received or not self.joints_received:
+            if not self.goal_received and (time.time() - self.start_time >= self.startup_delay):
+                # Before external goals arrive, maintain current EE pose to prevent jerking
+                if self.joints_received and self.current_joint_state is not None:
+                    # Initialize goal_pose to current FK pose exactly once
+                    if getattr(self, '_init_goal_set', False) is False:
+                        positions = list(self.current_joint_state.position)
+                        joint_names_msg = list(self.current_joint_state.name)
+                        cu_js_init = CuJointState(
+                            position=self.tensor_args.to_device(positions),
+                            joint_names=joint_names_msg
+                        ).get_ordered_joint_state(self.mpc.rollout_fn.joint_names)
+                        
+                        fk_init = self.mpc.rollout_fn.compute_kinematics(cu_js_init)
+                        self.last_goal_pose = Pose(fk_init.ee_pos_seq, quaternion=fk_init.ee_quat_seq)
+                        
+                        # === WARM-UP MPC with REAL joint state ===
+                        # The MPC was initialized and warmed up with retract_config in __init__,
+                        # so its internal particles/rollouts are optimized around a completely
+                        # different joint configuration. We must re-warm the solver around the
+                        # actual physical joint state to prevent the first commands from jumping
+                        # to a different IK solution (which causes a dangerous jerk).
+                        self.get_logger().info(
+                            f'Warm-up MPC with real joint state: '
+                            f'[{", ".join(f"{p:.3f}" for p in cu_js_init.position.view(-1).cpu().numpy())}]'
+                        )
+                        self.current_state.copy_(cu_js_init)
+                        self.goal_buffer.goal_pose.copy_(self.last_goal_pose)
+                        self.mpc.update_goal(self.goal_buffer)
+                        
+                        WARMUP_ITERS = 10
+                        for i in range(WARMUP_ITERS):
+                            warmup_result = self.mpc.step(self.current_state, max_attempts=2)
+                            # Feed MPC output back as current state so particles converge
+                            warmup_ordered = warmup_result.js_action.get_ordered_joint_state(
+                                self.mpc.rollout_fn.joint_names
+                            )
+                            # But keep overriding with real state to anchor around it
+                            self.current_state.copy_(cu_js_init)
+                        
+                        # Log the first command after warm-up to verify convergence
+                        warmup_cmd = warmup_ordered.position.view(-1).cpu().numpy()
+                        real_pos = cu_js_init.position.view(-1).cpu().numpy()
+                        max_diff = max(abs(warmup_cmd - real_pos))
+                        self.get_logger().info(
+                            f'Warm-up done ({WARMUP_ITERS} iters). Max joint diff: {max_diff:.4f} rad\n'
+                            f'  Real:    [{", ".join(f"{p:.3f}" for p in real_pos)}]\n'
+                            f'  MPC cmd: [{", ".join(f"{p:.3f}" for p in warmup_cmd)}]'
+                        )
+                        
+                        self.goal_received = True
+                        self._init_goal_set = True
+                        self.get_logger().info('Initialized goal to current physical pose to prevent jumping.')
                 return
-            if self.current_joint_state is None or self.last_goal_pose is None:
+            if not self.joints_received or self.current_joint_state is None or self.last_goal_pose is None:
                 return
 
         # Guard: skip MPC if joint state is too stale (Isaac Sim stopped publishing)
@@ -938,21 +1029,37 @@ class CuroboMpcNode(Node):
 
             pos_list = cmd_state.position.view(-1).cpu().numpy().tolist()
             vel_list = cmd_state.velocity.view(-1).cpu().numpy().tolist()
-            acc_list = cmd_state.acceleration.view(-1).cpu().numpy().tolist()
+            # acc_list = cmd_state.acceleration.view(-1).cpu().numpy().tolist()
 
-            joint_cmd = JointState()
-            joint_cmd.header.stamp = self.get_clock().now().to_msg()
-            # In sim, restore arm0_ prefix for Isaac Sim
-            if self.use_sim:
-                joint_cmd.name = [n.replace('arm_', 'arm0_') for n in ordered_names]
-            else:
+            if self.use_ros2_control and not self.use_sim:
+                # Publish JointCommand for spot_joint_controller
+                joint_cmd = JointCommand()
                 joint_cmd.name = ordered_names
-            joint_cmd.position = pos_list
-            joint_cmd.velocity = vel_list
-            joint_cmd.effort = []
+                joint_cmd.position = pos_list
+                joint_cmd.velocity = vel_list
+                # Leave effort, k_q_p, k_qd_p empty to use SDK default gains
+            else:
+                # Publish JointState for sim or legacy real robot path
+                joint_cmd = JointState()
+                joint_cmd.header.stamp = self.get_clock().now().to_msg()
+                if self.use_sim:
+                    joint_cmd.name = [n.replace('arm_', 'arm0_') for n in ordered_names]
+                else:
+                    joint_cmd.name = ordered_names
+                joint_cmd.position = pos_list
+                joint_cmd.velocity = vel_list
+                joint_cmd.effort = []
 
             self.cmd_pub.publish(joint_cmd)
-            
+
+            # Joint tracking error (mean |cmd - curr| over arm joints)
+            try:
+                curr_ordered = cu_js.get_ordered_joint_state(ordered_names)
+                curr_arr = curr_ordered.position.view(-1).cpu().numpy()
+                _jtrack = float(np.mean(np.abs(np.array(pos_list) - curr_arr)))
+            except Exception:
+                _jtrack = 0.0
+
             t_loop_end = time.time()
             total_loop_dt = t_loop_end - t_loop_start
             mesh_dt = t_mesh_end - t_mesh_start
@@ -969,6 +1076,27 @@ class CuroboMpcNode(Node):
             if len(self._step_times) > 50:
                 self._step_times = self._step_times[-50:]
 
+            # CSV row every step
+            if hasattr(self, '_csv_writer'):
+                _gpu_u, _, _, _, _, _ = self._get_gpu_stats() if self.step_count % 10 == 0 else (-1, 0, 0, 0, 0, 0)
+                _sd = self._get_sphere_distances() if self.step_count % 10 == 0 else []
+                _min_d = max(_sd) if _sd else -1.0
+                self._csv_writer.writerow([
+                    self.step_count,
+                    'OK' if is_feasible else 'BLOCKED',
+                    int(total_loop_dt * 1000),
+                    int(step_dt * 1000),
+                    _gpu_u, int(js_age * 1000) if js_age >= 0 else -1,
+                    round(_min_d, 4),
+                    round(mpc_result.metrics.pose_error.item(), 4),
+                    round(coll_constraint, 4),
+                    round(coll_cost, 4),
+                    round(evasion_dev, 4),
+                    round(_jtrack, 4),
+                ])
+                if self.step_count % 100 == 0:
+                    self._csv_file.flush()
+
             # DETAILED LOGGING every 10 steps
             if self.step_count % 10 == 0:
                 avg_loop = sum(self._loop_times) / len(self._loop_times)
@@ -984,6 +1112,10 @@ class CuroboMpcNode(Node):
                 min_dist = max(sphere_dists) if sphere_dists else -1.0
                 closest_sphere = sphere_dists.index(max(sphere_dists)) if sphere_dists else -1
                 
+                # Get current joint positions for logging
+                curr_js_ordered = cu_js.get_ordered_joint_state(ordered_names)
+                curr_pos_list = curr_js_ordered.position.view(-1).cpu().numpy().tolist()
+                
                 status = "BLOCKED" if not is_feasible else "OK"
                 self.get_logger().info(
                     f'\n'
@@ -995,7 +1127,8 @@ class CuroboMpcNode(Node):
                     f'  TORCH: alloc={torch_alloc}MB, reserved={torch_reserved}MB\n'
                     f'  DATA: js_age={js_age*1000:.0f}ms, pub_count={self._publish_count}\n'
                     f'  OBST: min_dist={min_dist:.4f}m, sphere_idx={closest_sphere}\n'
-                    f'  CMD: pos=[{pos_list[0]:.3f},{pos_list[1]:.3f},{pos_list[2]:.3f},{pos_list[3]:.3f},{pos_list[4]:.3f},{pos_list[5]:.3f}]'
+                    f'  CMD:  pos=[{pos_list[0]:.3f},{pos_list[1]:.3f},{pos_list[2]:.3f},{pos_list[3]:.3f},{pos_list[4]:.3f},{pos_list[5]:.3f}]\n'
+                    f'  CURR: pos=[{curr_pos_list[0]:.3f},{curr_pos_list[1]:.3f},{curr_pos_list[2]:.3f},{curr_pos_list[3]:.3f},{curr_pos_list[4]:.3f},{curr_pos_list[5]:.3f}]'
                 )
 
         except Exception as e:
@@ -1011,17 +1144,17 @@ def main(args=None):
         return
 
     node = CuroboMpcNode()
-
-    executor = MultiThreadedExecutor(num_threads=3)
-    executor.add_node(node)
-
+    
     try:
-        executor.spin()
+        rclpy.spin(node)
     except KeyboardInterrupt:
         pass
     finally:
+        if hasattr(node, '_csv_file'):
+            node._csv_file.flush()
+            node._csv_file.close()
+            print(f"CSV salvo: {node._csv_path}")
         node.destroy_node()
-        executor.shutdown()
         try:
             rclpy.shutdown()
         except Exception:

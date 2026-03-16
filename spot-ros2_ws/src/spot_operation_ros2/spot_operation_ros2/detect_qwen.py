@@ -8,12 +8,13 @@ import time
 from pathlib import Path
 
 # Inject venv site-packages so SAM2/torch are found when running via ros2 run
-_VENV_SITE = "/home/spot-teleop/spot-ros2_ws/src/spot_operation_ros2/venv_valve_detection/lib/python3.10/site-packages"
+
+_VENV_SITE = "/home/spot-teleop/spot-ros2_ws/src/segment-anything-2/.venv/lib/python3.10/site-packages"
 if _VENV_SITE not in sys.path:
     sys.path.insert(0, _VENV_SITE)
 
 # Also inject the source path for SAM2 (editable install) as .pth files aren't processed
-_SAM2_ROOT = "/home/spot-teleop/spot-ros2_ws/segment-anything-2"
+_SAM2_ROOT = "/home/spot-teleop/spot-ros2_ws/src/segment-anything-2"
 if _SAM2_ROOT not in sys.path:
     # Insert at 1 (after venv site-packages)
     sys.path.insert(1, _SAM2_ROOT)
@@ -57,12 +58,24 @@ except ImportError:
 
 from collections import OrderedDict
 
-VLLM_URL = "http://localhost:8000"
+VLLM_URL = "http://100.111.174.61:8000"
 # ===============================================
 
 # Official SAM2 paths (absolute)
-SAM2_CHECKPOINT = "/home/spot-teleop/spot-ros2_ws/checkpoints/sam2.1_hiera_base_plus.pt"
-SAM2_CONFIG = "configs/sam2.1/sam2.1_hiera_b+.yaml"
+# Use tiny model for lower GPU usage (better for shared GPU with cuRobo)
+SAM2_CHECKPOINT_TINY = "/home/spot-teleop/spot-ros2_ws/checkpoints/sam2.1_hiera_tiny.pt"
+SAM2_CONFIG_TINY = "configs/sam2.1/sam2.1_hiera_t.yaml"
+
+SAM2_CHECKPOINT_BPLUS = "/home/spot-teleop/spot-ros2_ws/checkpoints/sam2.1_hiera_base_plus.pt"
+SAM2_CONFIG_BPLUS = "configs/sam2.1/sam2.1_hiera_b+.yaml"
+
+# Default to tiny if available, else base_plus
+if os.path.exists(SAM2_CHECKPOINT_TINY):
+    SAM2_CHECKPOINT = SAM2_CHECKPOINT_TINY
+    SAM2_CONFIG = SAM2_CONFIG_TINY
+else:
+    SAM2_CHECKPOINT = SAM2_CHECKPOINT_BPLUS
+    SAM2_CONFIG = SAM2_CONFIG_BPLUS
 
 # ImageNet normalization constants (same as SAM2 uses internally)
 _IMG_MEAN = (0.485, 0.456, 0.406)
@@ -100,6 +113,9 @@ def load_sam_video_model():
     
     if sam_video_model is None:
         try:
+            # Enable TF32 for free ~1.5x speedup on Ampere GPUs (RTX A2000, etc.)
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
             print(f"Carregando SAM2 VideoPredictor ({SAM2_CHECKPOINT})...")
             sam_video_model = build_sam2_video_predictor(
                 SAM2_CONFIG, SAM2_CHECKPOINT, device="cuda"
@@ -322,10 +338,15 @@ def ask_qwen_selection(mosaic_path, object_name):
     """
     base64_img = encode_image_to_base64(mosaic_path)
     
-    prompt = f"""Look at the 3 images labeled 1, 2, and 3.
-They show different segmentation masks (green overlay) for a '{object_name}'.
-Which mask represents the best mask segmentation?
-Return ONLY the digit: 1, 2, or 3."""
+    prompt = f"""You see 3 side-by-side crops labeled 1, 2, and 3. Each shows a green overlay representing a segmentation mask for a '{object_name}'.
+
+The BEST mask is the one where the green overlay covers the ENTIRE '{object_name}' as tightly as possible, with:
+- Full coverage: the green region covers the whole object, not just a part of it.
+- Tight fit: the green region does NOT extend much beyond the object boundaries into the background.
+- A mask that covers only a small piece of the object or misses large portions is WORSE than one that covers the full object even if slightly oversized.
+
+Which image (1, 2, or 3) has the best segmentation mask for the '{object_name}'?
+Answer with ONLY the digit: 1, 2, or 3."""
 
     payload = {
         "model": "Qwen/Qwen3-VL-8B-Instruct", 
@@ -770,6 +791,102 @@ Ensure bounding box and grasp point coordinates are normalized to [0-1000] scale
     return response.json()['choices'][0]['message']['content']
 
 
+def _quat_to_rotation_matrix(qx, qy, qz, qw):
+    """Convert quaternion to 3x3 rotation matrix (numpy)."""
+    return np.array([
+        [1 - 2*(qy*qy + qz*qz), 2*(qx*qy - qz*qw), 2*(qx*qz + qy*qw)],
+        [2*(qx*qy + qz*qw), 1 - 2*(qx*qx + qz*qz), 2*(qy*qz - qx*qw)],
+        [2*(qx*qz - qy*qw), 2*(qy*qz + qx*qw), 1 - 2*(qx*qx + qy*qy)]
+    ])
+
+
+def rotate_image_upright(img_pil, angle_deg):
+    """
+    Rotate a PIL image by angle_deg (CCW positive, OpenCV convention).
+    Expands canvas so no content is clipped. Fills border with neutral gray.
+    Returns (rotated_pil, M_forward, (rot_w, rot_h)).
+    """
+    img_np = np.array(img_pil.convert("RGB"))
+    h, w = img_np.shape[:2]
+    center = (w / 2.0, h / 2.0)
+
+    M = cv2.getRotationMatrix2D(center, angle_deg, 1.0)
+
+    cos_a = abs(M[0, 0])
+    sin_a = abs(M[0, 1])
+    rot_w = int(h * sin_a + w * cos_a)
+    rot_h = int(h * cos_a + w * sin_a)
+
+    M[0, 2] += (rot_w - w) / 2.0
+    M[1, 2] += (rot_h - h) / 2.0
+
+    rotated_np = cv2.warpAffine(
+        img_np, M, (rot_w, rot_h), borderValue=(127, 127, 127)
+    )
+    rotated_pil = Image.fromarray(rotated_np)
+    return rotated_pil, M, (rot_w, rot_h)
+
+
+def inverse_rotate_coords_1000(bbox_1000, grasps_1000, M_forward, rotated_size, original_size):
+    """
+    Map bbox and grasp points from the rotated image's [0-1000] space
+    back to the original image's [0-1000] space.
+
+    Args:
+        bbox_1000: [xmin, ymin, xmax, ymax] in [0-1000] of the rotated image
+        grasps_1000: list of [x, y] in [0-1000] of the rotated image
+        M_forward: 2x3 affine matrix used to produce the rotated image
+        rotated_size: (rot_w, rot_h) of the rotated image
+        original_size: (orig_w, orig_h) of the original image
+
+    Returns:
+        (corrected_bbox_1000, corrected_grasps_1000)
+    """
+    rot_w, rot_h = rotated_size
+    orig_w, orig_h = original_size
+    M_inv = cv2.invertAffineTransform(M_forward)
+
+    xmin = bbox_1000[0] / 1000.0 * rot_w
+    ymin = bbox_1000[1] / 1000.0 * rot_h
+    xmax = bbox_1000[2] / 1000.0 * rot_w
+    ymax = bbox_1000[3] / 1000.0 * rot_h
+
+    corners = np.array([
+        [xmin, ymin],
+        [xmax, ymin],
+        [xmax, ymax],
+        [xmin, ymax],
+    ], dtype=np.float64)
+
+    ones = np.ones((4, 1), dtype=np.float64)
+    corners_h = np.hstack([corners, ones])
+    orig_corners = (M_inv @ corners_h.T).T  # (4, 2)
+
+    ox_min = max(0.0, np.min(orig_corners[:, 0]))
+    oy_min = max(0.0, np.min(orig_corners[:, 1]))
+    ox_max = min(float(orig_w), np.max(orig_corners[:, 0]))
+    oy_max = min(float(orig_h), np.max(orig_corners[:, 1]))
+
+    corrected_bbox = [
+        int(ox_min / orig_w * 1000),
+        int(oy_min / orig_h * 1000),
+        int(ox_max / orig_w * 1000),
+        int(oy_max / orig_h * 1000),
+    ]
+
+    corrected_grasps = []
+    for g in (grasps_1000 or []):
+        gx_px = g[0] / 1000.0 * rot_w
+        gy_px = g[1] / 1000.0 * rot_h
+        pt_h = np.array([gx_px, gy_px, 1.0])
+        orig_pt = M_inv @ pt_h
+        ox = max(0.0, min(float(orig_w), orig_pt[0]))
+        oy = max(0.0, min(float(orig_h), orig_pt[1]))
+        corrected_grasps.append([int(ox / orig_w * 1000), int(oy / orig_h * 1000)])
+
+    return corrected_bbox, corrected_grasps
+
+
 class SnapshotNode(Node):
     """One-shot image capture for CLI mode."""
     def __init__(self):
@@ -845,12 +962,13 @@ class DetectQwenNode(Node):
         super().__init__('detect_qwen_node')
         
         # Parameters
-        self.declare_parameter('object_prompt', 'lever valve')
+        self.declare_parameter('object_prompt', 'wheel valve')
         self.declare_parameter('confidence_threshold', 0.3)
         self.declare_parameter('target_frame', 'target_object')
-        self.declare_parameter('rgb_topic', '/hand/rgb')
-        self.declare_parameter('depth_topic', '/hand/depth')
-        self.declare_parameter('camera_info_topic', '/hand/camera_info')
+        self.declare_parameter('rgb_topic', '/camera/hand/image')
+        self.declare_parameter('depth_topic', '/depth_registered/hand/image')
+        self.declare_parameter('camera_info_topic', '/camera/hand/camera_info')
+        self.declare_parameter('depth_info_topic', '/depth_registered/hand/camera_info')
         self.declare_parameter('visualize', True)
         
         self.object_prompt = self.get_parameter('object_prompt').value
@@ -860,6 +978,7 @@ class DetectQwenNode(Node):
         rgb_topic = self.get_parameter('rgb_topic').value
         depth_topic = self.get_parameter('depth_topic').value
         camera_info_topic = self.get_parameter('camera_info_topic').value
+        depth_info_topic = self.get_parameter('depth_info_topic').value
         
         self.get_logger().info(f"Object prompt: '{self.object_prompt}'")
         self.get_logger().info(f"Confidence threshold: {self.confidence_threshold}")
@@ -870,6 +989,7 @@ class DetectQwenNode(Node):
         self.latest_rgb = None
         self.latest_depth = None
         self.camera_intrinsics = None   # (fx, fy, cx, cy)
+        self.camera_frame_id = None     # frame_id from CameraInfo
         self.target_transform = None    # TransformStamped (odom → target)
         self.detection_running = False
         self.initial_detection_done = False
@@ -891,6 +1011,23 @@ class DetectQwenNode(Node):
         self.tracking_frame_count = 0
         self.last_tracking_score = 0.0
         
+        # Adaptive tracking: reduce GPU usage when object is static
+        self.declare_parameter('idle_tracking_interval', 3.0)
+        self.declare_parameter('active_tracking_interval', 0.2)
+        self.declare_parameter('stability_threshold_m', 0.015)
+        self.declare_parameter('stability_window', 5)
+        self.declare_parameter('gpu_yield_after_track', True)
+        
+        self.idle_tracking_interval = self.get_parameter('idle_tracking_interval').value
+        self.active_tracking_interval = self.get_parameter('active_tracking_interval').value
+        self.stability_threshold = self.get_parameter('stability_threshold_m').value
+        self.stability_window = self.get_parameter('stability_window').value
+        self.gpu_yield = self.get_parameter('gpu_yield_after_track').value
+        
+        self._recent_positions = []
+        self._tracking_idle = False
+        self._last_track_time = 0.0
+        
         # TF2
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
@@ -899,7 +1036,7 @@ class DetectQwenNode(Node):
         # Camera info subscriber (one-shot, just need intrinsics)
         self.camera_info_sub = self.create_subscription(
             CameraInfo,
-            camera_info_topic,
+            depth_info_topic,
             self._camera_info_cb,
             1
         )
@@ -914,8 +1051,8 @@ class DetectQwenNode(Node):
         )
         self.sync.registerCallback(self._synced_image_cb)
         
-        # Tracking timer (5 Hz — processes new frames for tracking)
-        self.tracking_timer = self.create_timer(0.2, self._tracking_timer_cb)
+        # Tracking timer (10 Hz poll — actual rate controlled adaptively inside callback)
+        self.tracking_timer = self.create_timer(0.1, self._tracking_timer_cb)
         
         # TF publish timer (10 Hz)
         self.tf_timer = self.create_timer(0.1, self._tf_publish_cb)
@@ -938,10 +1075,56 @@ class DetectQwenNode(Node):
             cx = msg.k[2]
             cy = msg.k[5]
             self.camera_intrinsics = (fx, fy, cx, cy)
+            self.camera_frame_id = msg.header.frame_id
             self.get_logger().info(
                 f"Camera intrinsics: fx={fx:.1f} fy={fy:.1f} cx={cx:.1f} cy={cy:.1f}"
             )
-    
+            self.get_logger().info(f"Camera frame_id: '{self.camera_frame_id}'")
+
+    def _get_correction_angle(self):
+        """
+        Compute the roll correction angle (degrees) by projecting gravity
+        into the camera image plane via a TF lookup body -> camera_frame.
+        Returns 0.0 on failure or if the angle is negligible (< 5 deg).
+        """
+        source_frame = getattr(self, 'camera_frame_id', None)
+        if not source_frame:
+            source_frame = (
+                self.latest_depth_header.frame_id
+                if hasattr(self, 'latest_depth_header')
+                else 'hand_cam'
+            )
+
+        try:
+            t = self.tf_buffer.lookup_transform(
+                'body', source_frame, rclpy.time.Time()
+            )
+        except Exception as e:
+            self.get_logger().warn(f"TF lookup failed for correction angle: {e}")
+            return 0.0
+
+        qx = t.transform.rotation.x
+        qy = t.transform.rotation.y
+        qz = t.transform.rotation.z
+        qw = t.transform.rotation.w
+
+        R_body_cam = _quat_to_rotation_matrix(qx, qy, qz, qw)
+        R_cam_body = R_body_cam.T
+
+        gravity_body = np.array([0.0, 0.0, -1.0])
+        gravity_cam = R_cam_body @ gravity_body
+
+        gx, gy = gravity_cam[0], gravity_cam[1]
+        angle_deg = 90.0 - np.degrees(np.arctan2(gy, gx))
+
+        # Normalize to [-180, 180]
+        angle_deg = (angle_deg + 180.0) % 360.0 - 180.0
+
+        if abs(angle_deg) < 5.0:
+            return 0.0
+
+        return angle_deg
+
     def _synced_image_cb(self, rgb_msg: RosImage, depth_msg: RosImage):
         """Store latest synced RGB + Depth pair."""
         try:
@@ -994,14 +1177,39 @@ class DetectQwenNode(Node):
             new_h = int(orig_h * scale_factor)
             img_resized = img_pil.resize((new_w, new_h), Image.LANCZOS)
             
-            # Step 1: Qwen detection
+            # Correct camera roll before sending to Qwen
+            correction_angle = self._get_correction_angle()
+            M_fwd = None
+            if abs(correction_angle) > 5.0:
+                img_for_qwen, M_fwd, rot_size = rotate_image_upright(img_resized, correction_angle)
+                self.get_logger().info(
+                    f"Rotated image by {correction_angle:.1f} deg for Qwen "
+                    f"({new_w}x{new_h} -> {rot_size[0]}x{rot_size[1]})"
+                )
+            else:
+                img_for_qwen = img_resized
+            
+            # Step 1: Qwen detection (on upright image)
             t0 = time.time()
-            response_text = detect_object(img_resized, self.object_prompt, VLLM_URL)
+            response_text = detect_object(img_for_qwen, self.object_prompt, VLLM_URL)
             t1 = time.time()
             qwen_ms = (t1 - t0) * 1000
             self.get_logger().info(f"Qwen response: {response_text[:60]}...")
             
-            boxes = parse_qwen_response(response_text, image_size=(new_w, new_h))
+            qwen_w, qwen_h = img_for_qwen.size
+            boxes = parse_qwen_response(response_text, image_size=(qwen_w, qwen_h))
+            
+            # Map bbox/grasps back to the original (non-rotated) image space
+            if M_fwd is not None and boxes:
+                for box_data in boxes:
+                    box_data['bbox_1000'], box_data['grasps_1000'] = inverse_rotate_coords_1000(
+                        box_data['bbox_1000'],
+                        box_data.get('grasps_1000', []),
+                        M_fwd,
+                        (qwen_w, qwen_h),
+                        (new_w, new_h),
+                    )
+                self.get_logger().info("Inverse-rotated bbox/grasps back to original image space")
             if not boxes:
                 self.get_logger().warn("No bounding box found (Qwen rejected or no object).")
                 self.detection_running = False
@@ -1041,6 +1249,7 @@ class DetectQwenNode(Node):
                 
             # Keep the primary grasp for offset calculation downstream
             grasp_u, grasp_v = grasp_points_uv[0]
+            self.grasp_points_uv_stored = grasp_points_uv  # Store for depth fallback
             
             # Step 2: Generate Candidate Masks & Select Best
             t2 = time.time()
@@ -1162,8 +1371,17 @@ class DetectQwenNode(Node):
             traceback.print_exc()
         finally:
             self.detection_running = False
+    def _check_position_stability(self):
+        """Check if tracked position is stable (object not moving)."""
+        if len(self._recent_positions) < self.stability_window:
+            return False
+        positions = self._recent_positions[-self.stability_window:]
+        arr = np.array(positions)
+        spread = arr.max(axis=0) - arr.min(axis=0)
+        return float(np.linalg.norm(spread)) < self.stability_threshold
+
     def _tracking_timer_cb(self):
-        """Process new frames for SAM2 tracking at 5 Hz."""
+        """Process new frames for SAM2 tracking with adaptive frequency."""
         if self.detection_running:
             return
         if self.latest_rgb is None or self.latest_depth is None:
@@ -1179,8 +1397,15 @@ class DetectQwenNode(Node):
         if not self.new_frame_available:
             return
         
+        now = time.time()
+        interval = (self.idle_tracking_interval if self._tracking_idle
+                     else self.active_tracking_interval)
+        if (now - self._last_track_time) < interval:
+            return
+        
         self.new_frame_available = False
-        t_start = time.time()
+        self._last_track_time = now
+        t_start = now
         
         try:
             img_pil = self.latest_rgb
@@ -1193,24 +1418,28 @@ class DetectQwenNode(Node):
             self.current_frame_idx = frame_idx
             self.tracking_frame_count += 1
             
-            # Propagate tracking to this frame
-            for out_frame_idx, out_obj_ids, out_mask_logits in \
-                    self.video_predictor.propagate_in_video(
-                        self.inference_state,
-                        start_frame_idx=frame_idx,
-                        max_frame_num_to_track=1,
-                    ):
-                # out_mask_logits: (num_objects, 1, H, W)
-                mask_logit = out_mask_logits[0]  # first (only) object
-                mask_prob = torch.sigmoid(mask_logit)
-                
-                mask_pixels = mask_prob[0] > 0.5
-                if mask_pixels.any():
-                    score = mask_prob[0][mask_pixels].mean().item()
-                else:
-                    score = 0.0
-                    
-                mask_np = mask_pixels.cpu().numpy().astype(np.uint8)
+            with torch.inference_mode():
+                with torch.autocast("cuda", dtype=torch.bfloat16):
+                    for out_frame_idx, out_obj_ids, out_mask_logits in \
+                            self.video_predictor.propagate_in_video(
+                                self.inference_state,
+                                start_frame_idx=frame_idx,
+                                max_frame_num_to_track=1,
+                            ):
+                        mask_logit = out_mask_logits[0].float()
+                        mask_prob = torch.sigmoid(mask_logit)
+                        
+                        mask_pixels = mask_prob[0] > 0.5
+                        if mask_pixels.any():
+                            score = mask_prob[0][mask_pixels].mean().item()
+                        else:
+                            score = 0.0
+                            
+                        mask_np = mask_pixels.cpu().numpy().astype(np.uint8)
+            
+            if self.gpu_yield:
+                torch.cuda.synchronize()
+                torch.cuda.empty_cache()
             
             self.last_tracking_score = score
             tracking_ms = (time.time() - t_start) * 1000
@@ -1235,16 +1464,37 @@ class DetectQwenNode(Node):
             if self.visualize:
                 self._update_display(self.latest_rgb, mask_np, score, centroid_uv)
             
-            # Log periodically (every 5th frame to avoid spam)
+            # Adaptive frequency: track position stability
+            if self.target_transform is not None:
+                t = self.target_transform.transform.translation
+                self._recent_positions.append((t.x, t.y, t.z))
+                if len(self._recent_positions) > self.stability_window * 2:
+                    self._recent_positions = self._recent_positions[-self.stability_window * 2:]
+                
+                was_idle = self._tracking_idle
+                self._tracking_idle = self._check_position_stability()
+                
+                if self._tracking_idle and not was_idle:
+                    self.get_logger().info(
+                        f"💤 Object stable — switching to idle tracking "
+                        f"({self.idle_tracking_interval}s interval). "
+                        f"GPU freed for cuRobo."
+                    )
+                elif not self._tracking_idle and was_idle:
+                    self.get_logger().info(
+                        f"🏃 Object moved — switching to active tracking "
+                        f"({self.active_tracking_interval}s interval)"
+                    )
+            
             if self.tracking_frame_count % 5 == 0:
+                mode_str = "IDLE" if self._tracking_idle else "ACTIVE"
                 self.get_logger().info(
                     f"📍 Tracking frame {self.tracking_frame_count}: "
-                    f"score={score:.3f} | {tracking_ms:.0f}ms"
+                    f"score={score:.3f} | {tracking_ms:.0f}ms | {mode_str}"
                 )
             
             # Memory optimization: Free old frames (keep 0 and last 50)
             if frame_idx > 50:
-                 # Ensure we don't free frame 0 (used for init conditioning)
                  old_idx = frame_idx - 50
                  if old_idx > 0 and old_idx < len(self.inference_state["images"]):
                      self.inference_state["images"][old_idx] = None
@@ -1262,7 +1512,6 @@ class DetectQwenNode(Node):
             self.get_logger().error(f"Tracking error: {e}")
             import traceback
             traceback.print_exc()
-            # If tracking breaks, try to re-detect
             self._reset_tracking()
 
     def _update_display(self, img_pil, mask_np, score, centroid_uv=None):
@@ -1391,15 +1640,49 @@ class DetectQwenNode(Node):
         self.current_frame_idx = -1
         self.tracking_frame_count = 0
         self.new_frame_available = False
-        # Clear GPU memory
+        self._recent_positions.clear()
+        self._tracking_idle = False
+        self._last_track_time = 0.0
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+
+    def _get_valid_depth(self, depth_map, u, v, radius=3):
+        """Get valid depth (in meters) at pixel (u, v) with a search window.
+        
+        Auto-detects mm vs m based on value range.
+        Returns (Z_meters, success).
+        """
+        h, w = depth_map.shape[:2]
+        v_c = min(max(0, v), h - 1)
+        u_c = min(max(0, u), w - 1)
+        
+        v_min, v_max = max(0, v_c - radius), min(h, v_c + radius + 1)
+        u_min, u_max = max(0, u_c - radius), min(w, u_c + radius + 1)
+        patch = depth_map[v_min:v_max, u_min:u_max]
+        
+        finite = patch[np.isfinite(patch) & (patch > 0)]
+        if len(finite) == 0:
+            return 0.0, False
+        
+        # Auto-detect mm vs m: if median > 20, assume millimeters
+        med = float(np.median(finite))
+        if med > 20.0:
+            finite = finite / 1000.0  # mm -> m
+            med = med / 1000.0
+        
+        # Filter plausible range in meters
+        valid = finite[(finite > 0.05) & (finite < 10.0)]
+        if len(valid) == 0:
+            return 0.0, False
+        
+        return float(np.median(valid)), True
 
     def _mask_to_tf(self, mask_np, depth_map, score):
         """Compute 3D centroid from mask and publish TF. Returns (u, v)."""
         # Find centroid of the mask
         M = cv2.moments(mask_np)
         if M["m00"] == 0:
+            self.get_logger().warn("⚠️ _mask_to_tf: mask has zero area (m00=0)")
             return None
         
         u = int(M["m10"] / M["m00"])
@@ -1410,30 +1693,74 @@ class DetectQwenNode(Node):
             v += self.grasp_offset[1]
         
         # Clamp to bounds
-        v = min(max(0, v), depth_map.shape[0] - 1)
-        u = min(max(0, u), depth_map.shape[1] - 1)
+        h, w = depth_map.shape[:2]
+        v = min(max(0, v), h - 1)
+        u = min(max(0, u), w - 1)
         
-        # Get depth at centroid (with small window median)
-        r = 3
-        v_min, v_max = max(0, v - r), min(depth_map.shape[0], v + r + 1)
-        u_min, u_max = max(0, u - r), min(depth_map.shape[1], u + r + 1)
-        depth_patch = depth_map[v_min:v_max, u_min:u_max]
+        # Strategy: try centroid first, then grasp points, then expand window
+        Z, ok = self._get_valid_depth(depth_map, u, v, radius=3)
         
-        valid = depth_patch[(depth_patch > 0.01) & (depth_patch < 10.0) & np.isfinite(depth_patch)]
-        if len(valid) == 0:
+        if not ok and hasattr(self, 'grasp_points_uv_stored'):
+            # Fallback 1: try each grasp point
+            for pt in self.grasp_points_uv_stored:
+                Z, ok = self._get_valid_depth(depth_map, pt[0], pt[1], radius=5)
+                if ok:
+                    u, v = pt[0], pt[1]
+                    self.get_logger().info(
+                        f"🔄 Depth fallback: using grasp point ({u},{v}) Z={Z:.3f}m"
+                    )
+                    break
+        
+        if not ok:
+            # Fallback 2: search wider window around mask centroid
+            for r in [10, 20, 40]:
+                Z, ok = self._get_valid_depth(depth_map, u, v, radius=r)
+                if ok:
+                    self.get_logger().info(
+                        f"🔄 Depth fallback: expanded window r={r} -> Z={Z:.3f}m"
+                    )
+                    break
+        
+        if not ok:
+            # Fallback 3: scan entire mask region for any valid depth
+            ys, xs = np.where(mask_np > 0)
+            if len(ys) > 0:
+                mask_depths = depth_map[ys, xs].astype(np.float64)
+                finite = mask_depths[np.isfinite(mask_depths) & (mask_depths > 0)]
+                if len(finite) > 0:
+                    med = float(np.median(finite))
+                    if med > 20.0:
+                        med = med / 1000.0
+                    if 0.05 < med < 10.0:
+                        Z = med
+                        ok = True
+                        self.get_logger().info(
+                            f"🔄 Depth fallback: full mask scan -> Z={Z:.3f}m "
+                            f"({len(finite)} valid pixels)"
+                        )
+        
+        if not ok:
+            self.get_logger().warn(
+                f"⚠️ _mask_to_tf: No valid depth found anywhere! "
+                f"centroid=({u},{v}), depth dtype={depth_map.dtype}"
+            )
             return (u, v)
-        
-        Z = float(np.median(valid))
         
         # Back-project
         fx, fy, cx, cy = self.camera_intrinsics
         X = (u - cx) * Z / fx
         Y = (v - cy) * Z / fy
         
-        # Transform to odom
+        # Transform to body
         try:
+            source_frame = self.latest_depth_header.frame_id if hasattr(self, 'latest_depth_header') else 'hand_cam'
+            self.get_logger().info(
+                f"🔎 _mask_to_tf: centroid=({u},{v}) Z={Z:.3f}m -> cam3D=({X:.3f},{Y:.3f},{Z:.3f}) "
+                f"source_frame='{source_frame}'",
+                once=True
+            )
             t = self.tf_buffer.lookup_transform(
-                'odom', 'hand_cam', rclpy.time.Time()
+                'body', source_frame, rclpy.time.Time()
             )
             tx = t.transform.translation.x
             ty = t.transform.translation.y
@@ -1442,7 +1769,6 @@ class DetectQwenNode(Node):
                               t.transform.rotation.z, t.transform.rotation.w)
             
             # Rotate point
-            # ... reuse _rotate_point_by_quaternion static method ...
             px, py, pz = self._rotate_point_by_quaternion(X, Y, Z, rx, ry, rz, rw)
             
             target_x = px + tx
@@ -1452,7 +1778,7 @@ class DetectQwenNode(Node):
             # Publish TF
             tf_msg = TransformStamped()
             tf_msg.header.stamp = self.get_clock().now().to_msg()
-            tf_msg.header.frame_id = 'odom'
+            tf_msg.header.frame_id = 'body'
             tf_msg.child_frame_id = self.target_frame_name
             tf_msg.transform.translation.x = target_x
             tf_msg.transform.translation.y = target_y
@@ -1462,8 +1788,15 @@ class DetectQwenNode(Node):
             self.target_transform = tf_msg
             self.tf_broadcaster.sendTransform(tf_msg)
             
-        except Exception:
-            pass
+            # Log periodically (every 10th frame)
+            if self.tracking_frame_count % 10 == 0:
+                self.get_logger().info(
+                    f"📢 Publishing TF: body -> {self.target_frame_name} at "
+                    f"({target_x:.3f}, {target_y:.3f}, {target_z:.3f})"
+                )
+            
+        except Exception as e:
+            self.get_logger().error(f"❌ TF error (source_frame='{source_frame}'): {e}")
             
         return (u, v)
 

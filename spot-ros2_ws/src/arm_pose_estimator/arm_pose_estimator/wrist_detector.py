@@ -16,7 +16,7 @@ Author: Generated for spot-teleop
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Image, CameraInfo
-from geometry_msgs.msg import PoseStamped, TransformStamped
+from geometry_msgs.msg import PoseStamped, TransformStamped, Quaternion
 import tf2_ros
 from cv_bridge import CvBridge
 import cv2
@@ -130,13 +130,13 @@ class WristDetector(Node):
         self.detection_count = 0
         
         # EMA filter parameters
-        self.declare_parameter('filter_alpha_axes', 0.3)  # Lower = smoother body frame
-        self.declare_parameter('filter_alpha_wrist', 0.5)  # Higher = more responsive wrist
+        self.declare_parameter('filter_alpha_axes', 0.15)  # Lower = smoother body frame
+        self.declare_parameter('filter_alpha_wrist', 0.2)  # Higher = more responsive wrist
         self.alpha_axes = self.get_parameter('filter_alpha_axes').value
         self.alpha_wrist = self.get_parameter('filter_alpha_wrist').value
         
         # Jump filter parameters (max allowed movement per frame in meters)
-        self.declare_parameter('jump_threshold', 0.15)  # 15cm max jump per frame
+        self.declare_parameter('jump_threshold', 0.40)  # Increased to 40cm for more fluid body follow
         self.jump_threshold = self.get_parameter('jump_threshold').value
         
         # Wrist jump filter (higher threshold since wrist moves faster)
@@ -144,7 +144,7 @@ class WristDetector(Node):
         self.wrist_jump_threshold = self.get_parameter('wrist_jump_threshold').value
         
         # Angular jump filter (max allowed rotation per frame in degrees)
-        self.declare_parameter('axis_jump_threshold_deg', 5.0)  # 5 degrees max per frame
+        self.declare_parameter('axis_jump_threshold_deg', 30.0)  # Increased to 30 degrees
         self.axis_jump_threshold = np.radians(self.get_parameter('axis_jump_threshold_deg').value)
         
         # Filtered states (EMA)
@@ -163,12 +163,29 @@ class WristDetector(Node):
         # Previous axes for angular jump filter
         self.prev_axes = {}
         
+        # Max plausible velocity for body landmarks (m/s)
+        # Shoulders/hips don't move faster than ~1.5 m/s in normal use
+        self.declare_parameter('max_landmark_velocity', 1.5)
+        self.max_landmark_velocity = self.get_parameter('max_landmark_velocity').value
+        
+        # Timestamps for velocity-based convergence
+        self.prev_landmark_times = {}
+        
         # Last valid body frame (used when any landmark is rejected)
         self.last_valid_origin = None
         self.last_valid_R = None  # Rotation matrix for body frame
         
         # Flag to track if any body landmark was rejected this frame
         self.body_landmark_rejected = False
+        
+        # Hand orientation (roll)
+        self.hand_quat = Quaternion(x=0.0, y=0.0, z=0.0, w=1.0)
+        self.hand_roll_sub = self.create_subscription(
+            Quaternion,
+            '/hand_roll_quat',
+            self.hand_roll_callback,
+            10
+        )
         
         self.get_logger().info('=== Wrist Detector Node Started ===')
         self.get_logger().info(f'Subscribing to color topic: {color_topic}')
@@ -180,6 +197,7 @@ class WristDetector(Node):
         self.get_logger().info(f'Output frame for wrist pose: {self.output_frame}')
         self.get_logger().info(f'Filter alpha (axes): {self.alpha_axes}, (wrist): {self.alpha_wrist}')
         self.get_logger().info(f'Jump threshold: {self.jump_threshold*100:.1f} cm/frame')
+        self.get_logger().info(f'Max landmark velocity: {self.max_landmark_velocity:.2f} m/s')
         self.get_logger().info(f'Wrist jump threshold: {self.wrist_jump_threshold*100:.1f} cm/frame')
         self.get_logger().info(f'Axis jump threshold: {np.degrees(self.axis_jump_threshold):.1f} deg/frame')
         self.get_logger().info(f'Scale factor (human to Spot arm): {self.scale_factor:.3f}')
@@ -188,6 +206,10 @@ class WristDetector(Node):
         # Store last comparison results for logging
         self.last_position_error = None
         self.last_angle_errors = None
+
+    def hand_roll_callback(self, msg):
+        """Update hand orientation (roll) from hand_orientation_estimator."""
+        self.hand_quat = msg
 
     def camera_info_callback(self, msg):
         """Store camera info and extract intrinsics."""
@@ -258,17 +280,19 @@ class WristDetector(Node):
         return alpha * new_value + (1 - alpha) * filtered_value
 
     def apply_jump_filter(self, landmark_name, new_pos):
-        """Apply jump filter to limit sudden position changes.
+        """Apply pure rejection jump filter for body landmarks.
         
-        If the landmark moves more than jump_threshold, clamp the movement
-        to prevent sudden jumps (e.g., when MediaPipe pulls shoulders with arm).
+        Natural movement at detection frequency always produces intermediate
+        points within the threshold. If a reading exceeds the threshold,
+        it's bad data (occlusion, depth noise) — reject entirely and keep
+        the previous valid position. No convergence toward bad readings.
         
         Args:
             landmark_name: Identifier for the landmark (e.g., 'l_shoulder')
             new_pos: New 3D position (numpy array)
         
         Returns:
-            Filtered position (clamped if jump detected)
+            Previous valid position if jump detected, otherwise new_pos
         """
         if landmark_name not in self.prev_landmarks_3d:
             self.prev_landmarks_3d[landmark_name] = new_pos.copy()
@@ -279,16 +303,14 @@ class WristDetector(Node):
         distance = np.linalg.norm(delta)
         
         if distance > self.jump_threshold:
-            # REJECT the new value - keep previous position (don't interpolate towards bad value!)
+            # Bad data — reject entirely, keep previous valid position
             self.get_logger().warn(
-                f'JUMP REJECTED on {landmark_name}: {distance*100:.1f}cm (threshold: {self.jump_threshold*100:.1f}cm) - keeping previous'
+                f'JUMP REJECTED on {landmark_name}: {distance*100:.1f}cm — keeping previous'
             )
-            # Set flag so we use the previous complete body frame
             self.body_landmark_rejected = True
-            # Don't update prev_landmarks_3d - keep the old good value
             return prev_pos
         else:
-            # Accept new value and update previous
+            # Normal movement — accept and update baseline
             self.prev_landmarks_3d[landmark_name] = new_pos.copy()
             return new_pos
 
@@ -328,7 +350,7 @@ class WristDetector(Node):
             return new_axis
 
     def synced_callback(self, color_msg, depth_msg):
-        """Process synchronized color and depth images."""
+        """Process synchronized color and depth images with body frame persistence."""
         try:
             # Convert ROS Images to OpenCV format
             cv_image = self.bridge.imgmsg_to_cv2(color_msg, "bgr8")
@@ -338,7 +360,7 @@ class WristDetector(Node):
                 depth_image = self.bridge.imgmsg_to_cv2(depth_msg, "32FC1")
             elif depth_msg.encoding == '16UC1':
                 depth_image = self.bridge.imgmsg_to_cv2(depth_msg, "16UC1")
-                depth_image = depth_image.astype(np.float32) / 1000.0  # Convert mm to meters
+                depth_image = depth_image.astype(np.float32) / 1000.0
             else:
                 depth_image = self.bridge.imgmsg_to_cv2(depth_msg, "passthrough")
                 if depth_image.dtype == np.uint16:
@@ -346,499 +368,185 @@ class WristDetector(Node):
             
             # Convert BGR to RGB for MediaPipe
             rgb_image = cv2.cvtColor(cv_image, cv2.COLOR_BGR2RGB)
-            
-            # Process the image with MediaPipe Pose
             results = self.pose.process(rgb_image)
-            
-            # Create a copy for visualization
             display_image = cv_image.copy()
+            height, width, _ = cv_image.shape
             
-            # Check if pose landmarks were detected
+            # Reset rejection flag for this frame
+            self.body_landmark_rejected = False
+            
             if results.pose_landmarks:
                 self.detection_count += 1
+                landmarks = results.pose_landmarks.landmark
                 
-                # Get image dimensions
-                height, width, _ = cv_image.shape
-                
-                # Draw all pose landmarks if requested
+                # Draw landmarks if requested
                 if self.show_all_landmarks:
                     self.mp_drawing.draw_landmarks(
-                        display_image,
-                        results.pose_landmarks,
-                        self.mp_pose.POSE_CONNECTIONS,
-                        landmark_drawing_spec=self.mp_drawing_styles.get_default_pose_landmarks_style()
-                    )
+                        display_image, results.pose_landmarks, self.mp_pose.POSE_CONNECTIONS,
+                        landmark_drawing_spec=self.mp_drawing_styles.get_default_pose_landmarks_style())
                 
-                # Extract right wrist landmark (index 16)
-                landmarks = results.pose_landmarks.landmark
-                right_wrist = landmarks[self.mp_pose.PoseLandmark.RIGHT_WRIST.value]
+                # 1. Update Body Frame with Hierarchical Fallback
+                l_shoulder, r_shoulder = landmarks[11], landmarks[12]
+                l_hip, r_hip = landmarks[23], landmarks[24]
+                l_ankle, r_ankle = landmarks[27], landmarks[28]
                 
-                # Check if the landmark is visible (visibility > 0.5)
-                if right_wrist.visibility > 0.5:
-                    # Convert normalized coordinates to pixel coordinates
-                    wrist_x = int(right_wrist.x * width)
-                    wrist_y = int(right_wrist.y * height)
-                    
-                    # Draw a circle at the wrist position
-                    cv2.circle(
-                        display_image,
-                        (wrist_x, wrist_y),
-                        self.wrist_radius,
-                        self.wrist_color,
-                        -1  # Filled circle
-                    )
-                    
-                    # Draw a larger outline circle
-                    cv2.circle(
-                        display_image,
-                        (wrist_x, wrist_y),
-                        self.wrist_radius + 3,
-                        (255, 255, 255),  # White outline
-                        2
-                    )
-                    
-                    # Log detection periodically
-                    if self.frame_count % 30 == 0:
-                        self.get_logger().info(
-                            f'Right wrist detected at ({wrist_x}, {wrist_y}) - '
-                            f'Visibility: {right_wrist.visibility:.2f}'
-                        )
-                else:
-                    # Wrist not visible enough
-                    cv2.putText(
-                        display_image,
-                        'Right wrist not visible',
-                        (10, 60),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.7,
-                        (0, 0, 255),
-                        2
-                    )
+                # Check visibility for different levels
+                vis_sh = l_shoulder.visibility > 0.5 and r_shoulder.visibility > 0.5
+                vis_hp = l_hip.visibility > 0.5 and r_hip.visibility > 0.5
+                vis_ak = l_ankle.visibility > 0.5 and r_ankle.visibility > 0.5
                 
-                # Calculate and draw body origin (centroid of shoulders, hips, and ankles)
-                l_shoulder = landmarks[11]
-                r_shoulder = landmarks[12]
-                l_hip = landmarks[23]
-                r_hip = landmarks[24]
-                l_ankle = landmarks[27]
-                r_ankle = landmarks[28]
-                
-                # Only draw origin if all 6 landmarks are visible and camera intrinsics are available
-                if (l_shoulder.visibility > 0.5 and r_shoulder.visibility > 0.5 and
-                    l_hip.visibility > 0.5 and r_hip.visibility > 0.5 and
-                    l_ankle.visibility > 0.5 and r_ankle.visibility > 0.5 and self.fx is not None):
+                if vis_sh and self.fx is not None:
+                    # Basic points for all levels
+                    sh_l_px = (int(l_shoulder.x * width), int(l_shoulder.y * height))
+                    sh_r_px = (int(r_shoulder.x * width), int(r_shoulder.y * height))
+                    d_sh_l = self.get_depth_at_pixel(depth_image, sh_l_px[0], sh_l_px[1])
+                    d_sh_r = self.get_depth_at_pixel(depth_image, sh_r_px[0], sh_r_px[1])
                     
-                    # Convert landmarks to pixel coordinates
-                    l_sh_px = (int(l_shoulder.x * width), int(l_shoulder.y * height))
-                    r_sh_px = (int(r_shoulder.x * width), int(r_shoulder.y * height))
-                    l_hp_px = (int(l_hip.x * width), int(l_hip.y * height))
-                    r_hp_px = (int(r_hip.x * width), int(r_hip.y * height))
-                    l_ak_px = (int(l_ankle.x * width), int(l_ankle.y * height))
-                    r_ak_px = (int(r_ankle.x * width), int(r_ankle.y * height))
-                    
-                    # Get depth for each landmark using median filter
-                    l_sh_depth = self.get_depth_at_pixel(depth_image, l_sh_px[0], l_sh_px[1])
-                    r_sh_depth = self.get_depth_at_pixel(depth_image, r_sh_px[0], r_sh_px[1])
-                    l_hp_depth = self.get_depth_at_pixel(depth_image, l_hp_px[0], l_hp_px[1])
-                    r_hp_depth = self.get_depth_at_pixel(depth_image, r_hp_px[0], r_hp_px[1])
-                    l_ak_depth = self.get_depth_at_pixel(depth_image, l_ak_px[0], l_ak_px[1])
-                    r_ak_depth = self.get_depth_at_pixel(depth_image, r_ak_px[0], r_ak_px[1])
-                    
-                    # Check if all depths are valid
-                    all_depths = [l_sh_depth, r_sh_depth, l_hp_depth, r_hp_depth, l_ak_depth, r_ak_depth]
-                    if all(d is not None and d > 0.1 and d < 10.0 for d in all_depths):
+                    if d_sh_l and d_sh_r:
+                        l_sh_3d = self.apply_jump_filter('l_sh', self.deproject_pixel_to_3d(sh_l_px[0], sh_l_px[1], d_sh_l))
+                        r_sh_3d = self.apply_jump_filter('r_sh', self.deproject_pixel_to_3d(sh_r_px[0], sh_r_px[1], d_sh_r))
                         
-                        # Reset body landmark rejection flag for this frame
-                        self.body_landmark_rejected = False
+                        # Initialize vectors
+                        up_vec = np.array([0.0, -1.0, 0.0]) # Default up (camera frame)
+                        torso_center = (l_sh_3d + r_sh_3d) / 2
                         
-                        # Deproject pixels to 3D points in camera frame
-                        l_sh_3d_raw = self.deproject_pixel_to_3d(l_sh_px[0], l_sh_px[1], l_sh_depth)
-                        r_sh_3d_raw = self.deproject_pixel_to_3d(r_sh_px[0], r_sh_px[1], r_sh_depth)
-                        l_hp_3d_raw = self.deproject_pixel_to_3d(l_hp_px[0], l_hp_px[1], l_hp_depth)
-                        r_hp_3d_raw = self.deproject_pixel_to_3d(r_hp_px[0], r_hp_px[1], r_hp_depth)
-                        l_ak_3d_raw = self.deproject_pixel_to_3d(l_ak_px[0], l_ak_px[1], l_ak_depth)
-                        r_ak_3d_raw = self.deproject_pixel_to_3d(r_ak_px[0], r_ak_px[1], r_ak_depth)
+                        best_level = "None"
                         
-                        # Apply jump filter to body landmarks (not wrist - it needs to move freely)
-                        l_sh_3d = self.apply_jump_filter('l_shoulder', l_sh_3d_raw)
-                        r_sh_3d = self.apply_jump_filter('r_shoulder', r_sh_3d_raw)
-                        l_hp_3d = self.apply_jump_filter('l_hip', l_hp_3d_raw)
-                        r_hp_3d = self.apply_jump_filter('r_hip', r_hp_3d_raw)
-                        l_ak_3d = self.apply_jump_filter('l_ankle', l_ak_3d_raw)
-                        r_ak_3d = self.apply_jump_filter('r_ankle', r_ak_3d_raw)
+                        # --- LEVEL 1: Full Body (Ankles) ---
+                        if vis_hp and vis_ak:
+                            hp_l_px = (int(l_hip.x * width), int(l_hip.y * height))
+                            hp_r_px = (int(r_hip.x * width), int(r_hip.y * height))
+                            ak_l_px = (int(l_ankle.x * width), int(l_ankle.y * height))
+                            ak_r_px = (int(r_ankle.x * width), int(r_ankle.y * height))
+                            d_hp_l = self.get_depth_at_pixel(depth_image, hp_l_px[0], hp_l_px[1])
+                            d_hp_r = self.get_depth_at_pixel(depth_image, hp_r_px[0], hp_r_px[1])
+                            d_ak_l = self.get_depth_at_pixel(depth_image, ak_l_px[0], ak_l_px[1])
+                            d_ak_r = self.get_depth_at_pixel(depth_image, ak_r_px[0], ak_r_px[1])
+                            
+                            if all([d_hp_l, d_hp_r, d_ak_l, d_ak_r]):
+                                l_hp_3d = self.apply_jump_filter('l_hp', self.deproject_pixel_to_3d(hp_l_px[0], hp_l_px[1], d_hp_l))
+                                r_hp_3d = self.apply_jump_filter('r_hp', self.deproject_pixel_to_3d(hp_r_px[0], hp_r_px[1], d_hp_r))
+                                l_ak_3d = self.apply_jump_filter('l_ak', self.deproject_pixel_to_3d(ak_l_px[0], ak_l_px[1], d_ak_l))
+                                r_ak_3d = self.apply_jump_filter('r_ak', self.deproject_pixel_to_3d(ak_r_px[0], ak_r_px[1], d_ak_r))
+                                
+                                torso_center = (l_sh_3d + r_sh_3d + l_hp_3d + r_hp_3d) / 4
+                                up_vec = (l_sh_3d + r_sh_3d)/2 - (l_ak_3d + r_ak_3d)/2
+                                best_level = "FULL_BODY"
                         
-                        # Calculate origin as center of torso (average of shoulders and hips)
-                        torso_center = (l_sh_3d + r_sh_3d + l_hp_3d + r_hp_3d) / 4
+                        # --- LEVEL 2: Torso Only (Hips) ---
+                        if best_level == "None" and vis_hp:
+                            hp_l_px = (int(l_hip.x * width), int(l_hip.y * height))
+                            hp_r_px = (int(r_hip.x * width), int(r_hip.y * height))
+                            d_hp_l = self.get_depth_at_pixel(depth_image, hp_l_px[0], hp_l_px[1])
+                            d_hp_r = self.get_depth_at_pixel(depth_image, hp_r_px[0], hp_r_px[1])
+                            
+                            if d_hp_l and d_hp_r:
+                                l_hp_3d = self.apply_jump_filter('l_hp', self.deproject_pixel_to_3d(hp_l_px[0], hp_l_px[1], d_hp_l))
+                                r_hp_3d = self.apply_jump_filter('r_hp', self.deproject_pixel_to_3d(hp_r_px[0], hp_r_px[1], d_hp_r))
+                                torso_center = (l_sh_3d + r_sh_3d + l_hp_3d + r_hp_3d) / 4
+                                up_vec = (l_sh_3d + r_sh_3d)/2 - (l_hp_3d + r_hp_3d)/2
+                                best_level = "TORSO"
+                                
+                        # --- LEVEL 3: Shoulders Only ---
+                        if best_level == "None":
+                            best_level = "SHOULDERS_ONLY"
+                            # up_vec is already set to camera default [0, -1, 0]
                         
-                        # Calculate torso center pixel for visibility check
-                        torso_center_px = self.project_3d_to_pixel(torso_center)
+                        # Common Frame Calculation
+                        axis_x = (r_sh_3d - l_sh_3d) / (np.linalg.norm(r_sh_3d - l_sh_3d) + 1e-6)
+                        up_vec /= (np.linalg.norm(up_vec) + 1e-6)
+                        axis_z = -np.cross(axis_x, up_vec)
+                        axis_z /= (np.linalg.norm(axis_z) + 1e-6)
+                        axis_y = np.cross(axis_x, axis_z)
                         
-                        if torso_center_px is not None:
-                            # ========== CALCULATE COORDINATE AXES IN 3D ==========
-                            # Axis X (Lateral): Vector from left shoulder to right shoulder
-                            axis_x = r_sh_3d - l_sh_3d
-                            axis_x = axis_x / (np.linalg.norm(axis_x) + 1e-6)  # Normalize
-                            
-                            # Preliminary Up vector: from ankles center to shoulders center
-                            # Using ankles gives a longer, more stable vector
-                            shoulders_center = (l_sh_3d + r_sh_3d) / 2
-                            ankles_center = (l_ak_3d + r_ak_3d) / 2
-                            up_preliminary = shoulders_center - ankles_center
-                            up_preliminary = up_preliminary / (np.linalg.norm(up_preliminary) + 1e-6)
-                            
-                            # Axis Z (Frontal): Normal to the plane (cross product of X and up)
-                            # Points forward (out of the body, towards camera)
-                            # Note: We negate because cross(right, up) points backwards
-                            axis_z = -np.cross(axis_x, up_preliminary)
-                            axis_z = axis_z / (np.linalg.norm(axis_z) + 1e-6)  # Normalize
-                            
-                            # Axis Y (Vertical): Cross product of X and Z (ensures orthogonality)
-                            # cross(right, forward) = up (right-hand rule)
-                            axis_y = np.cross(axis_x, axis_z)
-                            axis_y = axis_y / (np.linalg.norm(axis_y) + 1e-6)  # Normalize
-                            
-                            # ========== CALCULATE ORIGIN ALIGNED WITH RIGHT SHOULDER ==========
-                            # Build temporary rotation matrix to transform to body frame
-                            R_temp = np.column_stack([axis_z, -axis_x, axis_y])
-                            
-                            # Transform right shoulder to body frame (relative to torso center)
-                            r_sh_in_body = R_temp.T @ (r_sh_3d - torso_center)
-                            
-                            # New origin in body frame: Y from shoulder (lateral alignment), X and Z = 0 (centered)
-                            # X = forward, Y = left, Z = up
-                            # We want to move origin laterally to align with right shoulder
-                            new_origin_offset_body = np.array([0.0, r_sh_in_body[1], 0.0])
-                            
-                            # Convert offset back to camera frame and add to torso center
-                            origin_3d = torso_center + R_temp @ new_origin_offset_body
-                            
-                            # ========== APPLY ANGULAR JUMP FILTER TO AXES ==========
-                            axis_x = self.apply_axis_jump_filter('axis_x', axis_x)
-                            axis_y = self.apply_axis_jump_filter('axis_y', axis_y)
-                            axis_z = self.apply_axis_jump_filter('axis_z', axis_z)
-                            
-                            # ========== APPLY EMA FILTER TO BODY FRAME ==========
+                        # Origin aligned with right shoulder
+                        R_temp = np.column_stack([axis_z, -axis_x, axis_y])
+                        r_sh_in_body = R_temp.T @ (r_sh_3d - torso_center)
+                        origin_3d = torso_center + R_temp @ np.array([0.0, r_sh_in_body[1], 0.0])
+                        
+                        # Filter and store ONLY if no landmark jumped
+                        # This keeps the axis frame consistent (no weird twists from partial updates)
+                        if not self.body_landmark_rejected:
                             self.filtered_origin = self.apply_ema(origin_3d, self.filtered_origin, self.alpha_axes)
                             self.filtered_axis_x = self.apply_ema(axis_x, self.filtered_axis_x, self.alpha_axes)
                             self.filtered_axis_y = self.apply_ema(axis_y, self.filtered_axis_y, self.alpha_axes)
                             self.filtered_axis_z = self.apply_ema(axis_z, self.filtered_axis_z, self.alpha_axes)
                             
-                            # Re-normalize filtered axes (EMA can break unit length)
-                            self.filtered_axis_x = self.filtered_axis_x / (np.linalg.norm(self.filtered_axis_x) + 1e-6)
-                            self.filtered_axis_y = self.filtered_axis_y / (np.linalg.norm(self.filtered_axis_y) + 1e-6)
-                            self.filtered_axis_z = self.filtered_axis_z / (np.linalg.norm(self.filtered_axis_z) + 1e-6)
+                            self.last_valid_origin = self.filtered_origin.copy()
+                            self.last_valid_R = np.column_stack([self.filtered_axis_z, -self.filtered_axis_x, self.filtered_axis_y])
                             
-                            # Use filtered values for visualization and calculations
-                            origin_3d = self.filtered_origin
-                            axis_x = self.filtered_axis_x
-                            axis_y = self.filtered_axis_y
-                            axis_z = self.filtered_axis_z
+                            if self.frame_count % 60 == 0:
+                                self.get_logger().info(f'Body tracking ACTIVE (Level: {best_level})')
+                        else:
+                            if self.frame_count % 30 == 0:
+                                self.get_logger().warn('Body jump detected - FREEZING axes update for this frame.')
+                
+                # 2. Process Wrist independently using last valid body frame
+                right_wrist = landmarks[self.mp_pose.PoseLandmark.RIGHT_WRIST.value]
+                if right_wrist.visibility > 0.5 and self.last_valid_origin is not None:
+                    w_x, w_y = int(right_wrist.x * width), int(right_wrist.y * height)
+                    cv2.circle(display_image, (w_x, w_y), self.wrist_radius, self.wrist_color, -1)
+                    
+                    w_depth = self.get_depth_at_pixel(depth_image, w_x, w_y)
+                    if w_depth is not None and 0.1 < w_depth < 10.0:
+                        w_3d_cam = self.deproject_pixel_to_3d(w_x, w_y, w_depth)
+                        if w_3d_cam is not None:
+                            w_in_body_raw = self.last_valid_R.T @ (w_3d_cam - self.last_valid_origin)
                             
-                            # Calculate origin pixel for visualization (after filtering)
-                            origin_px = self.project_3d_to_pixel(origin_3d)
-                            
-                            # Build rotation matrix for body frame (REP-103 convention)
-                            # REP-103: X=forward, Y=left, Z=up
-                            # Our axes: axis_x=right, axis_y=up, axis_z=forward
-                            # So: X_rep103=axis_z, Y_rep103=-axis_x, Z_rep103=axis_y
-                            R_human_rep103 = np.column_stack([axis_z, -axis_x, axis_y])
-                            
-                            # ========== HANDLE BODY FRAME CONSISTENCY ==========
-                            # If any body landmark was rejected, use the PREVIOUS complete body frame
-                            # This prevents using inconsistent landmarks from different frames
-                            if self.body_landmark_rejected and self.last_valid_origin is not None:
-                                self.get_logger().warn('Using previous body frame due to landmark rejection')
-                                origin_for_wrist = self.last_valid_origin
-                                R_for_wrist = self.last_valid_R
-                            else:
-                                # All landmarks accepted - update the last valid body frame
-                                origin_for_wrist = origin_3d
-                                R_for_wrist = R_human_rep103
-                                self.last_valid_origin = origin_3d.copy()
-                                self.last_valid_R = R_human_rep103.copy()
-                            
-                            # Scale factor for axis length in meters
-                            axis_length_m = 0.3  # 30 cm axes
-                            
-                            # ========== CALCULATE WRIST IN BODY FRAME (REP-103) ==========
-                            # Get wrist 3D position in camera frame
-                            wrist_depth = self.get_depth_at_pixel(depth_image, wrist_x, wrist_y)
-                            wrist_3d = None
-                            wrist_in_body = None
-                            
-                            if wrist_depth is not None and 0.1 < wrist_depth < 10.0:
-                                wrist_3d = self.deproject_pixel_to_3d(wrist_x, wrist_y, wrist_depth)
-                                
-                                if wrist_3d is not None:
-                                    # Transform wrist to body frame using CONSISTENT body frame
-                                    # wrist_in_body = R^T @ (wrist_camera - origin_camera)
-                                    wrist_in_body_raw = R_for_wrist.T @ (wrist_3d - origin_for_wrist)
-                                    
-                                    # ========== APPLY JUMP FILTER TO WRIST_IN_BODY ==========
-                                    # Reject wrist if it jumps too much (protects against bad body frame)
-                                    if self.prev_wrist_in_body is not None:
-                                        wrist_delta = np.linalg.norm(wrist_in_body_raw - self.prev_wrist_in_body)
-                                        if wrist_delta > self.wrist_jump_threshold:
-                                            self.get_logger().warn(
-                                                f'WRIST JUMP REJECTED: {wrist_delta*100:.1f}cm (threshold: {self.wrist_jump_threshold*100:.1f}cm) - keeping previous'
-                                            )
-                                            wrist_in_body_raw = self.prev_wrist_in_body.copy()
-                                        else:
-                                            self.prev_wrist_in_body = wrist_in_body_raw.copy()
-                                    else:
-                                        self.prev_wrist_in_body = wrist_in_body_raw.copy()
-                                    
-                                    # Apply EMA filter to wrist position
-                                    self.filtered_wrist_in_body = self.apply_ema(
-                                        wrist_in_body_raw, 
-                                        self.filtered_wrist_in_body, 
-                                        self.alpha_wrist
-                                    )
-                                    wrist_in_body = self.filtered_wrist_in_body
-                                    
-                                    # Apply scale factor to compensate human arm vs Spot arm length
-                                    wrist_scaled = wrist_in_body * self.scale_factor
-                                    
-                                    # Apply shoulder offset to reference from arm base instead of body
-                                    # This adds the offset from body to arm_link_sh0
-                                    wrist_final = wrist_scaled + self.shoulder_offset
-                                    
-                                    # Publish PoseStamped
-                                    pose_msg = PoseStamped()
-                                    pose_msg.header.stamp = self.get_clock().now().to_msg()
-                                    pose_msg.header.frame_id = self.output_frame
-                                    pose_msg.pose.position.x = float(wrist_final[0])  # forward
-                                    pose_msg.pose.position.y = float(wrist_final[1])  # left
-                                    pose_msg.pose.position.z = float(wrist_final[2])  # up
-                                    # Orientation: identity (no wrist orientation yet)
-                                    pose_msg.pose.orientation.w = 1.0
-                                    pose_msg.pose.orientation.x = 0.0
-                                    pose_msg.pose.orientation.y = 0.0
-                                    pose_msg.pose.orientation.z = 0.0
-                                    
-                                    self.wrist_pose_pub.publish(pose_msg)
-                                    
-                                    # Publish TF: body → wrist_target
-                                    tf_msg = TransformStamped()
-                                    tf_msg.header.stamp = pose_msg.header.stamp
-                                    tf_msg.header.frame_id = self.output_frame  # "body"
-                                    tf_msg.child_frame_id = "wrist_target"
-                                    tf_msg.transform.translation.x = float(wrist_final[0])
-                                    tf_msg.transform.translation.y = float(wrist_final[1])
-                                    tf_msg.transform.translation.z = float(wrist_final[2])
-                                    tf_msg.transform.rotation.w = 1.0
-                                    tf_msg.transform.rotation.x = 0.0
-                                    tf_msg.transform.rotation.y = 0.0
-                                    tf_msg.transform.rotation.z = 0.0
-                                    self.tf_broadcaster.sendTransform(tf_msg)
-                            
-                            # Calculate 3D endpoints of each axis
-                            axis_x_end_3d = origin_3d + axis_x * axis_length_m
-                            axis_y_end_3d = origin_3d + axis_y * axis_length_m
-                            axis_z_end_3d = origin_3d + axis_z * axis_length_m
-                            
-                            # Project axis endpoints to 2D
-                            axis_x_end = self.project_3d_to_pixel(axis_x_end_3d)
-                            axis_y_end = self.project_3d_to_pixel(axis_y_end_3d)
-                            axis_z_end = self.project_3d_to_pixel(axis_z_end_3d)
-                            
-                            # Draw axes if all projections are valid
-                            if all(p is not None for p in [axis_x_end, axis_y_end, axis_z_end]):
-                                # X axis - Red (lateral, pointing right)
-                                cv2.arrowedLine(display_image, origin_px, axis_x_end, 
-                                               (0, 0, 255), 4, tipLength=0.15)
-                                cv2.putText(display_image, 'X', 
-                                           (axis_x_end[0] + 8, axis_x_end[1]),
-                                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-                                
-                                # Y axis - Green (vertical, pointing up)
-                                cv2.arrowedLine(display_image, origin_px, axis_y_end,
-                                               (0, 255, 0), 4, tipLength=0.15)
-                                cv2.putText(display_image, 'Y',
-                                           (axis_y_end[0] + 8, axis_y_end[1]),
-                                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-                                
-                                # Z axis - Blue (frontal, pointing forward/towards camera)
-                                cv2.arrowedLine(display_image, origin_px, axis_z_end,
-                                               (255, 0, 0), 4, tipLength=0.15)
-                                cv2.putText(display_image, 'Z',
-                                           (axis_z_end[0] + 8, axis_z_end[1]),
-                                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2)
-                                
-                                # Display wrist position in body frame
-                                if wrist_in_body is not None:
-                                    # Background for wrist info
-                                    cv2.rectangle(display_image, (5, 5), (320, 85), (0, 0, 0), -1)
-                                    cv2.rectangle(display_image, (5, 5), (320, 85), (0, 255, 0), 1)
-                                    
-                                    cv2.putText(display_image, 
-                                               f'Wrist in {self.output_frame} frame (REP-103):',
-                                               (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-                                    cv2.putText(display_image, 
-                                               f'X (fwd): {wrist_in_body[0]*100:+6.1f} cm',
-                                               (10, 45), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-                                    cv2.putText(display_image, 
-                                               f'Y (left): {wrist_in_body[1]*100:+6.1f} cm',
-                                               (10, 65), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-                                    cv2.putText(display_image, 
-                                               f'Z (up): {wrist_in_body[2]*100:+6.1f} cm',
-                                               (170, 45), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-                                    
-                                    # Log periodically
-                                    if self.frame_count % 30 == 0:
-                                        self.get_logger().info(
-                                            f'Wrist in body: X={wrist_in_body[0]:.3f}, Y={wrist_in_body[1]:.3f}, Z={wrist_in_body[2]:.3f} m'
-                                        )
-                                        self.get_logger().info(
-                                            f'Wrist SCALED (x{self.scale_factor:.2f}): X={wrist_scaled[0]:.3f}, Y={wrist_scaled[1]:.3f}, Z={wrist_scaled[2]:.3f} m'
-                                        )
-                                
-                                # Log depth info periodically
-                                if self.frame_count % 60 == 0:
-                                    self.get_logger().info(
-                                        f'Origin 3D: ({origin_3d[0]:.2f}, {origin_3d[1]:.2f}, {origin_3d[2]:.2f}) m'
-                                    )
-                                
-                                # ========== APRILTAG DETECTION AND COMPARISON ==========
-                                # Detect AprilTags in the image
-                                gray = cv2.cvtColor(cv_image, cv2.COLOR_BGR2GRAY)
-                                corners, ids, rejected = self.aruco_detector.detectMarkers(gray)
-                                
-                                if ids is not None and 0 in ids:
-                                    # Find tag ID 0
-                                    tag_idx = np.where(ids == 0)[0][0]
-                                    tag_corners = corners[tag_idx]
-                                    
-                                    # Draw detected tag
-                                    aruco.drawDetectedMarkers(display_image, [tag_corners], np.array([[0]]))
-                                    
-                                    # Camera matrix and distortion coefficients
-                                    camera_matrix = np.array([
-                                        [self.fx, 0, self.cx],
-                                        [0, self.fy, self.cy],
-                                        [0, 0, 1]
-                                    ], dtype=np.float64)
-                                    dist_coeffs = np.zeros(5)  # Assuming no distortion (rectified image)
-                                    
-                                    # Estimate pose of the AprilTag
-                                    rvecs, tvecs, _ = aruco.estimatePoseSingleMarkers(
-                                        [tag_corners], self.tag_size, camera_matrix, dist_coeffs
-                                    )
-                                    
-                                    rvec = rvecs[0][0]
-                                    tvec = tvecs[0][0]
-                                    
-                                    # Convert rotation vector to rotation matrix
-                                    R_tag, _ = cv2.Rodrigues(rvec)
-                                    
-                                    # AprilTag axes in camera frame (columns of rotation matrix)
-                                    # Use raw axes without inversion for honest comparison
-                                    tag_axis_x = R_tag[:, 0]  # X axis of tag
-                                    tag_axis_y = R_tag[:, 1]  # Y axis of tag
-                                    tag_axis_z = R_tag[:, 2]  # Z axis of tag
-                                    
-                                    # AprilTag position in camera frame
-                                    tag_position = tvec
-                                    
-                                    # ========== CALCULATE ERRORS ==========
-                                    # Position error (Euclidean distance)
-                                    position_error = np.linalg.norm(origin_3d - tag_position)
-                                    
-                                    # Angular errors between corresponding axes (in degrees)
-                                    # Treat ±axis as equivalent (same axis but opposite direction)
-                                    def angle_between_vectors(v1, v2):
-                                        """Calculate angle between two vectors in degrees, treating ±axis as equivalent."""
-                                        cos_angle = np.clip(np.dot(v1, v2), -1.0, 1.0)
-                                        ang = np.degrees(np.arccos(cos_angle))
-                                        return min(ang, 180.0 - ang)  # Treat opposite directions as equivalent
-                                    
-                                    angle_error_x = angle_between_vectors(axis_x, tag_axis_x)
-                                    angle_error_y = angle_between_vectors(axis_y, tag_axis_y)
-                                    angle_error_z = angle_between_vectors(axis_z, tag_axis_z)
-                                    
-                                    # Store for logging
-                                    self.last_position_error = position_error
-                                    self.last_angle_errors = (angle_error_x, angle_error_y, angle_error_z)
-                                    
-                                    # ========== DISPLAY COMPARISON RESULTS ==========
-                                    # Background for text
-                                    cv2.rectangle(display_image, (5, 95), (350, 230), (0, 0, 0), -1)
-                                    cv2.rectangle(display_image, (5, 95), (350, 230), (255, 255, 255), 1)
-                                    
-                                    # Position comparison
-                                    cv2.putText(display_image, 
-                                               f'Landmark pos: ({origin_3d[0]:.3f}, {origin_3d[1]:.3f}, {origin_3d[2]:.3f})',
-                                               (10, 115), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 255), 1)
-                                    cv2.putText(display_image, 
-                                               f'AprilTag pos: ({tag_position[0]:.3f}, {tag_position[1]:.3f}, {tag_position[2]:.3f})',
-                                               (10, 135), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 0, 255), 1)
-                                    
-                                    # Position error with color coding
-                                    error_color = (0, 255, 0) if position_error < 0.05 else (0, 165, 255) if position_error < 0.1 else (0, 0, 255)
-                                    cv2.putText(display_image, 
-                                               f'Position error: {position_error*100:.1f} cm',
-                                               (10, 160), cv2.FONT_HERSHEY_SIMPLEX, 0.5, error_color, 2)
-                                    
-                                    # Angular errors
-                                    cv2.putText(display_image, 
-                                               f'Angle errors (X,Y,Z): {angle_error_x:.1f}, {angle_error_y:.1f}, {angle_error_z:.1f} deg',
-                                               (10, 185), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
-                                    
-                                    # Average angular error
-                                    avg_angle_error = (angle_error_x + angle_error_y + angle_error_z) / 3
-                                    angle_color = (0, 255, 0) if avg_angle_error < 10 else (0, 165, 255) if avg_angle_error < 20 else (0, 0, 255)
-                                    cv2.putText(display_image, 
-                                               f'Avg angle error: {avg_angle_error:.1f} deg',
-                                               (10, 210), cv2.FONT_HERSHEY_SIMPLEX, 0.5, angle_color, 2)
-                                    
-                                    # Log periodically
-                                    if self.frame_count % 30 == 0:
-                                        self.get_logger().info(
-                                            f'Position error: {position_error*100:.2f} cm | '
-                                            f'Angle errors (X,Y,Z): {angle_error_x:.1f}, {angle_error_y:.1f}, {angle_error_z:.1f} deg'
-                                        )
+                            # Jump filter: reject jumped values from EMA entirely
+                            wrist_jumped = False
+                            if self.prev_wrist_in_body is not None:
+                                wrist_delta = np.linalg.norm(w_in_body_raw - self.prev_wrist_in_body)
+                                if wrist_delta >= self.wrist_jump_threshold:
+                                    wrist_jumped = True
+                                    if self.frame_count % 15 == 0:
+                                        self.get_logger().warn(
+                                            f'Wrist jump rejected: {wrist_delta*100:.1f}cm — keeping filtered')
                                 else:
-                                    # AprilTag not detected
-                                    cv2.putText(display_image, 
-                                               'AprilTag ID 0 not detected',
-                                               (10, 115), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 165, 255), 1)
-                    else:
-                        # Show message if depth is invalid
-                        cv2.putText(
-                            display_image,
-                            'Invalid depth for landmarks',
-                            (10, 90),
-                            cv2.FONT_HERSHEY_SIMPLEX,
-                            0.6,
-                            (0, 165, 255),
-                            2
-                        )
-            else:
-                # No pose detected
-                cv2.putText(
-                    display_image,
-                    'No pose detected',
-                    (10, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.7,
-                    (0, 0, 255),
-                    2
-                )
+                                    self.prev_wrist_in_body = w_in_body_raw.copy()
+                            else:
+                                self.prev_wrist_in_body = w_in_body_raw.copy()
+                            
+                            if not wrist_jumped:
+                                self.filtered_wrist_in_body = self.apply_ema(
+                                    w_in_body_raw, self.filtered_wrist_in_body, self.alpha_wrist)
+                
+                # 3. Visualization and Logging
+                if self.filtered_origin is not None:
+                    o_px = self.project_3d_to_pixel(self.filtered_origin)
+                    if o_px:
+                        for axis, color, label in [(self.filtered_axis_x, (0,0,255), 'X'), (self.filtered_axis_y, (0,255,0), 'Y'), (self.filtered_axis_z, (255,0,0), 'Z')]:
+                            e_px = self.project_3d_to_pixel(self.filtered_origin + axis * 0.3)
+                            if e_px: 
+                                cv2.arrowedLine(display_image, o_px, e_px, color, 3)
+                                cv2.putText(display_image, label, (e_px[0]+5, e_px[1]), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+                
+            # ALWAYS publish last valid wrist (persists through occlusion and jumps)
+            if self.filtered_wrist_in_body is not None:
+                wrist_final = self.filtered_wrist_in_body * self.scale_factor + self.shoulder_offset
+                
+                stamp = self.get_clock().now().to_msg()
+                
+                pose_msg = PoseStamped()
+                pose_msg.header.stamp = stamp
+                pose_msg.header.frame_id = self.output_frame
+                pose_msg.pose.position.x, pose_msg.pose.position.y, pose_msg.pose.position.z = wrist_final
+                pose_msg.pose.orientation = self.hand_quat
+                self.wrist_pose_pub.publish(pose_msg)
+                
+                tf_msg = TransformStamped()
+                tf_msg.header.stamp = stamp
+                tf_msg.header.frame_id = self.output_frame
+                tf_msg.child_frame_id = "wrist_target"
+                tf_msg.transform.translation.x, tf_msg.transform.translation.y, tf_msg.transform.translation.z = wrist_final
+                tf_msg.transform.rotation.x, tf_msg.transform.rotation.y, tf_msg.transform.rotation.z, tf_msg.transform.rotation.w = \
+                    self.hand_quat.x, self.hand_quat.y, self.hand_quat.z, self.hand_quat.w
+                self.tf_broadcaster.sendTransform(tf_msg)
+                
+                if self.frame_count % 30 == 0:
+                    self.get_logger().info(f'Wrist in Body: {self.filtered_wrist_in_body}')
             
-            # Add frame info
             self.frame_count += 1
-            info_text = f'Frame: {self.frame_count} | Detections: {self.detection_count}'
-            cv2.putText(
-                display_image,
-                info_text,
-                (10, height - 10),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.5,
-                (255, 255, 255),
-                1
-            )
-            
-            # Display the image
             cv2.imshow('Right Wrist Detection', display_image)
             cv2.waitKey(1)
             

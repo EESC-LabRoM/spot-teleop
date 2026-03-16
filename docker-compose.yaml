@@ -16,7 +16,8 @@ services:
       - HOME=/home/spot-teleop
       - USER=root
       - RMW_IMPLEMENTATION=rmw_fastrtps_cpp
-      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_VISIBLE_DEVICES=1
+      - CUDA_VISIBLE_DEVICES=0
       - NVIDIA_DRIVER_CAPABILITIES=all
     command: >
       bash -c "
@@ -47,8 +48,8 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              count: all
-              capabilities: [gpu]
+              device_ids: [ '1' ]
+              capabilities: [ gpu ]
 
   zed:
     build:
@@ -59,7 +60,8 @@ services:
       - DISPLAY=${DISPLAY}
       - QT_X11_NO_MITSHM=1
       - ROS_DOMAIN_ID=8
-      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_VISIBLE_DEVICES=0
+      - CUDA_VISIBLE_DEVICES=0
       - NVIDIA_DRIVER_CAPABILITIES=all
       - RMW_IMPLEMENTATION=rmw_fastrtps_cpp
     volumes:
@@ -77,8 +79,8 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              count: all
-              capabilities: [gpu]
+              device_ids: [ '0' ]
+              capabilities: [ gpu ]
     command: >
       bash -c "
         source /opt/ros/humble/setup.bash &&
@@ -117,12 +119,13 @@ services:
       # GUI (comente se for headless)
       - DISPLAY=${DISPLAY}
       - QT_X11_NO_MITSHM=1
-      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_VISIBLE_DEVICES=0
+      - CUDA_VISIBLE_DEVICES=0
       - NVIDIA_DRIVER_CAPABILITIES=all
       - __NGX_CONF_FILE=/usr/share/nvidia/nvidia-ngx-conf.json
     volumes:
-      - /tmp/.X11-unix:/tmp/.X11-unix:rw  # GUI
-      - ./isaac-sim_ws:/workspace:rw 
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw # GUI
+      - ./isaac-sim_ws:/workspace:rw
       # caches (pra carregar + rápido)
       - ./isaac-sim_ws/cache/kit:/isaac-sim/kit/cache:rw
       - ./isaac-sim_ws/cache/ov:/root/.cache/ov:rw
@@ -132,25 +135,22 @@ services:
 
       # NGX injection
       - /usr/bin/nvidia-ngx-updater:/usr/bin/nvidia-ngx-updater:ro
-      - /lib/x86_64-linux-gnu/libnvidia-ngx.so.1:/usr/lib/x86_64-linux-gnu/libnvidia-ngx.so.1:ro
       - /usr/share/nvidia/ngx:/usr/share/nvidia/ngx
       - /usr/share/nvidia/nvidia-ngx-conf.json:/usr/share/nvidia/nvidia-ngx-conf.json:ro
-      
-      # Força as libs de vídeo do host dentro do container:
-      - /lib/x86_64-linux-gnu/libnvcuvid.so.1:/usr/lib/x86_64-linux-gnu/libnvcuvid.so.1:ro
-      - /lib/x86_64-linux-gnu/libnvcuvid.so:/usr/lib/x86_64-linux-gnu/libnvcuvid.so:ro
-      - /lib/x86_64-linux-gnu/libnvidia-encode.so.1:/usr/lib/x86_64-linux-gnu/libnvidia-encode.so.1:ro
-      - /lib/x86_64-linux-gnu/libnvidia-encode.so:/usr/lib/x86_64-linux-gnu/libnvidia-encode.so:ro
+
+      # Força usar as libs NVENC do host (versão 590.48.01)
+      - /usr/lib/x86_64-linux-gnu/libnvidia-encode.so.590.48.01:/usr/lib/x86_64-linux-gnu/libnvidia-encode.so.590.48.01:ro
+      - /usr/lib/x86_64-linux-gnu/libnvcuvid.so.590.48.01:/usr/lib/x86_64-linux-gnu/libnvcuvid.so.590.48.01:ro
     stdin_open: true
     tty: true
-    entrypoint: ["/bin/bash", "-lc", "sleep infinity"]  # Não iniciar Isaac automaticamente
+    entrypoint: [ "/bin/bash", "-lc", "sleep infinity" ] # Não iniciar Isaac automaticamente
     deploy:
       resources:
         reservations:
           devices:
             - driver: nvidia
-              count: all
-              capabilities: [gpu, compute, graphics, utility]
+              device_ids: [ '0' ]
+              capabilities: [ gpu, compute, graphics, utility, video ]
 
   isaac-ros:
     build:
@@ -158,13 +158,14 @@ services:
       dockerfile: Dockerfile.isaac-ros
     container_name: isaac-ros-container
     runtime: nvidia
-    privileged: true
+    # privileged: true # Removido para permitir isolamento de GPU (NVIDIA_VISIBLE_DEVICES)
     network_mode: host
     ipc: host
     environment:
       - DISPLAY=${DISPLAY}
       - QT_X11_NO_MITSHM=1
-      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_VISIBLE_DEVICES=1
+      - CUDA_VISIBLE_DEVICES=0
       - NVIDIA_DRIVER_CAPABILITIES=all
       - ROS_DOMAIN_ID=8
       - RMW_IMPLEMENTATION=rmw_fastrtps_cpp
@@ -178,8 +179,15 @@ services:
       - ~/.Xauthority:/home/admin/.Xauthority:rw
       # Workspace local
       - ./isaac-ros_ws:/workspaces/isaac_ros-dev:rw
+      # Hardware devices
+      - /dev:/dev
+      - /run/udev:/run/udev:ro
       # Timezone
       - /etc/localtime:/etc/localtime:ro
+    device_cgroup_rules:
+      - 'c 81:* rmw' # Câmeras (/dev/video*)
+      - 'c 240:* rmw' # IMU HID (/dev/hidraw*)
+      - 'c 504:* rmw' # Sensores IIO (/dev/iio:device*)
     working_dir: /workspaces/isaac_ros-dev
     stdin_open: true
     tty: true
@@ -190,6 +198,5 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              count: all
-              capabilities: [gpu, compute, graphics, utility]
-
+              device_ids: [ '1' ]
+              capabilities: [ gpu, compute, graphics, utility ]

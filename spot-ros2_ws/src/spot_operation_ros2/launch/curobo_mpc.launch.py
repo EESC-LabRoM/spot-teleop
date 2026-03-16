@@ -10,86 +10,18 @@ Launches:
 """
 import os
 from ament_index_python.packages import get_package_share_directory
-from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, ExecuteProcess
+from launch import LaunchContext, LaunchDescription
+from launch.actions import DeclareLaunchArgument, ExecuteProcess, OpaqueFunction
 from launch.substitutions import LaunchConfiguration, Command
 from launch_ros.actions import Node
 from launch.conditions import IfCondition, UnlessCondition
 from launch_ros.parameter_descriptions import ParameterValue
 
 
-def generate_launch_description():
+def launch_setup(context: LaunchContext):
     # Get xacro path for robot_state_publisher - use full Spot with arm
     spot_description_dir = get_package_share_directory('spot_description')
     xacro_file = os.path.join(spot_description_dir, 'urdf', 'spot.urdf.xacro')
-    
-    # Declare arguments
-    control_rate_arg = DeclareLaunchArgument(
-        'control_rate',
-        default_value='30.0',
-        description='MPC control rate in Hz'
-    )
-
-    use_effort_arg = DeclareLaunchArgument(
-        'use_effort',
-        default_value='false',
-        description='Use Pinocchio for effort computation'
-    )
-
-    debug_mode_arg = DeclareLaunchArgument(
-        'debug_mode',
-        default_value='false',
-        description='Enable debug mode with test poses (no /wrist_pose required)'
-    )
-
-    debug_pose_duration_arg = DeclareLaunchArgument(
-        'debug_pose_duration',
-        default_value='3.0',
-        description='Seconds between pose changes in debug mode'
-    )
-
-    # nvblox ESDF arguments
-    esdf_topic_arg = DeclareLaunchArgument(
-        'esdf_topic',
-        default_value='/nvblox_node/pessimistic_static_esdf_pointcloud',
-        description='nvblox ESDF pointcloud topic'
-    )
-
-    esdf_update_rate_arg = DeclareLaunchArgument(
-        'esdf_update_rate',
-        default_value='2.0',
-        description='Obstacle update rate from ESDF in Hz'
-    )
-
-    use_sim_time_arg = DeclareLaunchArgument(
-        'use_sim_time',
-        default_value='false',
-        description='Use simulation (Gazebo/Isaac) clock if true'
-    )
-
-    use_sim_arg = DeclareLaunchArgument(
-        'use_sim',
-        default_value='true',
-        description='True for sim (arm0_ joint prefix), False for real robot (arm_ joint prefix)'
-    )
-
-    use_nvblox_arg = DeclareLaunchArgument(
-        'use_nvblox',
-        default_value='true',
-        description='Enable nvblox mesh subscription for obstacle avoidance'
-    )
-
-    static_mesh_arg = DeclareLaunchArgument(
-        'static_mesh',
-        default_value='false',
-        description='If true, freeze mesh after first update. If false, update continuously.'
-    )
-
-    mesh_topic_arg = DeclareLaunchArgument(
-        'mesh_topic',
-        default_value='/nvblox_node/mesh',
-        description='nvblox mesh topic'
-    )
 
     # Config paths
     spot_config_dir = get_package_share_directory('spot_operation_ros2')
@@ -98,8 +30,9 @@ def generate_launch_description():
     # cuRobo MPC Node - Must use venv Python because cuRobo is installed there
     use_sim = LaunchConfiguration('use_sim')
     
-    curobo_mpc_process = ExecuteProcess(
-        cmd=[
+    # Build command list - add joint_states remapping when using ros2_control
+    # (spot_ros2_control publishes to /low_level/joint_states)
+    curobo_cmd = [
             '/home/spot-teleop/spot-ros2_ws/curobo_venv/bin/python',
             '/home/spot-teleop/spot-ros2_ws/src/spot_operation_ros2/spot_operation_ros2/curobo_mpc_node.py',
             '--ros-args',
@@ -117,11 +50,27 @@ def generate_launch_description():
             '-p', ['use_nvblox:=', LaunchConfiguration('use_nvblox')],
             '-p', ['static_mesh:=', LaunchConfiguration('static_mesh')],
             '-p', ['mesh_topic:=', LaunchConfiguration('mesh_topic')],
-        ],
+            '-p', ['use_ros2_control:=', LaunchConfiguration('use_ros2_control')],
+    ]
+
+    # Remap /joint_states -> /low_level/joint_states when using ros2_control
+    use_ros2_control_val = LaunchConfiguration('use_ros2_control').perform(context)
+    if use_ros2_control_val.lower() in ('true', '1', 'yes'):
+        curobo_cmd.extend(['-r', '/joint_states:=/low_level/joint_states'])
+
+    curobo_mpc_process = ExecuteProcess(
+        cmd=curobo_cmd,
         name='curobo_mpc_node',
         output='screen',
         additional_env={
-            'PYTHONPATH': '/opt/ros/humble/lib/python3.10/site-packages:/opt/ros/humble/local/lib/python3.10/dist-packages',
+            'PYTHONPATH': ':'.join([
+                os.environ.get('PYTHONPATH', ''),
+                # Add all ROS prefix paths (including local workspace install folders)
+                *[os.path.join(p, 'lib/python3.10/site-packages') for p in os.environ.get('AMENT_PREFIX_PATH', '').split(':')],
+                *[os.path.join(p, 'local/lib/python3.10/dist-packages') for p in os.environ.get('AMENT_PREFIX_PATH', '').split(':')],
+                '/opt/ros/humble/lib/python3.10/site-packages',
+                '/opt/ros/humble/local/lib/python3.10/dist-packages'
+            ]),
             'PATH': '/usr/local/cuda-12.8/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
             'CUDA_HOME': '/usr/local/cuda-12.8',
             'CUROBO_CONFIG_PATH': os.path.join(spot_config_dir, 'config'),
@@ -191,23 +140,58 @@ def generate_launch_description():
         parameters=[{'use_sim_time': LaunchConfiguration('use_sim_time')}]
     )
 
-    return LaunchDescription([
-        control_rate_arg,
-        use_effort_arg,
-        debug_mode_arg,
-        debug_pose_duration_arg,
-        esdf_topic_arg,
-        esdf_update_rate_arg,
-        use_sim_time_arg,
-        use_sim_arg,
-        use_nvblox_arg,
-        static_mesh_arg,
-        mesh_topic_arg,
+    gripper_remappings = []
+    if use_ros2_control_val.lower() in ('true', '1', 'yes'):
+        gripper_remappings = [('/joint_states', '/low_level/joint_states')]
+
+    gripper_controller_node = Node(
+        package='spot_operation_ros2',
+        executable='gripper_controller',
+        name='gripper_controller',
+        output='screen',
+        parameters=[{
+            'use_ros2_control': LaunchConfiguration('use_ros2_control'),
+        }],
+        remappings=gripper_remappings,
+    )
+
+    return [
         base_to_body_tf,
         curobo_mpc_process,
+        gripper_controller_node,
         isaac_publisher_node,
         joint_state_mapper_node,
         joint_state_remapper_node,
-        robot_state_publisher_node,
-    ])
+        robot_state_publisher_node
+    ]
 
+
+def generate_launch_description():
+    return LaunchDescription([
+        DeclareLaunchArgument('control_rate', default_value='30.0',
+                              description='MPC control rate in Hz'),
+        DeclareLaunchArgument('use_effort', default_value='false',
+                              description='Use Pinocchio for effort computation'),
+        DeclareLaunchArgument('debug_mode', default_value='false',
+                              description='Enable debug mode with test poses (no /wrist_pose required)'),
+        DeclareLaunchArgument('debug_pose_duration', default_value='3.0',
+                              description='Seconds between pose changes in debug mode'),
+        DeclareLaunchArgument('esdf_topic',
+                              default_value='/nvblox_node/pessimistic_static_esdf_pointcloud',
+                              description='nvblox ESDF pointcloud topic'),
+        DeclareLaunchArgument('esdf_update_rate', default_value='2.0',
+                              description='Obstacle update rate from ESDF in Hz'),
+        DeclareLaunchArgument('use_sim_time', default_value='false',
+                              description='Use simulation (Gazebo/Isaac) clock if true'),
+        DeclareLaunchArgument('use_sim', default_value='true',
+                              description='True for sim (arm0_ joint prefix), False for real robot (arm_ joint prefix)'),
+        DeclareLaunchArgument('use_nvblox', default_value='true',
+                              description='Enable nvblox mesh subscription for obstacle avoidance'),
+        DeclareLaunchArgument('static_mesh', default_value='false',
+                              description='If true, freeze mesh after first update. If false, update continuously.'),
+        DeclareLaunchArgument('mesh_topic', default_value='/nvblox_node/mesh',
+                              description='nvblox mesh topic'),
+        DeclareLaunchArgument('use_ros2_control', default_value='false',
+                              description='If true, publish JointCommand to spot_joint_controller instead of JointState'),
+        OpaqueFunction(function=launch_setup),
+    ])

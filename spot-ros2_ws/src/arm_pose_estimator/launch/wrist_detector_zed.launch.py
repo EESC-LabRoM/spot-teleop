@@ -14,32 +14,47 @@ Usage:
     
     # Custom wrist marker size and color:
     ros2 launch arm_pose_estimator wrist_detector_zed.launch.py radius:=15
+    
+    # Use RealSense topics (instead of ZED):
+    ros2 launch arm_pose_estimator wrist_detector_zed.launch.py sim:=false
 """
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 
 
 def generate_launch_description():
     # Declare launch arguments
+    sim_arg = DeclareLaunchArgument(
+        'sim',
+        default_value='true',
+        description='If true, use original ZED topics. If false, use RealSense topics.'
+    )
+
     color_topic_arg = DeclareLaunchArgument(
         'color_topic',
-        default_value='/zed/zed_node/rgb/image_rect_color',
-        description='Color image topic from ZED camera'
+        default_value=PythonExpression([
+            "'/zed/zed_node/rgb/image_rect_color' if '", LaunchConfiguration('sim'), "' == 'true' else '/camera/camera/color/image_raw'"
+        ]),
+        description='Color image topic'
     )
     
     depth_topic_arg = DeclareLaunchArgument(
         'depth_topic',
-        default_value='/zed/zed_node/depth/depth_registered',
-        description='Depth image topic from ZED camera'
+        default_value=PythonExpression([
+            "'/zed/zed_node/depth/depth_registered' if '", LaunchConfiguration('sim'), "' == 'true' else '/camera/camera/depth/image_rect_raw'"
+        ]),
+        description='Depth image topic'
     )
     
     camera_info_topic_arg = DeclareLaunchArgument(
         'camera_info_topic',
-        default_value='/zed/zed_node/depth/camera_info',
-        description='Camera info topic from ZED camera'
+        default_value=PythonExpression([
+            "'/zed/zed_node/depth/camera_info' if '", LaunchConfiguration('sim'), "' == 'true' else '/camera/camera/color/camera_info'"
+        ]),
+        description='Camera info topic'
     )
     
     show_all_arg = DeclareLaunchArgument(
@@ -85,7 +100,33 @@ def generate_launch_description():
         emulate_tty=True,
     )
 
+
+    # Hand Orientation Estimator (MediaPipe based)
+    hand_orientation_node = Node(
+        package='arm_pose_estimator',
+        executable='hand_orientation_estimator',
+        name='hand_orientation_estimator',
+        output='screen',
+        parameters=[{
+            'color_topic': LaunchConfiguration('color_topic'),
+            'use_sim_time': LaunchConfiguration('use_sim_time')
+        }]
+    )
+
+    # Hand Pose Estimator (Gesture detection)
+    hand_pose_node = Node(
+        package='arm_pose_estimator',
+        executable='hand_pose_estimator',
+        name='hand_pose_estimator',
+        output='screen',
+        parameters=[{
+            'color_topic': LaunchConfiguration('color_topic'),
+            'use_sim_time': LaunchConfiguration('use_sim_time')
+        }]
+    )
+
     return LaunchDescription([
+        sim_arg,
         color_topic_arg,
         depth_topic_arg,
         camera_info_topic_arg,
@@ -93,5 +134,7 @@ def generate_launch_description():
         radius_arg,
         apriltag_size_arg,
         use_sim_time_arg,
+        hand_orientation_node,
+        hand_pose_node,
         wrist_detector_node,
     ])

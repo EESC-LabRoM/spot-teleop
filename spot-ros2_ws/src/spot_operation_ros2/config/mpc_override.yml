@@ -4,6 +4,7 @@
 ##
 
 model:
+  horizon: 24
   state_filter_cfg:
     filter_coeff:
       position: 0.2    # Increased from 0.1 for more smoothing
@@ -25,3 +26,4 @@ mppi:
   step_size_cov: 0.05      # Increased from 0.01 for more exploration
   gamma: 0.95              # Reduced from 0.98 for less aggressive
   n_iters: 3               # Reduced iterations for less jitter
+  num_particles: 200       # Reduced from 400 to lower GPU load on RTX A2000
