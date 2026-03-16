@@ -200,3 +200,25 @@ services:
             - driver: nvidia
               device_ids: [ '1' ]
               capabilities: [ gpu, compute, graphics, utility ]
+
+  vllm-server:
+    image: docker.io/qwenllm/qwenvl:qwen3vl-cu128
+    container_name: qwen_server
+    runtime: nvidia
+    ipc: host
+    environment:
+      - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+      - VLLM_NO_USAGE_STATS=1
+    volumes:
+      - ~/.cache/huggingface:/root/.cache/huggingface
+    ports:
+      - "8000:8000"
+    command: >
+      python3 -m vllm.entrypoints.openai.api_server --model Qwen/Qwen3-VL-8B-Instruct --gpu-memory-utilization 0.6 --max-model-len 8192 --trust-remote-code --limit-mm-per-prompt '{"image": 1}'
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [ gpu ]
