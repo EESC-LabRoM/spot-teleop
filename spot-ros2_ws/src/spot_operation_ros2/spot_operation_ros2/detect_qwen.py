@@ -1,23 +1,20 @@
 import base64
 import json
 import re
+import site
 import sys
 import os
 import io
 import time
+import threading
+from collections import OrderedDict
 from pathlib import Path
 
-# Inject venv site-packages so SAM2/torch are found when running via ros2 run
-
-_VENV_SITE = "/home/spot-teleop/spot-ros2_ws/src/segment-anything-2/.venv/lib/python3.10/site-packages"
-if _VENV_SITE not in sys.path:
-    sys.path.insert(0, _VENV_SITE)
-
-# Also inject the source path for SAM2 (editable install) as .pth files aren't processed
-_SAM2_ROOT = "/home/spot-teleop/spot-ros2_ws/src/segment-anything-2"
-if _SAM2_ROOT not in sys.path:
-    # Insert at 1 (after venv site-packages)
-    sys.path.insert(1, _SAM2_ROOT)
+# Inject venv site-packages so torch/ultralytics are found when running via ros2 run.
+# Use addsitedir (not sys.path.insert) so editable-install .pth files are processed.
+_VENV_SITE = "/home/spot-teleop/spot-ros2_ws/src/spot_operation_ros2/venv_valve_detection/lib/python3.10/site-packages"
+if os.path.isdir(_VENV_SITE):
+    site.addsitedir(_VENV_SITE)
 
 import requests
 from PIL import Image, ImageDraw, ImageFont
@@ -31,9 +28,9 @@ except ImportError:
 try:
     import rclpy
     from rclpy.node import Node
+    from rclpy.duration import Duration
     from sensor_msgs.msg import Image as RosImage, CameraInfo
     from geometry_msgs.msg import TransformStamped, PointStamped
-    from std_srvs.srv import Trigger
     from cv_bridge import CvBridge
     import cv2
     import tf2_ros
@@ -45,58 +42,101 @@ except ImportError:
     print("Aviso: Bibliotecas ROS 2 (rclpy, sensor_msgs, cv_bridge) não encontradas. Modo câmera indisponível.")
 
 
-# Imports de segmentacao - Official SAM2
+# Imports de segmentacao - Ultralytics SAM2
 try:
     import torch
-    from sam2.build_sam import build_sam2, build_sam2_video_predictor
-    from sam2.sam2_image_predictor import SAM2ImagePredictor
-    from sam2.sam2_video_predictor import SAM2VideoPredictor
+    from ultralytics import SAM
+    from ultralytics.models.sam import SAM2VideoPredictor
     SAM2_AVAILABLE = True
 except ImportError:
     SAM2_AVAILABLE = False
-    print("Aviso: 'sam2' (official) nao encontrado. Segmentacao SAM desativada.")
-
-from collections import OrderedDict
+    print("Aviso: Ultralytics SAM2 nao encontrado. Segmentacao SAM desativada.")
+    SAM2VideoPredictor = None  # type: ignore
 
 VLLM_URL = "http://100.111.174.61:8000"
 # ===============================================
 
-# Official SAM2 paths (absolute)
-# Use tiny model for lower GPU usage (better for shared GPU with cuRobo)
-SAM2_CHECKPOINT_TINY = "/home/spot-teleop/spot-ros2_ws/checkpoints/sam2.1_hiera_tiny.pt"
-SAM2_CONFIG_TINY = "configs/sam2.1/sam2.1_hiera_t.yaml"
+# Ultralytics SAM2 tiny (auto-download)
+SAM2_MODEL_NAME = "sam2.1_t.pt"
 
-SAM2_CHECKPOINT_BPLUS = "/home/spot-teleop/spot-ros2_ws/checkpoints/sam2.1_hiera_base_plus.pt"
-SAM2_CONFIG_BPLUS = "configs/sam2.1/sam2.1_hiera_b+.yaml"
-
-# Default to tiny if available, else base_plus
-if os.path.exists(SAM2_CHECKPOINT_TINY):
-    SAM2_CHECKPOINT = SAM2_CHECKPOINT_TINY
-    SAM2_CONFIG = SAM2_CONFIG_TINY
-else:
-    SAM2_CHECKPOINT = SAM2_CHECKPOINT_BPLUS
-    SAM2_CONFIG = SAM2_CONFIG_BPLUS
-
-# ImageNet normalization constants (same as SAM2 uses internally)
-_IMG_MEAN = (0.485, 0.456, 0.406)
-_IMG_STD = (0.229, 0.224, 0.225)
-
-# Global SAM Model (ImagePredictor for CLI)
+# Global SAM Model (prompt segmentation)
 sam_model = None
-# Global SAM Video Model (VideoPredictor for ROS node)
+# Global SAM Video Tracker (stateful)
 sam_video_model = None
 
+
+if SAM2_AVAILABLE:
+
+    class SAM2ROSVideoPredictor(SAM2VideoPredictor):
+        """
+        SAM2VideoPredictor com fluxo ROS (numpy frame a frame).
+    
+        O SAM2VideoPredictor da Ultralytics assume dataset em modo video (init_state)
+        e usa dataset.frame; LoadPilAndNumpy so tem mode 'image'. Esta subclasse
+        inicializa inference_state sem exigir video de arquivo e usa _ros_frame_idx
+        como indice de frame continuo entre chamadas.
+        """
+    
+        def __init__(self, cfg=None, overrides=None, _callbacks=None):
+            from ultralytics.utils import DEFAULT_CFG
+            if cfg is None:
+                cfg = DEFAULT_CFG
+            super().__init__(cfg, overrides, _callbacks)
+            self.callbacks["on_predict_start"] = [
+                self._init_state_ros if cb is SAM2VideoPredictor.init_state else cb
+                for cb in self.callbacks["on_predict_start"]
+            ]
+            self._ros_frame_idx = 0
+    
+        @staticmethod
+        def _init_state_ros(predictor):
+            if len(predictor.inference_state) > 0:
+                return
+            assert predictor.dataset is not None
+            ds = predictor.dataset
+            num_frames = getattr(ds, "frames", 10**9)
+            inference_state = {
+                "num_frames": num_frames,
+                "point_inputs_per_obj": {},
+                "mask_inputs_per_obj": {},
+                "constants": {},
+                "obj_id_to_idx": OrderedDict(),
+                "obj_idx_to_id": OrderedDict(),
+                "obj_ids": [],
+                "output_dict": {
+                    "cond_frame_outputs": {},
+                    "non_cond_frame_outputs": {},
+                },
+                "output_dict_per_obj": {},
+                "temp_output_dict_per_obj": {},
+                "consolidated_frame_inds": {
+                    "cond_frame_outputs": set(),
+                    "non_cond_frame_outputs": set(),
+                },
+                "tracking_has_started": False,
+                "frames_already_tracked": [],
+            }
+            predictor.inference_state = inference_state
+    
+        def inference(self, im, bboxes=None, points=None, labels=None, masks=None):
+            if self.dataset is not None:
+                self.dataset.frame = self._ros_frame_idx
+            try:
+                return super().inference(im, bboxes=bboxes, points=points, labels=labels, masks=masks)
+            finally:
+                self._ros_frame_idx += 1
+    
+    
 def load_sam_model():
-    """Load SAM2 ImagePredictor (used by CLI mode and segment_result)."""
+    """Load Ultralytics SAM2 prompt model."""
     global sam_model
     if not SAM2_AVAILABLE:
         return None
     
     if sam_model is None:
         try:
-            print(f"Carregando modelo SAM2 oficial ({SAM2_CHECKPOINT})...")
-            sam2_model = build_sam2(SAM2_CONFIG, SAM2_CHECKPOINT, device="cuda")
-            sam_model = SAM2ImagePredictor(sam2_model)
+            print(f"Carregando Ultralytics SAM2 ({SAM2_MODEL_NAME})...")
+            sam_model = SAM(SAM2_MODEL_NAME)
         except Exception as e:
             print(f"Erro ao carregar SAM2: {e}")
             import traceback
@@ -106,147 +146,58 @@ def load_sam_model():
 
 
 def load_sam_video_model():
-    """Load SAM2 VideoPredictor (used by ROS node for streaming tracking)."""
+    """Load Ultralytics stateful SAM2 tracker."""
     global sam_video_model
     if not SAM2_AVAILABLE:
         return None
     
     if sam_video_model is None:
         try:
-            # Enable TF32 for free ~1.5x speedup on Ampere GPUs (RTX A2000, etc.)
             torch.backends.cuda.matmul.allow_tf32 = True
             torch.backends.cudnn.allow_tf32 = True
-            print(f"Carregando SAM2 VideoPredictor ({SAM2_CHECKPOINT})...")
-            sam_video_model = build_sam2_video_predictor(
-                SAM2_CONFIG, SAM2_CHECKPOINT, device="cuda"
+            print(f"Carregando Ultralytics SAM2 tracker ({SAM2_MODEL_NAME})...")
+            sam_video_model = SAM2ROSVideoPredictor(
+                overrides={
+                    "conf": 0.01,
+                    "task": "segment",
+                    "mode": "predict",
+                    "imgsz": 1024,
+                    "model": SAM2_MODEL_NAME,
+                    "save": False,
+                    "verbose": False,
+                },
             )
         except Exception as e:
-            print(f"Erro ao carregar SAM2 VideoPredictor: {e}")
+            print(f"Erro ao carregar tracker SAM2: {e}")
             import traceback
             traceback.print_exc()
             return None
     return sam_video_model
 
 
-def init_streaming_state(predictor, video_height, video_width):
-    """
-    Manually create an inference_state for streaming (no video file).
-    Mirrors what SAM2VideoPredictor.init_state() does internally.
-    """
-    compute_device = predictor.device
-    inference_state = {
-        "images": [],  # will grow as frames arrive
-        "num_frames": 0,
-        "offload_video_to_cpu": False,
-        "offload_state_to_cpu": False,
-        "video_height": video_height,
-        "video_width": video_width,
-        "device": compute_device,
-        "storage_device": compute_device,
-        "point_inputs_per_obj": {},
-        "mask_inputs_per_obj": {},
-        "cached_features": {},
-        "constants": {},
-        "obj_id_to_idx": OrderedDict(),
-        "obj_idx_to_id": OrderedDict(),
-        "obj_ids": [],
-        "output_dict_per_obj": {},
-        "temp_output_dict_per_obj": {},
-        "frames_tracked_per_obj": {},
-    }
-    return inference_state
-
-
-def append_frame_to_state(inference_state, predictor, pil_img):
-    """
-    Preprocess a PIL RGB image and append it to the streaming inference state.
-    Returns the frame index of the newly added frame.
-    """
-    img_size = predictor.image_size  # model's internal resolution (e.g. 1024)
-    img_np = np.array(pil_img.convert("RGB").resize((img_size, img_size))) / 255.0
-    img_tensor = torch.from_numpy(img_np).permute(2, 0, 1).float()
-    
-    # Normalize with ImageNet mean/std
-    mean = torch.tensor(_IMG_MEAN, dtype=torch.float32)[:, None, None]
-    std = torch.tensor(_IMG_STD, dtype=torch.float32)[:, None, None]
-    img_tensor = (img_tensor - mean) / std
-    
-    # Move to device
-    device = inference_state["device"]
-    img_tensor = img_tensor.to(device)
-    
-    frame_idx = inference_state["num_frames"]
-    inference_state["images"].append(img_tensor)
-    inference_state["num_frames"] = frame_idx + 1
-    
-    return frame_idx
-
-
-def save_triposr_crop(img_pil, mask_np, output_path="/tmp/triposr_crop.png", foreground_ratio=0.85):
-    """
-    Cria um crop da imagem centrado no mask_np, usando o foreground_ratio especificado.
-    """
-    # Extract tight bounding box of the mask
-    ys, xs = np.where(mask_np > 0)
-    if len(ys) == 0 or len(xs) == 0:
+def create_video_predictor():
+    """Nova instância SAM2ROSVideoPredictor (um estado de vídeo por câmera). Não usar o singleton da mão."""
+    if not SAM2_AVAILABLE:
         return None
-        
-    x_min, x_max = np.min(xs), np.max(xs)
-    y_min, y_max = np.min(ys), np.max(ys)
-    
-    # Calculate object size
-    obj_w = x_max - x_min
-    obj_h = y_max - y_min
-    
-    # Calculate target image size to achieve the foreground_ratio
-    max_obj_dim = max(obj_w, obj_h)
-    target_size = int(max_obj_dim / foreground_ratio)
-    
-    # Calculate center of the object
-    cx = (x_min + x_max) // 2
-    cy = (y_min + y_max) // 2
-    
-    # Calculate crop coordinates based on target_size square
-    half_size = target_size // 2
-    crop_x1 = cx - half_size
-    crop_y1 = cy - half_size
-    crop_x2 = crop_x1 + target_size
-    crop_y2 = crop_y1 + target_size
-    
-    # Pad handling
-    orig_w, orig_h = img_pil.size
-    
-    src_x1 = max(0, crop_x1)
-    src_y1 = max(0, crop_y1)
-    src_x2 = min(orig_w, crop_x2)
-    src_y2 = min(orig_h, crop_y2)
-    
-    if src_x1 >= src_x2 or src_y1 >= src_y2:
+    try:
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+        return SAM2ROSVideoPredictor(
+            overrides={
+                "conf": 0.01,
+                "task": "segment",
+                "mode": "predict",
+                "imgsz": 1024,
+                "model": SAM2_MODEL_NAME,
+                "save": False,
+                "verbose": False,
+            },
+        )
+    except Exception as e:
+        print(f"Erro ao criar SAM2ROSVideoPredictor: {e}")
+        import traceback
+        traceback.print_exc()
         return None
-        
-    dst_x1 = src_x1 - crop_x1
-    dst_y1 = src_y1 - crop_y1
-    
-    # Crop the original image
-    src_crop = img_pil.crop((src_x1, src_y1, src_x2, src_y2))
-    
-    mask_patch = mask_np[src_y1:src_y2, src_x1:src_x2]
-    mask_crop = Image.fromarray((mask_patch * 255).astype(np.uint8)).convert("L")
-    
-    src_rgba = src_crop.convert("RGBA")
-    src_rgba.putalpha(mask_crop)
-    
-    # We want a gray background for TripoSR (it expects RGB with ~0.5 background)
-    img_padded_rgba = Image.new("RGBA", (target_size, target_size), (127, 127, 127, 0))
-    img_padded_rgba.paste(src_rgba, (dst_x1, dst_y1), src_rgba) # paste with alpha
-    
-    # Remove alpha to just have gray bg
-    final_rgb = Image.new("RGB", (target_size, target_size), (127, 127, 127))
-    final_rgb.paste(img_padded_rgba, mask=img_padded_rgba.split()[3])
-    
-    final_rgb.save(output_path)
-    print(f"Salvou crop para TripoSR em {output_path}")
-    return output_path
 
 
 def create_crop_mosaic(image_pil, masks, bbox, output_path="debug_mosaic.jpg"):
@@ -332,24 +283,97 @@ def create_crop_mosaic(image_pil, masks, bbox, output_path="debug_mosaic.jpg"):
     return output_path
 
 
+def select_best_mask_by_bbox_iou(masks, bbox, image_size):
+    """
+    Pick the mask with highest IoU against the detection bounding box.
+    Deterministic and fast — replaces VLM-based selection which hallucinates.
+    """
+    x1, y1, x2, y2 = bbox
+    w, h = image_size
+
+    bbox_region = np.zeros((h, w), dtype=bool)
+    bbox_region[y1:y2, x1:x2] = True
+    bbox_area = int(bbox_region.sum())
+
+    best_idx = 0
+    best_iou = -1.0
+
+    for i in range(len(masks)):
+        m = masks[i]
+        if hasattr(m, 'cpu'):
+            m = m.cpu().numpy()
+        if m.ndim > 2:
+            m = m.squeeze()
+        if m.shape[0] != h or m.shape[1] != w:
+            m = np.array(
+                Image.fromarray((m * 255).astype(np.uint8)).resize((w, h), Image.NEAREST)
+            ) > 127
+        else:
+            m = m > 0.5
+
+        intersection = int((m & bbox_region).sum())
+        union = int((m | bbox_region).sum())
+        iou = intersection / union if union > 0 else 0.0
+
+        print(f"  Mask {i+1}: area={int(m.sum())}, bbox_overlap={intersection}/{bbox_area} "
+              f"({100*intersection/bbox_area:.0f}%), IoU={iou:.3f}")
+
+        if iou > best_iou:
+            best_iou = iou
+            best_idx = i
+
+    print(f"  -> Best mask by bbox IoU: {best_idx+1} (IoU={best_iou:.3f})")
+    return best_idx
+
+
+def _parse_mask_panel_choice(content: str):
+    """
+    Extrai escolha 1–3 da resposta do modelo.
+    - Com thinking (Qwen3), a resposta final fica após a tag </think>.
+    - Usa o último dígito isolado 1–3 no texto analisado: evita erro quando o modelo
+      diz que o painel 1 está errado e o certo é o 2, mas o primeiro match seria 1.
+    Returns:
+        int em 0..2 ou None se não houver dígito válido.
+    """
+    if not content or not isinstance(content, str):
+        return None
+    text = content.strip()
+    if "</think>" in text:
+        text = text.split("</think>", 1)[-1].strip()
+    for line in reversed([ln.strip() for ln in text.splitlines() if ln.strip()]):
+        if re.fullmatch(r"[1-3]", line):
+            return int(line) - 1
+    matches = re.findall(r"\b([1-3])\b", text)
+    if matches:
+        return int(matches[-1]) - 1
+    return None
+
+
 def ask_qwen_selection(mosaic_path, object_name):
     """
     Perguntar ao Qwen qual a melhor mascara.
     """
     base64_img = encode_image_to_base64(mosaic_path)
     
-    prompt = f"""You see 3 side-by-side crops labeled 1, 2, and 3. Each shows a green overlay representing a segmentation mask for a '{object_name}'.
+    prompt = f"""You see 3 side-by-side crops labeled 1, 2, and 3. Each shows a semi-transparent GREEN overlay on top of the photo. The green pixels are the segmentation mask.
 
-The BEST mask is the one where the green overlay covers the ENTIRE '{object_name}' as tightly as possible, with:
-- Full coverage: the green region covers the whole object, not just a part of it.
-- Tight fit: the green region does NOT extend much beyond the object boundaries into the background.
-- A mask that covers only a small piece of the object or misses large portions is WORSE than one that covers the full object even if slightly oversized.
+Your task: pick the panel where the green lies ON the actual '{object_name}' (the physical object to grasp — e.g. the valve wheel, handle, or body), NOT on the scene behind it.
 
-Which image (1, 2, or 3) has the best segmentation mask for the '{object_name}'?
-Answer with ONLY the digit: 1, 2, or 3."""
+CRITICAL — reject wrong masks:
+- BAD: green covers mostly the background (shelves, walls, floor, empty space) while the '{object_name}' itself is largely NOT green. These are inverted or background masks — never choose them.
+- BAD: green covers a huge area of the warehouse/room around the object. Prefer a smaller mask that sits on the object.
+
+GOOD mask:
+- Green overlaps the visible parts of the '{object_name}' you care about (it is OK if only the wheel or a main part is covered, as long as that part IS the object).
+- Green should not dominate unrelated background.
+
+If multiple panels put green on the object, prefer the tightest mask that still clearly covers the '{object_name}'.
+
+Which image (1, 2, or 3) is the best segmentation for the '{object_name}'?
+You may reason step by step, then on the VERY LAST line of your reply output ONLY the digit 1, 2, or 3 (nothing else on that line)."""
 
     payload = {
-        "model": "Qwen/Qwen3-VL-8B-Instruct", 
+        "model": "Qwen/Qwen3-VL-8B-Instruct",
         "messages": [
             {
                 "role": "user",
@@ -359,141 +383,71 @@ Answer with ONLY the digit: 1, 2, or 3."""
                 ]
             }
         ],
-        "max_tokens": 10,
-        "temperature": 0.01 
+        # Thinking precisa de folga; só nesta etapa (demais chamadas ao vLLM inalteradas).
+        "max_tokens": 512,
+        "temperature": 0.01,
+        "chat_template_kwargs": {"enable_thinking": True},
     }
-    
+
     try:
-        print("Perguntando ao Qwen qual a melhor mascara...")
-        response = requests.post(f"{VLLM_URL}/v1/chat/completions", json=payload, timeout=30)
+        print("Perguntando ao Qwen qual a melhor mascara (com thinking)...")
+        response = requests.post(f"{VLLM_URL}/v1/chat/completions", json=payload, timeout=90)
         response.raise_for_status()
-        content = response.json()['choices'][0]['message']['content']
+        choice = response.json()["choices"][0]["message"]
+        content = choice.get("content") or ""
+        reasoning = choice.get("reasoning_content")
+        if reasoning:
+            print(f"Qwen (thinking): {reasoning[:500]}{'...' if len(reasoning) > 500 else ''}")
         print(f"Qwen escolheu: {content}")
-        
-        # Extract digit
-        match = re.search(r'\b([1-3])\b', content)
-        if match:
-            return int(match.group(1)) - 1 # 0-indexed
+        # Resposta final pode estar só em content ou só em reasoning_content (vLLM)
+        idx = _parse_mask_panel_choice(content)
+        if idx is None and reasoning:
+            idx = _parse_mask_panel_choice(reasoning)
+        if idx is not None:
+            return idx
     except Exception as e:
         print(f"Erro ao perguntar ao Qwen: {e}")
     
     return 0 # Fallback to first mask
 
 
-def segment_result(image_input, boxes: list[dict], output_path: str):
-    """
-    Usa SAM para segmentar as caixas detectadas.
-    Args:
-        image_input: str (filepath) or PIL.Image
-    Returns:
-        dict with {'mask': np.ndarray, 'centroid_uv': (u, v), 'bbox': [x1,y1,x2,y2]} or None
-    """
-    if not SAM2_AVAILABLE:
-        return None
-
-    model = load_sam_model()
-    if model is None:
-        return None
-
-    print("\nIniciando Segmentacao com SAM...")
-    
-    if isinstance(image_input, str) or isinstance(image_input, Path):
-        img_pil = Image.open(image_input)
-    elif isinstance(image_input, Image.Image):
-        img_pil = image_input
-    
-    w, h = img_pil.size
-    
-    # Process ONLY the first box for now
-    box_data = boxes[0] 
-    label = box_data['label']
-    b1000 = box_data['bbox_1000']
-    
-    x1 = int((b1000[0] / 1000.0) * w)
-    y1 = int((b1000[1] / 1000.0) * h)
-    x2 = int((b1000[2] / 1000.0) * w)
-    y2 = int((b1000[3] / 1000.0) * h)
-    
-    # Clamp
-    x1, y1 = max(0, x1), max(0, y1)
-    x2, y2 = min(w-1, x2), min(h-1, y2)
-    bbox = [x1, y1, x2, y2]
-    
-    print(f"Segmenting box: {bbox} for label: {label}")
-
-    g1000 = box_data.get('grasp_1000')
-    if g1000:
-        cx = int((g1000[0] / 1000.0) * w)
-        cy = int((g1000[1] / 1000.0) * h)
+def _sam_prompt_masks(model, img_pil, point_xy, multimask_output=True):
+    """Run Ultralytics SAM prompt inference and return masks/scores."""
+    img_np = np.array(img_pil.convert("RGB"))
+    results = model(
+        img_np,
+        points=[point_xy],
+        labels=[1],
+        conf=0.0,
+        verbose=False,
+    )
+    if not results:
+        return np.empty((0, img_np.shape[0], img_np.shape[1]), dtype=np.uint8), np.array([])
+    r = results[0]
+    if r.masks is None or r.masks.data is None or len(r.masks.data) == 0:
+        return np.empty((0, img_np.shape[0], img_np.shape[1]), dtype=np.uint8), np.array([])
+    masks_np = (r.masks.data > 0).to(dtype=torch.uint8).cpu().numpy()
+    if r.boxes is not None and r.boxes.conf is not None and len(r.boxes.conf) == len(masks_np):
+        scores_np = r.boxes.conf.cpu().numpy()
     else:
-        # Use center point of bbox as prompt (NO box).
-        cx = int((x1 + x2) / 2)
-        cy = int((y1 + y2) / 2)
+        scores_np = np.ones(len(masks_np), dtype=np.float32)
+    return masks_np, scores_np
 
-    try:
-        # Official SAM2: set_image expects RGB uint8 numpy array (3 channels)
-        img_rgb = img_pil.convert("RGB") if img_pil.mode != "RGB" else img_pil
-        img_np = np.array(img_rgb)
-        model.set_image(img_np)
-        
-        # Run Inference with Point-Only Prompt + multimask_output=True
-        masks, scores, logits = model.predict(
-            point_coords=np.array([[cx, cy]]),
-            point_labels=np.array([1]),
-            multimask_output=True,
-        )
-        
-        print(f"SAM2 Raw Masks Shape: {masks.shape}")
-        print(f"SAM2 Scores: {scores}")
-        
-        num_masks = masks.shape[0]
-        selected_idx = 0
-        
-        if num_masks > 1:
-            print(f"SAM2 retornou {num_masks} mascaras distintas. Selecionando a melhor...")
-            # Create Mosaic
-            mosaic_path = create_crop_mosaic(img_pil, masks, bbox, output_path="debug_mosaic.jpg")
-            if mosaic_path:
-                selected_idx = ask_qwen_selection(mosaic_path, label)
-                print(f"Using Mask Index: {selected_idx} (Option {selected_idx+1})")
-        
-        # Get the selected mask
-        final_mask = masks[selected_idx]
-        if final_mask.ndim > 2: final_mask = final_mask.squeeze()
-        
-        # Compute mask centroid (u, v) in pixel coordinates
-        ys, xs = np.where(final_mask > 0.5)
-        if len(xs) > 0:
-            centroid_u = int(np.mean(xs))
-            centroid_v = int(np.mean(ys))
-        else:
-            centroid_u, centroid_v = cx, cy
-        
-        print(f"Mask centroid (u, v): ({centroid_u}, {centroid_v})")
-        
-        # Save overlay
-        mask_pil = Image.fromarray((final_mask * 255).astype(np.uint8))
-        if mask_pil.size != img_pil.size:
-             mask_pil = mask_pil.resize(img_pil.size, Image.NEAREST)
-        
-        comp = img_pil.convert("RGBA").copy()
-        green = Image.new("RGBA", comp.size, (0, 255, 0, 100))
-        comp.paste(green, (0,0), mask_pil)
-        
-        comp.convert("RGB").save(output_path)
-        print(f"Imagem segmentada salva em: {output_path}")
-        
-        return {
-            'mask': final_mask,
-            'centroid_uv': (centroid_u, centroid_v),
-            'bbox': bbox,
-        }
 
-    except Exception as e:
-        print(f"Erro na inferencia SAM2: {e}")
-        import traceback
-        traceback.print_exc()
-        return None
+def _best_mask_from_results(results):
+    """Extract best mask and score from Ultralytics Results list."""
+    if not results:
+        return None, 0.0
+    r = results[0]
+    if r.masks is None or r.masks.data is None or len(r.masks.data) == 0:
+        return None, 0.0
+    masks_np = (r.masks.data > 0).to(dtype=torch.uint8).cpu().numpy()
+    if r.boxes is not None and r.boxes.conf is not None and len(r.boxes.conf) == len(masks_np):
+        scores_np = r.boxes.conf.cpu().numpy()
+    else:
+        scores_np = np.ones(len(masks_np), dtype=np.float32)
+    best_idx = int(np.argmax(scores_np))
+    return masks_np[best_idx], float(scores_np[best_idx])
 
 
 def encode_image_to_base64(image_input) -> str:
@@ -887,55 +841,55 @@ def inverse_rotate_coords_1000(bbox_1000, grasps_1000, M_forward, rotated_size, 
     return corrected_bbox, corrected_grasps
 
 
-class SnapshotNode(Node):
-    """One-shot image capture for CLI mode."""
-    def __init__(self):
-        super().__init__('camera_snapshot_node')
-        self.image = None
-        self.bridge = CvBridge()
-        self.subscription = self.create_subscription(
-            RosImage,
-            '/hand/rgb',
-            self.listener_callback,
-            10
-        )
-        print("Aguardando imagem em /hand/rgb ...")
-
-    def listener_callback(self, msg):
-        self.get_logger().info('Imagem recebida!')
-        try:
-            cv_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
-            cv_image = cv2.cvtColor(cv_image, cv2.COLOR_BGR2RGB)
-            self.image = Image.fromarray(cv_image)
-        except Exception as e:
-            self.get_logger().error(f'Falha ao converter imagem: {e}')
-        raise SystemExit 
+def _camera_info_distortion_coeffs(msg):
+    """Vetor D para cv2.projectPoints; None se sem distorção significativa."""
+    if msg is None or not msg.d:
+        return None
+    d = np.array([float(x) for x in msg.d], dtype=np.float64).reshape(-1, 1)
+    if d.size == 0 or float(np.max(np.abs(d))) < 1e-15:
+        return None
+    return d
 
 
-def capture_image_from_ros():
-    if not ROS_AVAILABLE:
-        print("Erro: Bibliotecas ROS não disponíveis.")
-        sys.exit(1)
-        
-    rclpy.init()
-    node = SnapshotNode()
-    
-    try:
-        rclpy.spin(node)
-    except SystemExit:
-        pass
-    except KeyboardInterrupt:
-        pass
-    finally:
-        img = node.image
-        node.destroy_node()
-        rclpy.shutdown()
-        
-    if img is None:
-        print("Erro: Nenhuma imagem capturada.")
-        sys.exit(1)
-        
-    return img
+def _project_cam_ros_point_to_uv(X, Y, Z, fx, fy, cx, cy, d_coeffs, w: int, h: int):
+    """
+    Ponto no frame ótico ROS (X→, Y↓, Z frente) → pixel (u,v) float.
+    Retorna (u, v, z_ok, in_image) com in_image considerando [0,w) x [0,h).
+    """
+    if Z <= 1e-5:
+        return 0.0, 0.0, False, False
+    if d_coeffs is None:
+        u = float(fx) * float(X) / float(Z) + float(cx)
+        v = float(fy) * float(Y) / float(Z) + float(cy)
+    else:
+        K = np.array([[fx, 0.0, cx], [0.0, fy, cy], [0.0, 0.0, 1.0]], dtype=np.float64)
+        rvec = np.zeros(3, dtype=np.float64)
+        tvec = np.zeros(3, dtype=np.float64)
+        P = np.array([[X, Y, Z]], dtype=np.float64).reshape(-1, 1, 3)
+        img, _ = cv2.projectPoints(P, rvec, tvec, K, d_coeffs)
+        u = float(img[0, 0, 0])
+        v = float(img[0, 0, 1])
+    in_image = (0.0 <= u < float(w)) and (0.0 <= v < float(h))
+    return u, v, True, in_image
+
+
+def _secondary_camera_info_topic(cam_name: str, path_prefix: str) -> str:
+    """Monta tópico camera_info: default estilo /frontleft/camera_info ou /camera/frontleft/camera_info."""
+    p = (path_prefix or "").strip()
+    if not p or p == "/":
+        return f"/{cam_name}/camera_info"
+    return f"{p.rstrip('/')}/{cam_name}/camera_info"
+
+
+def _secondary_camera_rgb_topic(cam_name: str, path_prefix: str, rgb_suffix: str) -> str:
+    """Monta tópico RGB secundário. Default: /{cam}/rgb ou /camera/{cam}/rgb."""
+    p = (path_prefix or "").strip()
+    sfx = (rgb_suffix or "/rgb").strip()
+    if not sfx.startswith("/"):
+        sfx = f"/{sfx}"
+    if not p or p == "/":
+        return f"/{cam_name}{sfx}"
+    return f"{p.rstrip('/')}/{cam_name}{sfx}"
 
 
 # =============================================================================
@@ -953,10 +907,9 @@ class DetectQwenNode(Node):
       3. Re-detection: Only triggered if tracking confidence drops or object is lost
     """
     
-    # Sliding window: max frames to keep in inference state before reset
-    # 9000 frames @ 5Hz = 30 minutes. 
-    # We free old frame tensors to avoid OOM, so this limit is just a safety stop.
-    MAX_TRACKING_FRAMES = 9000
+    # Safety reset window
+    # 300 frames @ 5Hz = ~1 minute.
+    MAX_TRACKING_FRAMES = 300
     
     def __init__(self):
         super().__init__('detect_qwen_node')
@@ -965,16 +918,21 @@ class DetectQwenNode(Node):
         self.declare_parameter('object_prompt', 'wheel valve')
         self.declare_parameter('confidence_threshold', 0.3)
         self.declare_parameter('target_frame', 'target_object')
-        self.declare_parameter('rgb_topic', '/camera/hand/image')
-        self.declare_parameter('depth_topic', '/depth_registered/hand/image')
-        self.declare_parameter('camera_info_topic', '/camera/hand/camera_info')
-        self.declare_parameter('depth_info_topic', '/depth_registered/hand/camera_info')
+        # TF parent for target pose: Spot driver (BD) publishes "base" -> odom; spot_description URDF uses "body"/"base_link".
+        self.declare_parameter('robot_base_frame', 'base')
+        self.declare_parameter('rgb_topic', '/hand/rgb')
+        self.declare_parameter('depth_topic', '/hand/depth')
+        self.declare_parameter('camera_info_topic', '/hand/camera_info')
+        self.declare_parameter('depth_info_topic', '/hand/camera_info')
         self.declare_parameter('visualize', True)
+        self.declare_parameter('tracking_window_name', 'SAM2 Live Tracking')
         
         self.object_prompt = self.get_parameter('object_prompt').value
         self.confidence_threshold = self.get_parameter('confidence_threshold').value
         self.target_frame_name = self.get_parameter('target_frame').value
+        self.robot_base_frame = self.get_parameter('robot_base_frame').value
         self.visualize = self.get_parameter('visualize').value
+        self.tracking_window_name = self.get_parameter('tracking_window_name').value
         rgb_topic = self.get_parameter('rgb_topic').value
         depth_topic = self.get_parameter('depth_topic').value
         camera_info_topic = self.get_parameter('camera_info_topic').value
@@ -983,6 +941,7 @@ class DetectQwenNode(Node):
         self.get_logger().info(f"Object prompt: '{self.object_prompt}'")
         self.get_logger().info(f"Confidence threshold: {self.confidence_threshold}")
         self.get_logger().info(f"Target frame: {self.target_frame_name}")
+        self.get_logger().info(f"Robot base frame (TF): {self.robot_base_frame}")
         
         # State
         self.bridge = CvBridge()
@@ -998,35 +957,155 @@ class DetectQwenNode(Node):
         self.declare_parameter('depth_segmented_topic', '/hand/depth_segmented')
         depth_segmented_topic = self.get_parameter('depth_segmented_topic').value
         self.depth_seg_pub = self.create_publisher(RosImage, depth_segmented_topic, 10)
-        
-        # TripoSR integration: publish crop image + call mesh generation service
-        self.triposr_img_pub = self.create_publisher(RosImage, '/triposr/input_image', 1)
-        self.mesh_client = self.create_client(Trigger, '/generate_mesh')
+
+        self.declare_parameter('segmentation_mask_topic', '/hand/segmentation_mask')
+        self.declare_parameter('publish_segmentation_mask', True)
+        mask_topic = self.get_parameter('segmentation_mask_topic').value
+        self.publish_segmentation_mask = self.get_parameter('publish_segmentation_mask').value
+        self.mask_pub = self.create_publisher(RosImage, mask_topic, 10)
         
         self.video_predictor = None
-        self.inference_state = None
         self.tracking_active = False
-        self.current_frame_idx = -1
         self.new_frame_available = False
         self.tracking_frame_count = 0
         self.last_tracking_score = 0.0
         
-        # Adaptive tracking: reduce GPU usage when object is static
-        self.declare_parameter('idle_tracking_interval', 3.0)
+        # Tracking runtime parameters
         self.declare_parameter('active_tracking_interval', 0.2)
-        self.declare_parameter('stability_threshold_m', 0.015)
-        self.declare_parameter('stability_window', 5)
         self.declare_parameter('gpu_yield_after_track', True)
+        self.declare_parameter('tracking_confidence_threshold', 0.15)
+        self.declare_parameter('tracking_min_mask_area', 4000)
+        self.declare_parameter('tracking_lost_confirm_frames', 5)
+        self.declare_parameter('tracking_redetect_cooldown_sec', 2.5)
         
-        self.idle_tracking_interval = self.get_parameter('idle_tracking_interval').value
         self.active_tracking_interval = self.get_parameter('active_tracking_interval').value
-        self.stability_threshold = self.get_parameter('stability_threshold_m').value
-        self.stability_window = self.get_parameter('stability_window').value
         self.gpu_yield = self.get_parameter('gpu_yield_after_track').value
+        self.tracking_confidence_threshold = float(
+            self.get_parameter('tracking_confidence_threshold').value
+        )
+        self.tracking_min_mask_area = int(
+            self.get_parameter('tracking_min_mask_area').value
+        )
+        self.tracking_lost_confirm_frames = int(
+            max(1, self.get_parameter('tracking_lost_confirm_frames').value)
+        )
+        self.tracking_redetect_cooldown_sec = float(
+            max(0.0, self.get_parameter('tracking_redetect_cooldown_sec').value)
+        )
         
-        self._recent_positions = []
-        self._tracking_idle = False
         self._last_track_time = 0.0
+        self._tracking_lost_streak = 0
+        self._last_redetect_time = 0.0
+        
+        # Trigger FOV câmeras secundárias (frontais): só logs nesta fase
+        self.declare_parameter('enable_secondary_fov_trigger', True)
+        self.declare_parameter('secondary_camera_names', 'frontleft,frontright')
+        self.declare_parameter('secondary_camera_path_prefix', '')
+        self.declare_parameter('odom_consistency_frame', 'odom')
+        self.declare_parameter('max_target_pose_age_sec', 0.75)
+        self.declare_parameter('max_consistency_position_jump_m', 0.35)
+        self.declare_parameter('consistency_ema_alpha', 0.25)
+        self.declare_parameter('fov_trigger_confirm_ticks', 2)
+        self.declare_parameter('fov_release_confirm_ticks', 2)
+        self.declare_parameter('secondary_fov_tf_lookup_timeout_sec', 0.2)
+        self.declare_parameter('secondary_fov_ignore_distortion', False)
+        self.declare_parameter('hand_tf_lookup_timeout_sec', 0.5)
+        self.declare_parameter('use_wall_time_tf_lookups', True)
+        self.declare_parameter('show_secondary_debug_windows', True)
+        self.declare_parameter('secondary_camera_rgb_suffix', '/rgb')
+        self.declare_parameter('enable_secondary_video_tracking', True)
+        self.declare_parameter('secondary_tracking_interval', 0.2)
+        self.declare_parameter('secondary_tracking_priority', '')
+        self.declare_parameter('resume_hand_after_secondary_stop', 'none')
+
+        self.enable_secondary_fov_trigger = bool(
+            self.get_parameter('enable_secondary_fov_trigger').value
+        )
+        sec_names_raw = self.get_parameter('secondary_camera_names').value or ''
+        self._secondary_camera_names = [
+            x.strip() for x in str(sec_names_raw).split(',') if x.strip()
+        ]
+        self.secondary_camera_path_prefix = str(
+            self.get_parameter('secondary_camera_path_prefix').value or ''
+        )
+        self.odom_consistency_frame = str(
+            self.get_parameter('odom_consistency_frame').value or 'odom'
+        )
+        self.max_target_pose_age_sec = float(
+            self.get_parameter('max_target_pose_age_sec').value
+        )
+        self.max_consistency_position_jump_m = float(
+            self.get_parameter('max_consistency_position_jump_m').value
+        )
+        self.consistency_ema_alpha = float(
+            min(1.0, max(0.01, self.get_parameter('consistency_ema_alpha').value))
+        )
+        self.fov_trigger_confirm_ticks = int(
+            max(1, self.get_parameter('fov_trigger_confirm_ticks').value)
+        )
+        self.fov_release_confirm_ticks = int(
+            max(1, self.get_parameter('fov_release_confirm_ticks').value)
+        )
+        self.secondary_fov_tf_lookup_timeout_sec = float(
+            self.get_parameter('secondary_fov_tf_lookup_timeout_sec').value
+        )
+        self.secondary_fov_ignore_distortion = bool(
+            self.get_parameter('secondary_fov_ignore_distortion').value
+        )
+        self.hand_tf_lookup_timeout_sec = float(
+            max(0.0, self.get_parameter('hand_tf_lookup_timeout_sec').value)
+        )
+        self.use_wall_time_tf_lookups = bool(
+            self.get_parameter('use_wall_time_tf_lookups').value
+        )
+        self.show_secondary_debug_windows = bool(
+            self.get_parameter('show_secondary_debug_windows').value
+        )
+        self.secondary_camera_rgb_suffix = str(
+            self.get_parameter('secondary_camera_rgb_suffix').value or '/rgb'
+        )
+        self.enable_secondary_video_tracking = bool(
+            self.get_parameter('enable_secondary_video_tracking').value
+        )
+        self.secondary_tracking_interval = float(
+            max(0.05, self.get_parameter('secondary_tracking_interval').value)
+        )
+        _prio_raw = self.get_parameter('secondary_tracking_priority').value or ''
+        self._secondary_tracking_priority = [
+            x.strip() for x in str(_prio_raw).split(',') if x.strip()
+        ]
+        self.resume_hand_after_secondary_stop = str(
+            self.get_parameter('resume_hand_after_secondary_stop').value or 'none'
+        ).lower()
+
+        self._gpu_lock = threading.Lock()
+        self._target_tf_wall_time = None
+        self._consistency_ref_ema = None
+        self._secondary_cam_state = {}
+        for name in self._secondary_camera_names:
+            self._secondary_cam_state[name] = {
+                'info_msg': None,
+                'intrinsics': None,
+                'frame_id': None,
+                'width': 0,
+                'height': 0,
+                'd_coeffs': None,
+                'trigger_active': False,
+                'prev_trigger': False,
+                'in_view_streak': 0,
+                'out_streak': 0,
+                'latest_rgb_bgr': None,
+                'frame_pending': False,
+                'video_predictor': None,
+                'pending_secondary_init': False,
+                'init_uv': None,
+                'tracking_initialized': False,
+                'last_sec_track_time': 0.0,
+                'sec_frame_count': 0,
+                'last_mask': None,
+                'last_score': 0.0,
+                'last_projected_uv': None,
+            }
         
         # TF2
         self.tf_buffer = Buffer()
@@ -1040,6 +1119,43 @@ class DetectQwenNode(Node):
             self._camera_info_cb,
             1
         )
+
+        self._secondary_info_subs = []
+        self._secondary_rgb_subs = []
+        if self.enable_secondary_fov_trigger and self._secondary_camera_names:
+            for cam_name in self._secondary_camera_names:
+                ctopic = _secondary_camera_info_topic(
+                    cam_name, self.secondary_camera_path_prefix
+                )
+                sub = self.create_subscription(
+                    CameraInfo,
+                    ctopic,
+                    lambda msg, name=cam_name: self._secondary_camera_info_cb(msg, name),
+                    1,
+                )
+                self._secondary_info_subs.append(sub)
+                _need_rgb = self.enable_secondary_video_tracking or (
+                    self.show_secondary_debug_windows and self.visualize
+                )
+                if _need_rgb:
+                    rtopic = _secondary_camera_rgb_topic(
+                        cam_name,
+                        self.secondary_camera_path_prefix,
+                        self.secondary_camera_rgb_suffix,
+                    )
+                    rgb_sub = self.create_subscription(
+                        RosImage,
+                        rtopic,
+                        lambda msg, name=cam_name: self._secondary_rgb_cb(msg, name),
+                        1,
+                    )
+                    self._secondary_rgb_subs.append(rgb_sub)
+            self.get_logger().info(
+                "FOV trigger secundário: "
+                f"câmeras={self._secondary_camera_names}, "
+                f"frame consistência={self.odom_consistency_frame}, "
+                f"jump_max={self.max_consistency_position_jump_m}m"
+            )
         
         # Synced RGB + Depth subscribers
         self.rgb_sub = message_filters.Subscriber(self, RosImage, rgb_topic)
@@ -1065,6 +1181,9 @@ class DetectQwenNode(Node):
         else:
             self.get_logger().info("SAM2 VideoPredictor loaded.")
         
+        self.get_logger().info(
+            f"Segmentation mask topic: {mask_topic} (publish={self.publish_segmentation_mask})"
+        )
         self.get_logger().info("DetectQwenNode ready. Waiting for camera data...")
     
     def _camera_info_cb(self, msg: CameraInfo):
@@ -1081,10 +1200,49 @@ class DetectQwenNode(Node):
             )
             self.get_logger().info(f"Camera frame_id: '{self.camera_frame_id}'")
 
+    def _lookup_transform_with_sensor_stamp(
+        self, target_frame: str, source_frame: str, sensor_header=None
+    ):
+        """
+        Ordem: stamp do sensor → Time(0) (último TF no buffer, evita extrapolação “future”
+        quando imagem corre à frente do estado) → Time() (relógio atual).
+        """
+        timeout = Duration(seconds=self.hand_tf_lookup_timeout_sec)
+        if self.use_wall_time_tf_lookups:
+            # Modo rápido: lookup não bloqueante em "agora" (wall-style).
+            return self.tf_buffer.lookup_transform(
+                target_frame,
+                source_frame,
+                rclpy.time.Time(),
+                timeout=Duration(seconds=0.0),
+            )
+        if sensor_header is not None:
+            try:
+                st = rclpy.time.Time.from_msg(sensor_header.stamp)
+                t = self.tf_buffer.lookup_transform(
+                    target_frame, source_frame, st, timeout=timeout
+                )
+                return t
+            except Exception:
+                pass
+        try:
+            t = self.tf_buffer.lookup_transform(
+                target_frame,
+                source_frame,
+                rclpy.time.Time(seconds=0, nanoseconds=0),
+                timeout=timeout,
+            )
+            return t
+        except Exception:
+            t = self.tf_buffer.lookup_transform(
+                target_frame, source_frame, rclpy.time.Time(), timeout=timeout
+            )
+            return t
+
     def _get_correction_angle(self):
         """
         Compute the roll correction angle (degrees) by projecting gravity
-        into the camera image plane via a TF lookup body -> camera_frame.
+        into the camera image plane via a TF lookup robot_base_frame -> camera_frame.
         Returns 0.0 on failure or if the angle is negligible (< 5 deg).
         """
         source_frame = getattr(self, 'camera_frame_id', None)
@@ -1095,9 +1253,10 @@ class DetectQwenNode(Node):
                 else 'hand_cam'
             )
 
+        sensor_h = getattr(self, "latest_depth_header", None)
         try:
-            t = self.tf_buffer.lookup_transform(
-                'body', source_frame, rclpy.time.Time()
+            t = self._lookup_transform_with_sensor_stamp(
+                self.robot_base_frame, source_frame, sensor_h
             )
         except Exception as e:
             self.get_logger().warn(f"TF lookup failed for correction angle: {e}")
@@ -1257,85 +1416,51 @@ class DetectQwenNode(Node):
             
             sam_img_predictor = load_sam_model()
             if sam_img_predictor:
-                sam_img_predictor.set_image(np.array(img_pil))
-                
                 all_masks = []
-                # Combine points into a batch or query them one by one. One by one is easier to pick highest.
                 for pt in grasp_points_uv:
-                    masks, scores, _ = sam_img_predictor.predict(
-                        point_coords=np.array([pt]),
-                        point_labels=np.array([1]),
-                        multimask_output=True,
+                    masks, scores = _sam_prompt_masks(
+                        sam_img_predictor, img_pil, pt, multimask_output=True
                     )
-                    # For each point, take the highest scoring mask according to SAM2
-                    best_local_idx = np.argmax(scores)
+                    if len(masks) == 0:
+                        continue
+                    best_local_idx = int(np.argmax(scores))
                     all_masks.append(masks[best_local_idx])
-                
-                # Check ambiguity
+
                 best_idx = 0
                 if len(all_masks) > 1:
-                    mosaic_path = create_crop_mosaic(img_pil, all_masks, bbox, "debug_mosaic.jpg")
-                    if mosaic_path:
-                        self.get_logger().info("Asking Qwen to select best mask from multiple generated choices...")
-                        best_idx = ask_qwen_selection(mosaic_path, label)
-                        self.get_logger().info(f"✅ Qwen selected mask {best_idx+1}")
-                
-                best_mask = all_masks[best_idx]
-                # Update our primary tracking grasp point based on what Qwen picked
-                grasp_u, grasp_v = grasp_points_uv[best_idx]
+                    create_crop_mosaic(img_pil, all_masks, bbox, "debug_mosaic.jpg")
+                    self.get_logger().info("Selecting best mask by bbox IoU...")
+                    best_idx = select_best_mask_by_bbox_iou(all_masks, bbox, img_pil.size)
+                    self.get_logger().info(f"Selected mask {best_idx+1} by bbox IoU")
+
+                best_mask = all_masks[best_idx] if all_masks else None
+                if best_mask is not None:
+                    grasp_u, grasp_v = grasp_points_uv[min(best_idx, len(grasp_points_uv) - 1)]
             else:
-                self.get_logger().warn("ImagePredictor failed to load. Skipping selection step.")
+                self.get_logger().warn("Falha ao carregar Ultralytics SAM2.")
                 best_mask = None
 
             t3 = time.time()
             selection_ms = (t3 - t2) * 1000
             
-            # Step 3: Initialize Video Tracker with selected mask
-            self.inference_state = init_streaming_state(
-                self.video_predictor, orig_h, orig_w
-            )
-            frame_idx = append_frame_to_state(
-                self.inference_state, self.video_predictor, img_pil
-            )
-            self.current_frame_idx = frame_idx
-            
+            # Step 3: SAM2VideoPredictor — init por ponto (mascara full-res falha no predictor de video Ultralytics)
+            img_np = np.array(img_pil.convert("RGB"))
             if best_mask is not None:
-                # Use the selected mask to initialize tracking
-                # SAM2 requires (H, W) mask tensor
-                if best_mask.ndim > 2:
-                     best_mask = best_mask.squeeze()
-                
-                mask_tensor = torch.from_numpy(best_mask).float().to(self.video_predictor.device)
-                
-                _, out_obj_ids, out_mask_logits = self.video_predictor.add_new_mask(
-                    inference_state=self.inference_state,
-                    frame_idx=frame_idx,
-                    obj_id=1,
-                    mask=mask_tensor
-                )
+                init_pt = [[grasp_u, grasp_v]]
             else:
-                # Fallback to box prompt if no mask available
-                _, out_obj_ids, out_mask_logits = self.video_predictor.add_new_points_or_box(
-                    inference_state=self.inference_state,
-                    frame_idx=frame_idx,
-                    obj_id=1,
-                    box=np.array(bbox, dtype=np.float32),
+                init_pt = [[(x1 + x2) // 2, (y1 + y2) // 2]]
+            with self._gpu_lock:
+                init_results = self.video_predictor(
+                    img_np,
+                    points=init_pt,
+                    labels=[1],
                 )
-
-            # Extract initial mask result
-            mask_logit = out_mask_logits[0]
-            mask_prob = torch.sigmoid(mask_logit)
-            
-            mask_pixels = mask_prob[0] > 0.5
-            if mask_pixels.any():
-                score = mask_prob[0][mask_pixels].mean().item()
-            else:
-                score = 0.0
-                
-            mask_np = mask_pixels.cpu().numpy().astype(np.uint8)
-            
-            # Publish crop for TripoSR service
-            self._publish_triposr_crop(img_pil, mask_np, bbox)
+            best_tracked_mask, score = _best_mask_from_results(init_results)
+            if best_tracked_mask is None:
+                self.get_logger().warn("Tracker inicializou sem máscara válida.")
+                self.detection_running = False
+                return
+            mask_np = best_tracked_mask.astype(np.uint8)
             
             self.last_tracking_score = score
             self.tracking_active = True
@@ -1354,7 +1479,7 @@ class DetectQwenNode(Node):
             centroid_uv = self._mask_to_tf(mask_np, self.latest_depth.copy(), score)
             
             self._publish_segmented_depth(mask_np, self.latest_depth.copy())
-            
+            self._publish_segmentation_mask(mask_np)
             # Visualization
             if self.visualize:
                 self._update_display(self.latest_rgb, mask_np, score, centroid_uv)
@@ -1371,135 +1496,127 @@ class DetectQwenNode(Node):
             traceback.print_exc()
         finally:
             self.detection_running = False
-    def _check_position_stability(self):
-        """Check if tracked position is stable (object not moving)."""
-        if len(self._recent_positions) < self.stability_window:
-            return False
-        positions = self._recent_positions[-self.stability_window:]
-        arr = np.array(positions)
-        spread = arr.max(axis=0) - arr.min(axis=0)
-        return float(np.linalg.norm(spread)) < self.stability_threshold
 
-    def _tracking_timer_cb(self):
-        """Process new frames for SAM2 tracking with adaptive frequency."""
+    def _secondary_cam_order(self):
+        """Ordem fixa para lock GPU: prioridade explícita, senão ordem de secondary_camera_names."""
+        names = list(self._secondary_camera_names)
+        prio = self._secondary_tracking_priority
+        if not prio:
+            return names
+        ordered = []
+        for p in prio:
+            if p in names and p not in ordered:
+                ordered.append(p)
+        for n in names:
+            if n not in ordered:
+                ordered.append(n)
+        return ordered
+
+    def _release_secondary_predictor(self, cam_name: str):
+        st = self._secondary_cam_state.get(cam_name)
+        if st is None:
+            return
+        pred = st.get('video_predictor')
+        if pred is not None:
+            try:
+                pred.inference_state = {}
+                if hasattr(pred, '_ros_frame_idx'):
+                    pred._ros_frame_idx = 0
+            except Exception:
+                pass
+            st['video_predictor'] = None
+        st['tracking_initialized'] = False
+        st['pending_secondary_init'] = False
+        st['init_uv'] = None
+        st['last_mask'] = None
+        st['last_score'] = 0.0
+        st['sec_frame_count'] = 0
+        st['frame_pending'] = False
+
+    def _maybe_resume_hand_after_secondary_stop(self):
+        """Opcional: quando uma frontal deixa de seguir, retomar deteção na mão."""
+        r = self.resume_hand_after_secondary_stop
+        if r == 'none':
+            return
         if self.detection_running:
             return
+        if self.tracking_active:
+            return
+        if r in ('qwen', 'point'):
+            self._run_initial_detection()
+
+    def _run_hand_tracking_step(self, now: float):
+        """Um passo de tracking SAM2 na mão (chamado com intervalo adaptativo)."""
         if self.latest_rgb is None or self.latest_depth is None:
             return
         if self.camera_intrinsics is None:
             return
-            
-        if not self.tracking_active:
-            if self.new_frame_available:
-                self._run_initial_detection()
-            return
-            
         if not self.new_frame_available:
             return
-        
-        now = time.time()
-        interval = (self.idle_tracking_interval if self._tracking_idle
-                     else self.active_tracking_interval)
-        if (now - self._last_track_time) < interval:
+        if (now - self._last_track_time) < self.active_tracking_interval:
             return
-        
+
         self.new_frame_available = False
         self._last_track_time = now
         t_start = now
-        
+
         try:
             img_pil = self.latest_rgb
             depth_map = self.latest_depth.copy()
-            
-            # Append new frame to inference state
-            frame_idx = append_frame_to_state(
-                self.inference_state, self.video_predictor, img_pil
-            )
-            self.current_frame_idx = frame_idx
+
             self.tracking_frame_count += 1
-            
-            with torch.inference_mode():
-                with torch.autocast("cuda", dtype=torch.bfloat16):
-                    for out_frame_idx, out_obj_ids, out_mask_logits in \
-                            self.video_predictor.propagate_in_video(
-                                self.inference_state,
-                                start_frame_idx=frame_idx,
-                                max_frame_num_to_track=1,
-                            ):
-                        mask_logit = out_mask_logits[0].float()
-                        mask_prob = torch.sigmoid(mask_logit)
-                        
-                        mask_pixels = mask_prob[0] > 0.5
-                        if mask_pixels.any():
-                            score = mask_prob[0][mask_pixels].mean().item()
-                        else:
-                            score = 0.0
-                            
-                        mask_np = mask_pixels.cpu().numpy().astype(np.uint8)
-            
+
+            with self._gpu_lock:
+                tracked_results = self.video_predictor(
+                    np.array(img_pil.convert("RGB")),
+                )
+            best_tracked_mask, score = _best_mask_from_results(tracked_results)
+            if best_tracked_mask is None:
+                score = 0.0
+                mask_np = np.zeros_like(depth_map, dtype=np.uint8)
+            else:
+                mask_np = best_tracked_mask.astype(np.uint8)
+
             if self.gpu_yield:
                 torch.cuda.synchronize()
                 torch.cuda.empty_cache()
-            
+
             self.last_tracking_score = score
             tracking_ms = (time.time() - t_start) * 1000
-            
-            # Check if tracking is lost
+
             mask_area = mask_np.sum()
-            if score < self.confidence_threshold or mask_area < 50:
-                self.get_logger().warn(
-                    f"⚠️ Tracking lost (score={score:.3f}, area={mask_area}). "
-                    f"Re-detecting..."
-                )
-                self._reset_tracking()
-                self._run_initial_detection()
-                return
-            
-            # Compute centroid and update TF
+            is_lost_now = (mask_area < self.tracking_min_mask_area)
+            if is_lost_now:
+                self._tracking_lost_streak += 1
+            else:
+                self._tracking_lost_streak = 0
+
+            if self._tracking_lost_streak >= self.tracking_lost_confirm_frames:
+                now_sec = time.time()
+                if (now_sec - self._last_redetect_time) >= self.tracking_redetect_cooldown_sec:
+                    self._last_redetect_time = now_sec
+                    self.get_logger().warn(
+                        f"⚠️ Tracking lost (score={score:.3f}, area={mask_area}, "
+                        f"streak={self._tracking_lost_streak}). Re-detecting..."
+                    )
+                    self._reset_tracking()
+                    self._run_initial_detection()
+                    return
+
             centroid_uv = self._mask_to_tf(mask_np, depth_map, score)
-            
+
             self._publish_segmented_depth(mask_np, depth_map)
-            
-            # Visualization
+            self._publish_segmentation_mask(mask_np)
+
             if self.visualize:
                 self._update_display(self.latest_rgb, mask_np, score, centroid_uv)
-            
-            # Adaptive frequency: track position stability
-            if self.target_transform is not None:
-                t = self.target_transform.transform.translation
-                self._recent_positions.append((t.x, t.y, t.z))
-                if len(self._recent_positions) > self.stability_window * 2:
-                    self._recent_positions = self._recent_positions[-self.stability_window * 2:]
-                
-                was_idle = self._tracking_idle
-                self._tracking_idle = self._check_position_stability()
-                
-                if self._tracking_idle and not was_idle:
-                    self.get_logger().info(
-                        f"💤 Object stable — switching to idle tracking "
-                        f"({self.idle_tracking_interval}s interval). "
-                        f"GPU freed for cuRobo."
-                    )
-                elif not self._tracking_idle and was_idle:
-                    self.get_logger().info(
-                        f"🏃 Object moved — switching to active tracking "
-                        f"({self.active_tracking_interval}s interval)"
-                    )
-            
+
             if self.tracking_frame_count % 5 == 0:
-                mode_str = "IDLE" if self._tracking_idle else "ACTIVE"
                 self.get_logger().info(
                     f"📍 Tracking frame {self.tracking_frame_count}: "
-                    f"score={score:.3f} | {tracking_ms:.0f}ms | {mode_str}"
+                    f"score={score:.3f} | {tracking_ms:.0f}ms | ACTIVE"
                 )
-            
-            # Memory optimization: Free old frames (keep 0 and last 50)
-            if frame_idx > 50:
-                 old_idx = frame_idx - 50
-                 if old_idx > 0 and old_idx < len(self.inference_state["images"]):
-                     self.inference_state["images"][old_idx] = None
-            
-            # Safety reset if too many frames accumulated (30 minutes)
+
             if self.tracking_frame_count >= self.MAX_TRACKING_FRAMES:
                 self.get_logger().info(
                     f"🔄 Resetting tracking after {self.MAX_TRACKING_FRAMES} frames "
@@ -1507,12 +1624,145 @@ class DetectQwenNode(Node):
                 )
                 self._reset_tracking()
                 self._run_initial_detection()
-        
+
         except Exception as e:
             self.get_logger().error(f"Tracking error: {e}")
             import traceback
             traceback.print_exc()
             self._reset_tracking()
+
+    def _run_secondary_camera_tracking(self, now: float, cam_name: str):
+        if not self.enable_secondary_video_tracking or not self.enable_secondary_fov_trigger:
+            return
+        st = self._secondary_cam_state.get(cam_name)
+        if st is None:
+            return
+        if not st.get('trigger_active'):
+            return
+        if st.get('latest_rgb_bgr') is None:
+            return
+
+        need_init = bool(st.get('pending_secondary_init') and st.get('init_uv') is not None)
+        if not need_init and not st.get('frame_pending'):
+            return
+        if not need_init and (now - st['last_sec_track_time']) < self.secondary_tracking_interval:
+            if self.visualize and self.show_secondary_debug_windows:
+                self._update_secondary_display(
+                    cam_name,
+                    st,
+                    in_view=True,
+                    uv=st.get('last_projected_uv'),
+                    z_cam=None,
+                    odom_ok=True,
+                    stale=False,
+                    mask_overlay=st.get('last_mask'),
+                )
+            return
+
+        img_bgr = st['latest_rgb_bgr']
+        h, w = img_bgr.shape[:2]
+        img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+
+        try:
+            if need_init:
+                if st['video_predictor'] is None:
+                    st['video_predictor'] = create_video_predictor()
+                    if st['video_predictor'] is None:
+                        self.get_logger().error(
+                            f"[FOV {cam_name}] SAM2 secundário indisponível (create_video_predictor)."
+                        )
+                        if self.visualize and self.show_secondary_debug_windows:
+                            self._update_secondary_display(
+                                cam_name,
+                                st,
+                                in_view=True,
+                                uv=st.get('last_projected_uv'),
+                                z_cam=None,
+                                odom_ok=True,
+                                stale=False,
+                                mask_overlay=st.get('last_mask'),
+                            )
+                        return
+                iu, iv = st['init_uv']
+                u = int(round(iu))
+                v = int(round(iv))
+                u = max(0, min(w - 1, u))
+                v = max(0, min(h - 1, v))
+                with self._gpu_lock:
+                    res = st['video_predictor'](
+                        img_rgb,
+                        points=[[u, v]],
+                        labels=[1],
+                    )
+                mask_np, score = _best_mask_from_results(res)
+                if mask_np is None:
+                    mask_np = np.zeros((h, w), dtype=np.uint8)
+                    score = 0.0
+                else:
+                    mask_np = mask_np.astype(np.uint8)
+                st['tracking_initialized'] = True
+                st['pending_secondary_init'] = False
+                st['frame_pending'] = False
+                st['last_sec_track_time'] = now
+                st['sec_frame_count'] = 1
+                st['last_mask'] = mask_np
+                st['last_score'] = score
+            elif st.get('tracking_initialized') and st.get('video_predictor') is not None:
+                with self._gpu_lock:
+                    res = st['video_predictor'](img_rgb)
+                mask_np, score = _best_mask_from_results(res)
+                if mask_np is None:
+                    h2, w2 = img_bgr.shape[:2]
+                    mask_np = np.zeros((h2, w2), dtype=np.uint8)
+                    score = 0.0
+                else:
+                    mask_np = mask_np.astype(np.uint8)
+                st['frame_pending'] = False
+                st['last_sec_track_time'] = now
+                st['sec_frame_count'] = int(st.get('sec_frame_count', 0)) + 1
+                st['last_mask'] = mask_np
+                st['last_score'] = score
+
+            if self.gpu_yield:
+                torch.cuda.synchronize()
+
+            if self.visualize and self.show_secondary_debug_windows:
+                self._update_secondary_display(
+                    cam_name,
+                    st,
+                    in_view=True,
+                    uv=st.get('last_projected_uv'),
+                    z_cam=None,
+                    odom_ok=True,
+                    stale=False,
+                    mask_overlay=st.get('last_mask'),
+                )
+        except Exception as e:
+            self.get_logger().error(f"[FOV {cam_name}] tracking secundário: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def _tracking_timer_cb(self):
+        """Mão + frontais no mesmo tick; inferência SAM2 serializada com _gpu_lock."""
+        if self.detection_running:
+            return
+
+        now = time.time()
+
+        if not self.tracking_active:
+            if (
+                self.new_frame_available
+                and self.latest_rgb is not None
+                and self.latest_depth is not None
+                and self.camera_intrinsics is not None
+            ):
+                self._run_initial_detection()
+        else:
+            self._run_hand_tracking_step(now)
+
+        if self.enable_secondary_video_tracking and self.enable_secondary_fov_trigger:
+            for cam_name in self._secondary_cam_order():
+                self._run_secondary_camera_tracking(now, cam_name)
 
     def _update_display(self, img_pil, mask_np, score, centroid_uv=None):
         """Update OpenCV debug window with tracking overlay."""
@@ -1542,11 +1792,27 @@ class DetectQwenNode(Node):
             cv2.putText(img_bgr, text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
             
             # Show window
-            cv2.imshow("SAM2 Live Tracking", img_bgr)
+            cv2.imshow(self.tracking_window_name, img_bgr)
             cv2.waitKey(1)
             
         except Exception as e:
             self.get_logger().warn(f"Visualization error: {e}")
+
+    def _publish_segmentation_mask(self, mask_np):
+        """Publish binary segmentation mask (mono8) for downstream nodes (e.g. Open3D PCD)."""
+        if not self.publish_segmentation_mask:
+            return
+        m = ((mask_np > 0).astype(np.uint8) * 255)
+        try:
+            msg = self.bridge.cv2_to_imgmsg(m, encoding='mono8')
+            if hasattr(self, 'latest_depth_header') and self.latest_depth_header is not None:
+                msg.header = self.latest_depth_header
+            else:
+                msg.header.stamp = self.get_clock().now().to_msg()
+                msg.header.frame_id = self.camera_frame_id or 'hand_cam'
+            self.mask_pub.publish(msg)
+        except Exception as e:
+            self.get_logger().error(f"Error publishing segmentation mask: {e}")
 
     def _publish_segmented_depth(self, mask_np, depth_map):
         """Publish the segmented depth image."""
@@ -1565,86 +1831,20 @@ class DetectQwenNode(Node):
             except Exception as e:
                 self.get_logger().error(f"Error publishing segmented depth: {e}")
 
-    def _publish_triposr_crop(self, img_pil, mask_np, bbox, foreground_ratio=0.85):
-        """
-        Crop RGB image using the mask bounding box with margin,
-        publish it, and call the TripoSR mesh generation service.
-        """
-        # Find exact mask bounds
-        y_indices, x_indices = np.where(mask_np > 0)
-        if len(y_indices) == 0 or len(x_indices) == 0:
-            return
-            
-        y1, y2 = y_indices.min(), y_indices.max()
-        x1, x2 = x_indices.min(), x_indices.max()
-        
-        # Center of the mask
-        cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
-        
-        # Size of the mask
-        w, h = x2 - x1, y2 - y1
-        size = max(w, h)
-        
-        # Add margin
-        padded_size = int(size / foreground_ratio)
-        half_size = padded_size // 2
-        
-        # Crop bounds with padding
-        img_w, img_h = img_pil.size
-        crop_x1 = max(0, cx - half_size)
-        crop_y1 = max(0, cy - half_size)
-        crop_x2 = min(img_w, cx + half_size)
-        crop_y2 = min(img_h, cy + half_size)
-        # Apply mask and replace background with flat gray (127, 127, 127) for TripoSR
-        img_np = np.array(img_pil)  # RGB
-        gray_bg = np.full_like(img_np, 127)
-        mask_3d = mask_np[:, :, np.newaxis]
-        img_masked = np.where(mask_3d > 0, img_np, gray_bg)
-        
-        # Crop the masked image
-        img_crop = Image.fromarray(img_masked).crop((crop_x1, crop_y1, crop_x2, crop_y2))
-        
-        # Publish
-        try:
-            cv_crop = np.array(img_crop) # Already RGB from PIL
-            msg = self.bridge.cv2_to_imgmsg(cv_crop, encoding='rgb8')
-            self.triposr_img_pub.publish(msg)
-            self.get_logger().info("Published crop image for TripoSR.")
-            
-            # Call service
-            if not self.mesh_client.wait_for_service(timeout_sec=1.0):
-                self.get_logger().warn("TripoSR service not available, skipping mesh generation.")
-                return
-                
-            req = Trigger.Request()
-            future = self.mesh_client.call_async(req)
-            future.add_done_callback(self._mesh_service_cb)
-            
-        except Exception as e:
-            self.get_logger().error(f"Error publishing TripoSR crop: {e}")
-            
-    def _mesh_service_cb(self, future):
-        try:
-            response = future.result()
-            if response.success:
-                self.get_logger().info(f"✨ TripoSR mesh generated: {response.message}")
-            else:
-                self.get_logger().error(f"TripoSR mesh failed: {response.message}")
-        except Exception as e:
-            self.get_logger().error(f"Service call failed: {e}")
-
     def _reset_tracking(self):
         """Reset the tracking state for a fresh start."""
         self.tracking_active = False
-        self.inference_state = None
-        self.current_frame_idx = -1
         self.tracking_frame_count = 0
+        self._tracking_lost_streak = 0
         self.new_frame_available = False
-        self._recent_positions.clear()
-        self._tracking_idle = False
         self._last_track_time = 0.0
+        if self.video_predictor is not None:
+            self.video_predictor.inference_state = {}
+            if hasattr(self.video_predictor, "_ros_frame_idx"):
+                self.video_predictor._ros_frame_idx = 0
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+        self._consistency_ref_ema = None
 
     def _get_valid_depth(self, depth_map, u, v, radius=3):
         """Get valid depth (in meters) at pixel (u, v) with a search window.
@@ -1751,7 +1951,7 @@ class DetectQwenNode(Node):
         X = (u - cx) * Z / fx
         Y = (v - cy) * Z / fy
         
-        # Transform to body
+        # Transform to robot base (see robot_base_frame parameter)
         try:
             source_frame = self.latest_depth_header.frame_id if hasattr(self, 'latest_depth_header') else 'hand_cam'
             self.get_logger().info(
@@ -1759,8 +1959,12 @@ class DetectQwenNode(Node):
                 f"source_frame='{source_frame}'",
                 once=True
             )
-            t = self.tf_buffer.lookup_transform(
-                'body', source_frame, rclpy.time.Time()
+            t = self._lookup_transform_with_sensor_stamp(
+                self.robot_base_frame,
+                source_frame,
+                self.latest_depth_header
+                if hasattr(self, "latest_depth_header")
+                else None,
             )
             tx = t.transform.translation.x
             ty = t.transform.translation.y
@@ -1778,7 +1982,7 @@ class DetectQwenNode(Node):
             # Publish TF
             tf_msg = TransformStamped()
             tf_msg.header.stamp = self.get_clock().now().to_msg()
-            tf_msg.header.frame_id = 'body'
+            tf_msg.header.frame_id = self.robot_base_frame
             tf_msg.child_frame_id = self.target_frame_name
             tf_msg.transform.translation.x = target_x
             tf_msg.transform.translation.y = target_y
@@ -1786,12 +1990,13 @@ class DetectQwenNode(Node):
             tf_msg.transform.rotation.w = 1.0
             
             self.target_transform = tf_msg
+            self._target_tf_wall_time = time.time()
             self.tf_broadcaster.sendTransform(tf_msg)
             
             # Log periodically (every 10th frame)
             if self.tracking_frame_count % 10 == 0:
                 self.get_logger().info(
-                    f"📢 Publishing TF: body -> {self.target_frame_name} at "
+                    f"📢 Publishing TF: {self.robot_base_frame} -> {self.target_frame_name} at "
                     f"({target_x:.3f}, {target_y:.3f}, {target_z:.3f})"
                 )
             
@@ -1819,7 +2024,394 @@ class DetectQwenNode(Node):
         """Publish stored TF at 10 Hz."""
         if self.target_transform is not None:
             self.target_transform.header.stamp = self.get_clock().now().to_msg()
+            # Enquanto há tracking ativo, republicar o target a 10 Hz deve manter o alvo "fresco"
+            # para o gate FOV (evita stale_target só porque _mask_to_tf não corre há >max_target_pose_age_sec).
+            if self.tracking_active:
+                self._target_tf_wall_time = time.time()
             self.tf_broadcaster.sendTransform(self.target_transform)
+        self._update_secondary_fov_triggers()
+
+    def _secondary_camera_info_cb(self, msg: CameraInfo, cam_name: str):
+        st = self._secondary_cam_state.get(cam_name)
+        if st is None:
+            return
+        fx = msg.k[0]
+        fy = msg.k[4]
+        cx = msg.k[2]
+        cy = msg.k[5]
+        st['info_msg'] = msg
+        st['intrinsics'] = (fx, fy, cx, cy)
+        st['frame_id'] = msg.header.frame_id
+        st['width'] = int(msg.width)
+        st['height'] = int(msg.height)
+        if self.secondary_fov_ignore_distortion:
+            st['d_coeffs'] = None
+        else:
+            st['d_coeffs'] = _camera_info_distortion_coeffs(msg)
+        self.get_logger().info(
+            f"[FOV {cam_name}] camera_info {st['width']}x{st['height']} "
+            f"frame_id={st['frame_id']}",
+            once=True,
+        )
+
+    def _secondary_rgb_cb(self, msg: RosImage, cam_name: str):
+        st = self._secondary_cam_state.get(cam_name)
+        if st is None:
+            return
+        try:
+            cv_bgr = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
+            st['latest_rgb_bgr'] = cv_bgr
+            st['frame_pending'] = True
+        except Exception:
+            # Silencioso para não poluir o loop principal.
+            return
+        # Propaga máscara + UV no frame mais recente (não só no timer TF / tracking).
+        if self.visualize and self.show_secondary_debug_windows:
+            self._update_secondary_display(
+                cam_name,
+                st,
+                in_view=bool(st.get('trigger_active')),
+                uv=st.get('last_projected_uv'),
+                z_cam=None,
+                odom_ok=True,
+                stale=False,
+                mask_overlay=st.get('last_mask'),
+            )
+
+    def _update_secondary_display(
+        self,
+        cam_name: str,
+        st: dict,
+        in_view: bool,
+        uv=None,
+        z_cam=None,
+        odom_ok=True,
+        stale=False,
+        mask_overlay=None,
+    ):
+        if not self.visualize or not self.show_secondary_debug_windows:
+            return
+        img = st.get('latest_rgb_bgr', None)
+        if img is None:
+            return
+        try:
+            out = img.copy()
+            h, w = out.shape[:2]
+            if mask_overlay is not None:
+                mo = mask_overlay
+                if mo.shape[:2] != (h, w):
+                    mo = cv2.resize(mo, (w, h), interpolation=cv2.INTER_NEAREST)
+                mo_u8 = (mo > 0).astype(np.uint8) * 255
+                overlay = np.zeros_like(out)
+                overlay[mo_u8 > 0] = [0, 255, 0]
+                out = cv2.addWeighted(out, 1.0, overlay, 0.5, 0)
+                contours, _ = cv2.findContours(mo_u8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                cv2.drawContours(out, contours, -1, (0, 255, 0), 2)
+            sc = st.get('last_score')
+            if sc is not None and st.get('tracking_initialized'):
+                cv2.putText(
+                    out,
+                    f"seg={float(sc):.3f}",
+                    (10, 52),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.55,
+                    (0, 255, 0),
+                    2,
+                )
+            if uv is not None:
+                u, v = int(round(uv[0])), int(round(uv[1]))
+                u = max(0, min(w - 1, u))
+                v = max(0, min(h - 1, v))
+                cv2.circle(out, (u, v), 6, (0, 0, 255), -1)
+                cv2.putText(out, f"u={u} v={v}", (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 220, 0), 2)
+            status = "ON" if st.get('trigger_active', False) else "OFF"
+            txt = f"{cam_name} trig={status} in_view={int(bool(in_view))} odom_ok={int(bool(odom_ok))} stale={int(bool(stale))}"
+            cv2.putText(out, txt, (10, h - 18), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 2)
+            if z_cam is not None:
+                cv2.putText(out, f"z={z_cam:.3f}m", (10, h - 42), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 0), 2)
+            win = f"FOV Debug - {cam_name}"
+            cv2.imshow(win, out)
+            cv2.waitKey(1)
+        except Exception:
+            return
+
+    def _transform_point_base_to_frame(self, out_frame: str, stamp, pb):
+        """
+        p em robot_base_frame → mesmo ponto expresso em out_frame.
+        lookup(out_frame, base): p_out = R * p_base + t.
+        Evita usar target_object no buffer (TransformBroadcaster local por vezes não ecoa).
+        """
+        t = self._lookup_transform_robust(
+            out_frame,
+            self.robot_base_frame,
+            stamp,
+            Duration(seconds=self.secondary_fov_tf_lookup_timeout_sec),
+            f"{out_frame}<-{self.robot_base_frame}",
+        )
+        if t is None:
+            return None
+        tr = t.transform.translation
+        r = t.transform.rotation
+        px, py, pz = float(pb[0]), float(pb[1]), float(pb[2])
+        rx, ry, rz = self._rotate_point_by_quaternion(px, py, pz, r.x, r.y, r.z, r.w)
+        return np.array([rx + tr.x, ry + tr.y, rz + tr.z], dtype=np.float64)
+
+    def _lookup_transform_robust(
+        self,
+        target_frame: str,
+        source_frame: str,
+        stamp,
+        timeout: Duration,
+        context_tag: str,
+    ):
+        """
+        Tenta lookup no stamp pedido; em falha por extrapolation/clock mismatch,
+        faz fallback para último TF disponível (time=0).
+        """
+        if self.use_wall_time_tf_lookups:
+            # Modo rápido: sem espera/bloqueio.
+            try:
+                return self.tf_buffer.lookup_transform(
+                    target_frame,
+                    source_frame,
+                    rclpy.time.Time(),
+                    timeout=Duration(seconds=0.0),
+                )
+            except Exception as e_now:
+                try:
+                    return self.tf_buffer.lookup_transform(
+                        target_frame,
+                        source_frame,
+                        rclpy.time.Time(seconds=0, nanoseconds=0),
+                        timeout=Duration(seconds=0.0),
+                    )
+                except Exception as e_t0:
+                    self.get_logger().warn(
+                        f"[FOV] TF lookup falhou ({context_tag}) no modo wall: "
+                        f"now='{e_now}' | t0='{e_t0}'",
+                        throttle_duration_sec=5.0,
+                    )
+                    return None
+
+        try:
+            return self.tf_buffer.lookup_transform(
+                target_frame,
+                source_frame,
+                stamp,
+                timeout=timeout,
+            )
+        except Exception as e_first:
+            try:
+                return self.tf_buffer.lookup_transform(
+                    target_frame,
+                    source_frame,
+                    rclpy.time.Time(seconds=0, nanoseconds=0),
+                    timeout=timeout,
+                )
+            except Exception as e_second:
+                try:
+                    return self.tf_buffer.lookup_transform(
+                        target_frame,
+                        source_frame,
+                        rclpy.time.Time(),
+                        timeout=timeout,
+                    )
+                except Exception as e_third:
+                    self.get_logger().warn(
+                        f"[FOV] TF lookup falhou ({context_tag}): "
+                        f"stamp='{e_first}' | t0='{e_second}' | now='{e_third}'",
+                        throttle_duration_sec=5.0,
+                    )
+                    return None
+
+    def _update_secondary_fov_triggers(self):
+        """FOV geométrico + consistência odom; atualiza triggers e UV projetado para tracking secundário."""
+        if not self.enable_secondary_fov_trigger or not self._secondary_camera_names:
+            return
+
+        now_wall = time.time()
+        stale = (
+            self.target_transform is None
+            or self._target_tf_wall_time is None
+            or (now_wall - self._target_tf_wall_time) > self.max_target_pose_age_sec
+        )
+
+        stamp = rclpy.time.Time()
+        if self.target_transform is not None:
+            try:
+                stamp = rclpy.time.Time.from_msg(self.target_transform.header.stamp)
+            except Exception:
+                pass
+
+        odom_ok = True
+        p_consistency = None
+        if not stale:
+            pb = np.array(
+                [
+                    self.target_transform.transform.translation.x,
+                    self.target_transform.transform.translation.y,
+                    self.target_transform.transform.translation.z,
+                ],
+                dtype=np.float64,
+            )
+            if self.odom_consistency_frame == self.robot_base_frame:
+                p_consistency = pb.copy()
+            else:
+                p_consistency = self._transform_point_base_to_frame(
+                    self.odom_consistency_frame, stamp, pb
+                )
+                if p_consistency is None:
+                    odom_ok = False
+
+        if not stale and p_consistency is not None:
+            if self._consistency_ref_ema is None:
+                self._consistency_ref_ema = p_consistency.copy()
+            dist = float(np.linalg.norm(p_consistency - self._consistency_ref_ema))
+            if dist > self.max_consistency_position_jump_m:
+                odom_ok = False
+                self.get_logger().warn(
+                    f"[FOV] rejected_by_odom_error: salto={dist:.3f}m "
+                    f"(limite {self.max_consistency_position_jump_m}m, "
+                    f"ema_alpha={self.consistency_ema_alpha:.2f})",
+                    throttle_duration_sec=2.0,
+                )
+            # Atualiza sempre a referência suavizada (EMA), mesmo em rejeição.
+            a = self.consistency_ema_alpha
+            self._consistency_ref_ema = (
+                (1.0 - a) * self._consistency_ref_ema + a * p_consistency
+            )
+
+        for cam_name in self._secondary_camera_names:
+            st = self._secondary_cam_state[cam_name]
+
+            if stale:
+                if st['trigger_active']:
+                    self.get_logger().info(
+                        f"[FOV {cam_name}] STOP trigger (stale_target) "
+                        f"age>{self.max_target_pose_age_sec}s"
+                    )
+                self._release_secondary_predictor(cam_name)
+                if st['trigger_active']:
+                    self._maybe_resume_hand_after_secondary_stop()
+                st['trigger_active'] = False
+                st['prev_trigger'] = False
+                st['in_view_streak'] = 0
+                st['out_streak'] = 0
+                self._update_secondary_display(
+                    cam_name,
+                    st,
+                    in_view=False,
+                    uv=None,
+                    z_cam=None,
+                    odom_ok=True,
+                    stale=True,
+                    mask_overlay=st.get('last_mask'),
+                )
+                continue
+
+            if not odom_ok:
+                if st['trigger_active']:
+                    self.get_logger().info(
+                        f"[FOV {cam_name}] STOP trigger (rejected_by_odom_error)"
+                    )
+                self._release_secondary_predictor(cam_name)
+                if st['trigger_active']:
+                    self._maybe_resume_hand_after_secondary_stop()
+                st['trigger_active'] = False
+                st['prev_trigger'] = False
+                st['in_view_streak'] = 0
+                st['out_streak'] = 0
+                self._update_secondary_display(
+                    cam_name,
+                    st,
+                    in_view=False,
+                    uv=None,
+                    z_cam=None,
+                    odom_ok=False,
+                    stale=False,
+                    mask_overlay=st.get('last_mask'),
+                )
+                continue
+
+            if st['intrinsics'] is None or st['width'] <= 0 or st['height'] <= 0:
+                continue
+
+            cam_frame = st['frame_id']
+            if not cam_frame:
+                continue
+
+            fx, fy, cx, cy = st['intrinsics']
+            w, h = st['width'], st['height']
+            d_use = None if self.secondary_fov_ignore_distortion else st['d_coeffs']
+
+            prev_trig = st['prev_trigger']
+
+            in_view_geom = False
+            uv_dbg = None
+            z_dbg = None
+            pb = np.array(
+                [
+                    self.target_transform.transform.translation.x,
+                    self.target_transform.transform.translation.y,
+                    self.target_transform.transform.translation.z,
+                ],
+                dtype=np.float64,
+            )
+            p_cam = self._transform_point_base_to_frame(cam_frame, stamp, pb)
+            if p_cam is not None:
+                X, Y, Z = float(p_cam[0]), float(p_cam[1]), float(p_cam[2])
+                z_dbg = Z
+                _u, _v, z_ok, in_image = _project_cam_ros_point_to_uv(
+                    X, Y, Z, fx, fy, cx, cy, d_use, w, h
+                )
+                uv_dbg = (_u, _v)
+                in_view_geom = bool(z_ok and in_image)
+
+            if uv_dbg is not None:
+                st['last_projected_uv'] = uv_dbg
+
+            if in_view_geom:
+                st['in_view_streak'] += 1
+                st['out_streak'] = 0
+            else:
+                st['out_streak'] += 1
+                st['in_view_streak'] = 0
+
+            if not st['trigger_active']:
+                if st['in_view_streak'] >= self.fov_trigger_confirm_ticks:
+                    st['trigger_active'] = True
+                    self.get_logger().info(
+                        f"[FOV {cam_name}] START trigger (entered_fov) "
+                        f"confirmações={self.fov_trigger_confirm_ticks}"
+                    )
+            else:
+                if st['out_streak'] >= self.fov_release_confirm_ticks:
+                    st['trigger_active'] = False
+                    self.get_logger().info(
+                        f"[FOV {cam_name}] STOP trigger (left_fov) "
+                        f"confirmações={self.fov_release_confirm_ticks}"
+                    )
+
+            if st['trigger_active'] and not prev_trig and self.enable_secondary_video_tracking:
+                luv = st.get('last_projected_uv')
+                if luv is not None:
+                    st['pending_secondary_init'] = True
+                    st['init_uv'] = luv
+            if prev_trig and not st['trigger_active']:
+                self._release_secondary_predictor(cam_name)
+                self._maybe_resume_hand_after_secondary_stop()
+            st['prev_trigger'] = st['trigger_active']
+
+            self._update_secondary_display(
+                cam_name,
+                st,
+                in_view=in_view_geom,
+                uv=uv_dbg,
+                z_cam=z_dbg,
+                odom_ok=True,
+                stale=False,
+                mask_overlay=st.get('last_mask'),
+            )
 
 
 def main(args=None):
@@ -1836,84 +2428,6 @@ def main(args=None):
         rclpy.shutdown()
 
 
-def cli_main():
-    """CLI mode for debugging (original behavior)."""
-    if len(sys.argv) < 2:
-        print("Uso:")
-        print("  1. Camera: python3 detect_qwen.py --cli \"<prompt_do_objeto>\"")
-        print("  2. Arquivo: python3 detect_qwen.py --cli <caminho_da_imagem> \"<prompt_do_objeto>\"")
-        sys.exit(1)
-
-    args = [a for a in sys.argv[1:] if a != '--cli']
-    
-    if len(args) == 1:
-        mode = "camera"
-        image_source = None
-        object_prompt = args[0]
-        output_filename = "camera_capture_detected.jpg"
-    elif len(args) >= 2:
-        mode = "file"
-        image_source = args[0]
-        object_prompt = args[1]
-        p = Path(image_source)
-        output_filename = str(p.with_name(f"{p.stem}_detected{p.suffix}"))
-    else:
-        print("Argumentos insuficientes.")
-        sys.exit(1)
-    
-    print(f"Modo: {mode}")
-    print(f"Detectando: '{object_prompt}'")
-    
-    img_pil = None
-    if mode == "file":
-        if not Path(image_source).exists():
-             print(f"Erro: Imagem não encontrada: {image_source}")
-             sys.exit(1)
-        print(f"Carregando arquivo: {image_source}")
-        img_pil = Image.open(image_source)
-    else:
-        print("Iniciando captura da camera...")
-        img_pil = capture_image_from_ros()
-        print("Imagem capturada com sucesso.")
-
-    orig_w, orig_h = img_pil.size
-    print(f"Original Image Size: {orig_w}x{orig_h}")
-    
-    max_dim = 1024
-    scale_factor = max_dim / max(orig_w, orig_h)
-    new_w = int(orig_w * scale_factor)
-    new_h = int(orig_h * scale_factor)
-    img_resized = img_pil.resize((new_w, new_h), Image.LANCZOS)
-    
-    print(f"Resized input from {orig_w}x{orig_h} to: {new_w}x{new_h} (Scale: {scale_factor:.3f})")
-    
-    try:
-        response_text = detect_object(img_resized, object_prompt, VLLM_URL)
-        print(f"Resposta Raw:\n{response_text}\n")
-        
-        boxes = parse_qwen_response(response_text, image_size=(new_w, new_h))
-        
-        if boxes:
-            draw_result(img_pil, boxes, output_filename)
-            
-            if SAM2_AVAILABLE:
-                p_out = Path(output_filename)
-                seg_out_name = str(p_out.with_name(f"{p_out.stem.replace('_detected', '')}_segmented{p_out.suffix}"))
-                segment_result(img_pil, boxes, seg_out_name)
-                
-        else:
-            print("Nenhuma bounding box encontrada no formato esperado.")
-            
-    except Exception as e:
-        print(f"Erro durante deteccao: {e}")
-        import traceback
-        traceback.print_exc()
-
-
 if __name__ == "__main__":
-    if '--cli' in sys.argv:
-        cli_main()
-    else:
-        # Default: run as ROS 2 node
-        main()
+    main()
 
