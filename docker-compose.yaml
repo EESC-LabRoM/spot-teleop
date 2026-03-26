@@ -67,6 +67,7 @@ services:
     volumes:
       - /tmp/.X11-unix:/tmp/.X11-unix
       - /dev:/dev
+      - /run/udev:/run/udev:ro
       - ./zed_ws:/home/spot-teleop/zed_ws
     working_dir: /home/spot-teleop/zed_ws
     network_mode: host
