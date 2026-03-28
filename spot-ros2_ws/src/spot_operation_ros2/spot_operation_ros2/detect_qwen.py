@@ -54,6 +54,8 @@ except ImportError:
     SAM2VideoPredictor = None  # type: ignore
 
 VLLM_URL = "http://100.111.174.61:8000"
+DEBUG_LOG_PATH = "/home/spot-teleop/spot-ros2_ws/.cursor/debug-0dad56.log"
+DEBUG_SESSION_ID = "0dad56"
 # ===============================================
 
 # Ultralytics SAM2 tiny (auto-download)
@@ -974,7 +976,7 @@ class DetectQwenNode(Node):
         self.declare_parameter('active_tracking_interval', 0.2)
         self.declare_parameter('gpu_yield_after_track', True)
         self.declare_parameter('tracking_confidence_threshold', 0.15)
-        self.declare_parameter('tracking_min_mask_area', 4000)
+        self.declare_parameter('tracking_min_mask_area', 1200)
         self.declare_parameter('tracking_lost_confirm_frames', 5)
         self.declare_parameter('tracking_redetect_cooldown_sec', 2.5)
         
@@ -996,6 +998,10 @@ class DetectQwenNode(Node):
         self._last_track_time = 0.0
         self._tracking_lost_streak = 0
         self._last_redetect_time = 0.0
+        self._adaptive_tracking_min_mask_area = None
+        self._target_pose_measure_wall_time = None
+        self._target_pose_seq = 0
+        self._odom_reject_streak = 0
         
         # Trigger FOV câmeras secundárias (frontais): só logs nesta fase
         self.declare_parameter('enable_secondary_fov_trigger', True)
@@ -1003,7 +1009,9 @@ class DetectQwenNode(Node):
         self.declare_parameter('secondary_camera_path_prefix', '')
         self.declare_parameter('odom_consistency_frame', 'odom')
         self.declare_parameter('max_target_pose_age_sec', 0.75)
+        self.declare_parameter('secondary_trigger_max_pose_age_sec', 0.45)
         self.declare_parameter('max_consistency_position_jump_m', 0.35)
+        self.declare_parameter('odom_reject_confirm_ticks', 3)
         self.declare_parameter('consistency_ema_alpha', 0.25)
         self.declare_parameter('fov_trigger_confirm_ticks', 2)
         self.declare_parameter('fov_release_confirm_ticks', 2)
@@ -1031,11 +1039,20 @@ class DetectQwenNode(Node):
         self.odom_consistency_frame = str(
             self.get_parameter('odom_consistency_frame').value or 'odom'
         )
+        self.declare_parameter('target_parent_frame', '')
+        target_parent_frame_raw = str(self.get_parameter('target_parent_frame').value or '').strip()
+        self.target_parent_frame = target_parent_frame_raw or self.odom_consistency_frame
         self.max_target_pose_age_sec = float(
             self.get_parameter('max_target_pose_age_sec').value
         )
+        self.secondary_trigger_max_pose_age_sec = float(
+            self.get_parameter('secondary_trigger_max_pose_age_sec').value
+        )
         self.max_consistency_position_jump_m = float(
             self.get_parameter('max_consistency_position_jump_m').value
+        )
+        self.odom_reject_confirm_ticks = int(
+            max(1, self.get_parameter('odom_reject_confirm_ticks').value)
         )
         self.consistency_ema_alpha = float(
             min(1.0, max(0.01, self.get_parameter('consistency_ema_alpha').value))
@@ -1111,6 +1128,23 @@ class DetectQwenNode(Node):
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
         self.tf_broadcaster = TransformBroadcaster(self)
+        # region agent log
+        self._agent_debug_log(
+            run_id="pre-fix",
+            hypothesis_id="H1_H2_H3_H4",
+            location="detect_qwen.py:1114",
+            message="Tracking/TF runtime configuration snapshot",
+            data={
+                "tracking_min_mask_area": int(self.tracking_min_mask_area),
+                "tracking_lost_confirm_frames": int(self.tracking_lost_confirm_frames),
+                "tracking_redetect_cooldown_sec": float(self.tracking_redetect_cooldown_sec),
+                "robot_base_frame": str(self.robot_base_frame),
+                "target_parent_frame": str(self.target_parent_frame),
+                "target_frame_name": str(self.target_frame_name),
+                "use_wall_time_tf_lookups": bool(self.use_wall_time_tf_lookups),
+            },
+        )
+        # endregion
         
         # Camera info subscriber (one-shot, just need intrinsics)
         self.camera_info_sub = self.create_subscription(
@@ -1210,6 +1244,20 @@ class DetectQwenNode(Node):
         timeout = Duration(seconds=self.hand_tf_lookup_timeout_sec)
         if self.use_wall_time_tf_lookups:
             # Modo rápido: lookup não bloqueante em "agora" (wall-style).
+            # region agent log
+            self._agent_debug_log(
+                run_id="pre-fix",
+                hypothesis_id="H4",
+                location="detect_qwen.py:1220",
+                message="TF lookup mode selected",
+                data={
+                    "mode": "wall_time_now",
+                    "target_frame": str(target_frame),
+                    "source_frame": str(source_frame),
+                    "has_sensor_header": bool(sensor_header is not None),
+                },
+            )
+            # endregion
             return self.tf_buffer.lookup_transform(
                 target_frame,
                 source_frame,
@@ -1461,6 +1509,21 @@ class DetectQwenNode(Node):
                 self.detection_running = False
                 return
             mask_np = best_tracked_mask.astype(np.uint8)
+            init_mask_area = int(mask_np.sum())
+            self._adaptive_tracking_min_mask_area = max(300, int(init_mask_area * 0.45))
+            # region agent log
+            self._agent_debug_log(
+                run_id="post-fix",
+                hypothesis_id="H1",
+                location="detect_qwen.py:1499",
+                message="Adaptive tracking area threshold initialized",
+                data={
+                    "init_mask_area": int(init_mask_area),
+                    "tracking_min_mask_area_config": int(self.tracking_min_mask_area),
+                    "adaptive_tracking_min_mask_area": int(self._adaptive_tracking_min_mask_area),
+                },
+            )
+            # endregion
             
             self.last_tracking_score = score
             self.tracking_active = True
@@ -1584,17 +1647,57 @@ class DetectQwenNode(Node):
             self.last_tracking_score = score
             tracking_ms = (time.time() - t_start) * 1000
 
-            mask_area = mask_np.sum()
-            is_lost_now = (mask_area < self.tracking_min_mask_area)
+            mask_area = int(mask_np.sum())
+            effective_min_area = int(
+                self._adaptive_tracking_min_mask_area
+                if self._adaptive_tracking_min_mask_area is not None
+                else self.tracking_min_mask_area
+            )
+            is_lost_now = (mask_area < effective_min_area)
             if is_lost_now:
                 self._tracking_lost_streak += 1
             else:
                 self._tracking_lost_streak = 0
+            # region agent log
+            if is_lost_now or self._tracking_lost_streak > 0 or (self.tracking_frame_count % 5 == 0):
+                self._agent_debug_log(
+                    run_id="pre-fix",
+                    hypothesis_id="H1_H2",
+                    location="detect_qwen.py:1593",
+                    message="Tracking lost-evaluation sample",
+                    data={
+                        "frame": int(self.tracking_frame_count),
+                        "score": float(score),
+                        "mask_area": int(mask_area),
+                        "tracking_min_mask_area": int(self.tracking_min_mask_area),
+                        "effective_min_area": int(effective_min_area),
+                        "is_lost_now": bool(is_lost_now),
+                        "lost_streak": int(self._tracking_lost_streak),
+                        "confirm_frames": int(self.tracking_lost_confirm_frames),
+                    },
+                )
+            # endregion
 
             if self._tracking_lost_streak >= self.tracking_lost_confirm_frames:
                 now_sec = time.time()
                 if (now_sec - self._last_redetect_time) >= self.tracking_redetect_cooldown_sec:
                     self._last_redetect_time = now_sec
+                    # region agent log
+                    self._agent_debug_log(
+                        run_id="pre-fix",
+                        hypothesis_id="H1_H2_H5",
+                        location="detect_qwen.py:1602",
+                        message="Tracking reset/redetect trigger fired",
+                        data={
+                            "frame": int(self.tracking_frame_count),
+                            "score": float(score),
+                            "mask_area": int(mask_area),
+                            "lost_streak": int(self._tracking_lost_streak),
+                            "last_redetect_time": float(self._last_redetect_time),
+                            "cooldown_sec": float(self.tracking_redetect_cooldown_sec),
+                        },
+                    )
+                    # endregion
                     self.get_logger().warn(
                         f"⚠️ Tracking lost (score={score:.3f}, area={mask_area}, "
                         f"streak={self._tracking_lost_streak}). Re-detecting..."
@@ -1833,6 +1936,19 @@ class DetectQwenNode(Node):
 
     def _reset_tracking(self):
         """Reset the tracking state for a fresh start."""
+        # region agent log
+        self._agent_debug_log(
+            run_id="pre-fix",
+            hypothesis_id="H5",
+            location="detect_qwen.py:1848",
+            message="Reset tracking state called",
+            data={
+                "tracking_active_before": bool(self.tracking_active),
+                "tracking_frame_count_before": int(self.tracking_frame_count),
+                "lost_streak_before": int(self._tracking_lost_streak),
+            },
+        )
+        # endregion
         self.tracking_active = False
         self.tracking_frame_count = 0
         self._tracking_lost_streak = 0
@@ -1960,7 +2076,7 @@ class DetectQwenNode(Node):
                 once=True
             )
             t = self._lookup_transform_with_sensor_stamp(
-                self.robot_base_frame,
+                self.target_parent_frame,
                 source_frame,
                 self.latest_depth_header
                 if hasattr(self, "latest_depth_header")
@@ -1978,11 +2094,29 @@ class DetectQwenNode(Node):
             target_x = px + tx
             target_y = py + ty
             target_z = pz + tz
+            # region agent log
+            self._agent_debug_log(
+                run_id="pre-fix",
+                hypothesis_id="H3_H4",
+                location="detect_qwen.py:1992",
+                message="Computed target transform in parent frame",
+                data={
+                    "parent_frame": str(self.target_parent_frame),
+                    "robot_base_frame": str(self.robot_base_frame),
+                    "source_frame": str(source_frame),
+                    "target_pose_seq": int(self._target_pose_seq + 1),
+                    "u": int(u),
+                    "v": int(v),
+                    "z_m": float(Z),
+                    "target_xyz": [float(target_x), float(target_y), float(target_z)],
+                },
+            )
+            # endregion
             
             # Publish TF
             tf_msg = TransformStamped()
             tf_msg.header.stamp = self.get_clock().now().to_msg()
-            tf_msg.header.frame_id = self.robot_base_frame
+            tf_msg.header.frame_id = self.target_parent_frame
             tf_msg.child_frame_id = self.target_frame_name
             tf_msg.transform.translation.x = target_x
             tf_msg.transform.translation.y = target_y
@@ -1991,6 +2125,8 @@ class DetectQwenNode(Node):
             
             self.target_transform = tf_msg
             self._target_tf_wall_time = time.time()
+            self._target_pose_measure_wall_time = self._target_tf_wall_time
+            self._target_pose_seq += 1
             self.tf_broadcaster.sendTransform(tf_msg)
             
             # Log periodically (every 10th frame)
@@ -2004,6 +2140,22 @@ class DetectQwenNode(Node):
             self.get_logger().error(f"❌ TF error (source_frame='{source_frame}'): {e}")
             
         return (u, v)
+
+    def _agent_debug_log(self, run_id: str, hypothesis_id: str, location: str, message: str, data: dict):
+        try:
+            payload = {
+                "sessionId": DEBUG_SESSION_ID,
+                "runId": run_id,
+                "hypothesisId": hypothesis_id,
+                "location": location,
+                "message": message,
+                "data": data,
+                "timestamp": int(time.time() * 1000),
+            }
+            with open(DEBUG_LOG_PATH, "a", encoding="utf-8") as fp:
+                fp.write(json.dumps(payload, ensure_ascii=False) + "\n")
+        except Exception:
+            pass
 
     def _rotate_point_by_quaternion(self, px, py, pz, qx, qy, qz, qw):
         """Rotate a 3D point by a quaternion."""
@@ -2028,6 +2180,26 @@ class DetectQwenNode(Node):
             # para o gate FOV (evita stale_target só porque _mask_to_tf não corre há >max_target_pose_age_sec).
             if self.tracking_active:
                 self._target_tf_wall_time = time.time()
+            # region agent log
+            if self.tracking_frame_count % 10 == 0:
+                now_wall = time.time()
+                self._agent_debug_log(
+                    run_id="pre-fix-3",
+                    hypothesis_id="H9",
+                    location="detect_qwen.py:2170",
+                    message="TF republish freshness state",
+                    data={
+                        "tracking_active": bool(self.tracking_active),
+                        "target_pose_seq": int(self._target_pose_seq),
+                        "wall_age_since_measure_ms": None
+                        if self._target_pose_measure_wall_time is None
+                        else float((now_wall - self._target_pose_measure_wall_time) * 1000.0),
+                        "wall_age_since_last_tf_touch_ms": None
+                        if self._target_tf_wall_time is None
+                        else float((now_wall - self._target_tf_wall_time) * 1000.0),
+                    },
+                )
+            # endregion
             self.tf_broadcaster.sendTransform(self.target_transform)
         self._update_secondary_fov_triggers()
 
@@ -2135,26 +2307,65 @@ class DetectQwenNode(Node):
         except Exception:
             return
 
-    def _transform_point_base_to_frame(self, out_frame: str, stamp, pb):
+    def _transform_point_between_frames(self, out_frame: str, in_frame: str, stamp, p_in):
         """
-        p em robot_base_frame → mesmo ponto expresso em out_frame.
-        lookup(out_frame, base): p_out = R * p_base + t.
+        p em in_frame -> mesmo ponto expresso em out_frame.
+        lookup(out_frame, in_frame): p_out = R * p_in + t.
         Evita usar target_object no buffer (TransformBroadcaster local por vezes não ecoa).
         """
+        # region agent log
+        self._agent_debug_log(
+            run_id="pre-fix-2",
+            hypothesis_id="H6",
+            location="detect_qwen.py:2288",
+            message="Secondary transform request",
+            data={
+                "out_frame": str(out_frame),
+                "source_assumed_frame": str(in_frame),
+                "target_parent_frame": str(self.target_parent_frame),
+                "pb_xyz": [float(p_in[0]), float(p_in[1]), float(p_in[2])],
+            },
+        )
+        # endregion
         t = self._lookup_transform_robust(
             out_frame,
-            self.robot_base_frame,
+            in_frame,
             stamp,
             Duration(seconds=self.secondary_fov_tf_lookup_timeout_sec),
-            f"{out_frame}<-{self.robot_base_frame}",
+            f"{out_frame}<-{in_frame}",
         )
         if t is None:
+            # region agent log
+            self._agent_debug_log(
+                run_id="pre-fix-2",
+                hypothesis_id="H7",
+                location="detect_qwen.py:2303",
+                message="Secondary transform lookup failed",
+                data={
+                    "out_frame": str(out_frame),
+                    "source_frame": str(in_frame),
+                },
+            )
+            # endregion
             return None
         tr = t.transform.translation
         r = t.transform.rotation
-        px, py, pz = float(pb[0]), float(pb[1]), float(pb[2])
+        px, py, pz = float(p_in[0]), float(p_in[1]), float(p_in[2])
         rx, ry, rz = self._rotate_point_by_quaternion(px, py, pz, r.x, r.y, r.z, r.w)
-        return np.array([rx + tr.x, ry + tr.y, rz + tr.z], dtype=np.float64)
+        p_out = np.array([rx + tr.x, ry + tr.y, rz + tr.z], dtype=np.float64)
+        # region agent log
+        self._agent_debug_log(
+            run_id="pre-fix-2",
+            hypothesis_id="H6",
+            location="detect_qwen.py:2318",
+            message="Secondary transform output",
+            data={
+                "out_frame": str(out_frame),
+                "p_out_xyz": [float(p_out[0]), float(p_out[1]), float(p_out[2])],
+            },
+        )
+        # endregion
+        return p_out
 
     def _lookup_transform_robust(
         self,
@@ -2230,10 +2441,11 @@ class DetectQwenNode(Node):
             return
 
         now_wall = time.time()
+        measure_time = self._target_pose_measure_wall_time
         stale = (
             self.target_transform is None
-            or self._target_tf_wall_time is None
-            or (now_wall - self._target_tf_wall_time) > self.max_target_pose_age_sec
+            or measure_time is None
+            or (now_wall - measure_time) > self.max_target_pose_age_sec
         )
 
         stamp = rclpy.time.Time()
@@ -2254,11 +2466,12 @@ class DetectQwenNode(Node):
                 ],
                 dtype=np.float64,
             )
-            if self.odom_consistency_frame == self.robot_base_frame:
+            target_parent = str(self.target_transform.header.frame_id or self.target_parent_frame)
+            if self.odom_consistency_frame == target_parent:
                 p_consistency = pb.copy()
             else:
-                p_consistency = self._transform_point_base_to_frame(
-                    self.odom_consistency_frame, stamp, pb
+                p_consistency = self._transform_point_between_frames(
+                    self.odom_consistency_frame, target_parent, stamp, pb
                 )
                 if p_consistency is None:
                     odom_ok = False
@@ -2268,13 +2481,17 @@ class DetectQwenNode(Node):
                 self._consistency_ref_ema = p_consistency.copy()
             dist = float(np.linalg.norm(p_consistency - self._consistency_ref_ema))
             if dist > self.max_consistency_position_jump_m:
-                odom_ok = False
+                self._odom_reject_streak += 1
+                odom_ok = self._odom_reject_streak < self.odom_reject_confirm_ticks
                 self.get_logger().warn(
                     f"[FOV] rejected_by_odom_error: salto={dist:.3f}m "
                     f"(limite {self.max_consistency_position_jump_m}m, "
-                    f"ema_alpha={self.consistency_ema_alpha:.2f})",
+                    f"ema_alpha={self.consistency_ema_alpha:.2f}, "
+                    f"streak={self._odom_reject_streak}/{self.odom_reject_confirm_ticks})",
                     throttle_duration_sec=2.0,
                 )
+            else:
+                self._odom_reject_streak = 0
             # Atualiza sempre a referência suavizada (EMA), mesmo em rejeição.
             a = self.consistency_ema_alpha
             self._consistency_ref_ema = (
@@ -2357,7 +2574,8 @@ class DetectQwenNode(Node):
                 ],
                 dtype=np.float64,
             )
-            p_cam = self._transform_point_base_to_frame(cam_frame, stamp, pb)
+            target_parent = str(self.target_transform.header.frame_id or self.target_parent_frame)
+            p_cam = self._transform_point_between_frames(cam_frame, target_parent, stamp, pb)
             if p_cam is not None:
                 X, Y, Z = float(p_cam[0]), float(p_cam[1]), float(p_cam[2])
                 z_dbg = Z
@@ -2376,6 +2594,58 @@ class DetectQwenNode(Node):
             else:
                 st['out_streak'] += 1
                 st['in_view_streak'] = 0
+
+            # Sincronização: não armar trigger em pose antiga.
+            pose_age_sec = (
+                (now_wall - self._target_pose_measure_wall_time)
+                if self._target_pose_measure_wall_time is not None
+                else 1e9
+            )
+            if pose_age_sec > self.secondary_trigger_max_pose_age_sec:
+                if in_view_geom:
+                    in_view_geom = False
+                    st['out_streak'] = 1
+                    st['in_view_streak'] = 0
+            # region agent log
+            self._agent_debug_log(
+                run_id="pre-fix-2",
+                hypothesis_id="H6_H8",
+                location="detect_qwen.py:2530",
+                message="Secondary FOV projection decision",
+                data={
+                    "cam_name": str(cam_name),
+                    "in_view_geom": bool(in_view_geom),
+                    "uv_dbg": None if uv_dbg is None else [float(uv_dbg[0]), float(uv_dbg[1])],
+                    "z_dbg": None if z_dbg is None else float(z_dbg),
+                    "in_view_streak": int(st['in_view_streak']),
+                    "out_streak": int(st['out_streak']),
+                    "trigger_active": bool(st['trigger_active']),
+                },
+            )
+            # endregion
+            # region agent log
+            if cam_name == self._secondary_camera_names[0] and (st['out_streak'] % 5 == 0 or st['trigger_active']):
+                now_wall = time.time()
+                self._agent_debug_log(
+                    run_id="pre-fix-3",
+                    hypothesis_id="H9_H10",
+                    location="detect_qwen.py:2575",
+                    message="Secondary trigger timing snapshot",
+                    data={
+                        "cam_name": str(cam_name),
+                        "in_view_geom": bool(in_view_geom),
+                        "trigger_active": bool(st['trigger_active']),
+                        "out_streak": int(st['out_streak']),
+                        "target_pose_seq": int(self._target_pose_seq),
+                        "age_since_measure_ms": None
+                        if self._target_pose_measure_wall_time is None
+                        else float((now_wall - self._target_pose_measure_wall_time) * 1000.0),
+                        "age_since_last_tf_touch_ms": None
+                        if self._target_tf_wall_time is None
+                        else float((now_wall - self._target_tf_wall_time) * 1000.0),
+                    },
+                )
+            # endregion
 
             if not st['trigger_active']:
                 if st['in_view_streak'] >= self.fov_trigger_confirm_ticks:
