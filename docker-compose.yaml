@@ -48,7 +48,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: [ '1' ]
+              device_ids: [ '0' ]
               capabilities: [ gpu ]
 
   zed:
@@ -64,11 +64,15 @@ services:
       - CUDA_VISIBLE_DEVICES=0
       - NVIDIA_DRIVER_CAPABILITIES=all
       - RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+      # Fixes the "Invalid calibration file" warning and parsing errors
+      - LC_ALL=C
     volumes:
       - /tmp/.X11-unix:/tmp/.X11-unix
       - /dev:/dev
       - /run/udev:/run/udev:ro
       - ./zed_ws:/home/spot-teleop/zed_ws
+      # Persist zed optmized models here
+      - ./zed_resources:/usr/local/zed/resources      
     working_dir: /home/spot-teleop/zed_ws
     network_mode: host
     ipc: host

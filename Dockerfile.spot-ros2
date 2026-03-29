@@ -1,44 +1,28 @@
-# Use official Ubuntu 22.04 base image
-FROM ubuntu:22.04
+# Use the official ROS Humble Desktop image (based on Ubuntu 22.04)
+FROM osrf/ros:humble-desktop
 
 # Set noninteractive mode for APT
 ENV DEBIAN_FRONTEND=noninteractive
-
-# Env setup
 ENV SHELL=/bin/bash
 SHELL ["/bin/bash", "-c"]
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
-    locales \
-    curl \
-    git \
-    && locale-gen en_US.UTF-8 \
-    && update-locale LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8
+# 1. INSTALL APT-FAST NON-INTERACTIVELY
+RUN apt-get update && apt-get install -y --no-install-recommends software-properties-common \
+    && add-apt-repository -y ppa:apt-fast/stable \
+    && apt-get update -q \
+    # Set up the silent configuration for apt-fast
+    && echo debconf apt-fast/maxdownloads string 16 | debconf-set-selections \
+    && echo debconf apt-fast/dlflag boolean true | debconf-set-selections \
+    && echo debconf apt-fast/aptmanager string apt-get | debconf-set-selections \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -yq --no-install-recommends apt-fast \
+    && rm -rf /var/lib/apt/lists/*
 
-# Install Node.js 22.x
-RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
-    && apt-get install -y nodejs
-
-# Add ROS 2 apt repository
-RUN curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key -o /usr/share/keyrings/ros-archive-keyring.gpg \
-    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] \
-    http://packages.ros.org/ros2/ubuntu $(source /etc/os-release && echo $UBUNTU_CODENAME) main" \
-    | tee /etc/apt/sources.list.d/ros2.list > /dev/null \
-    && apt-get update
-
-# Add Intel RealSense repository (with lsb-release) - continue on error if repository is unavailable
-RUN apt-get update && apt-get install -y gnupg lsb-release && \
-    (curl -sSf https://librealsense.intel.com/Debian/librealsense.pgp | apt-key add - && \
-    echo "deb https://librealsense.intel.com/Debian/apt-repo $(lsb_release -cs) main" > /etc/apt/sources.list.d/librealsense.list && \
-    apt-get update || echo "Warning: Could not add Intel RealSense repository") && \
-    rm -rf /var/lib/apt/lists/*
-
-# Install dependencies
-RUN apt-get update -q && \
-    apt-get install -yq --no-install-recommends \
-    wget \ 
-    software-properties-common \ 
+# 1. INSTALL REMAINING SYSTEM DEPENDENCIES
+RUN apt-get update && apt-get install -y --no-install-recommends curl \
+    && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get update -q \
+    && apt-fast install -yq --no-install-recommends \
+    nodejs \
     python3-pip \
     python-is-python3 \
     python3-argcomplete \
@@ -51,57 +35,77 @@ RUN apt-get update -q && \
     python3-pytest-cov \
     python3-protobuf \
     python3-vcstool \
-    ros-humble-ament-cmake-auto \
-    ros-humble-desktop \
-    ros-dev-tools \
     ros-humble-object-recognition-msgs \
-    # RTAB-Map packages
     ros-humble-rtabmap-ros \
     ros-humble-octomap-server \
-    # Controller packages
+    ros-humble-moveit \
     ros-humble-ros2-control \
     ros-humble-ros2-controllers \
     ros-humble-controller-manager \
     ros-humble-controller-interface \
     ros-humble-hardware-interface \
     ros-humble-forward-command-controller \
-    # System utilities for USB devices
-    udev usbutils \
+    ros-humble-moveit-visual-tools \
+    ros-humble-joint-state-publisher \
+    ros-humble-joint-state-publisher-gui \
+    ros-humble-launch-pytest \
+    ros-humble-depth-image-proc \
+    ros-humble-bondpy \
+    udev \
+    usbutils \
     && rm -rf /var/lib/apt/lists/*
 
-# Install RealSense packages (optional - continue on error if not available)
-RUN apt-get update && \
-    (apt-get install -yq --no-install-recommends \
-    librealsense2-utils librealsense2-dev librealsense2-dbg \
-    ros-humble-realsense2-camera ros-humble-realsense2-description \
-    || echo "Warning: Could not install RealSense packages") && \
-    rm -rf /var/lib/apt/lists/*
+# 2. INSTALL PYTHON PACKAGES
+RUN python3 -m pip install --no-cache-dir \
+    bosdyn-client==5.0.1.2 \
+    bosdyn-mission==5.0.1.2 \
+    bosdyn-choreography-client==5.0.1.2 \
+    bosdyn-orbit==5.0.1.2 \
+    mediapipe==0.10.21 \
+    ultralytics
 
-# Set up workspace
-WORKDIR /home/spot-teleop/spot-ros2_ws
-
-# Initialize rosdep
-RUN rosdep init && rosdep update
-
-# Copy source code
-COPY spot-ros2_ws/src /home/spot-teleop/spot-ros2_ws/src
-
-# Execute installation script
-RUN cd /home/spot-teleop/spot-ros2_ws/src/spot_ros2 && chmod +x install_spot_ros2.sh && ./install_spot_ros2.sh
-
-# Install dependencies (skip unavailable packages)
-RUN rosdep install --from-paths src --ignore-src -y -r --rosdistro=humble --skip-keys="ros-humble-warehouse-ros-mongo" || true
-
-# Set environment variables for ROS Domain ID and other configs
+# 3. ENVIRONMENT & WORKSPACE SETUP
 ENV HOME=/home/spot-teleop
 ENV USER=root
+WORKDIR /home/spot-teleop/spot-ros2_ws
 
-# Create bashrc with ROS setup
+# rosdep init is usually already run in the base image, so we just update
+RUN rosdep update
+
+#   35 packages had stderr output: chomp_motion_planner moveit2_tutorials moveit_chomp_optimizer_adapter moveit_core moveit_hybrid_planning moveit_kinematics moveit_planners_chomp moveit_planners_ompl moveit_ros_benchmarks moveit_ros_control_interface moveit_ros_move_group moveit_ros_occupancy_map_monitor moveit_ros_perception moveit_ros_planning moveit_ros_planning_interface moveit_ros_robot_interaction moveit_ros_visualization moveit_ros_warehouse moveit_servo moveit_setup_app_plugins moveit_setup_assistant moveit_setup_controllers moveit_setup_core_plugins moveit_setup_framework moveit_setup_srdf_plugins moveit_simple_controller_manager moveit_task_constructor_capabilities moveit_task_constructor_core moveit_task_constructor_demo moveit_task_constructor_visualization pilz_industrial_motion_planner pilz_industrial_motion_planner_testutils rviz_marker_tools spot_controllers spot_driver
+
+# Set up bashrc
 RUN echo 'source /opt/ros/humble/setup.bash' >> /root/.bashrc && \
     echo 'source /home/spot-teleop/spot-ros2_ws/install/setup.bash' >> /root/.bashrc
 
-# Install Python packages
-RUN python3 -m pip install bosdyn-client==5.0.1.2 bosdyn-mission==5.0.1.2 bosdyn-choreography-client==5.0.1.2 bosdyn-orbit==5.0.1.2 mediapipe==0.10.21 ultralytics
+COPY spot-ros2_ws/src/spot_ros2 /home/spot-teleop/spot-ros2_ws/src/spot_ros2
+
+# Execute installation scripts
+RUN cd /home/spot-teleop/spot-ros2_ws/src/spot_ros2 && chmod +x install_spot_ros2.sh && ./install_spot_ros2.sh
+
+# Install specific rosdep packages
+RUN rosdep install --from-paths src --ignore-src -y -r --rosdistro=humble --skip-keys="ros-humble-warehouse-ros-mongo" || true
 
 # Set default command
 CMD ["/bin/bash"]
+
+# This is the fix
+# Add Intel RealSense repository (with lsb-release) - 
+# RUN sudo mkdir -p /etc/apt/keyrings \
+#     && curl -sSf https://librealsense.intel.com/Debian/librealsense.pgp | sudo tee /etc/apt/keyrings/librealsense.pgp > /dev/null \
+#     && echo "deb [signed-by=/etc/apt/keyrings/librealsense.pgp] https://librealsense.intel.com/Debian/apt-repo jammy main" | sudo tee /etc/apt/sources.list.d/librealsense.list
+
+# RUN apt-get update && apt-get install -y gnupg lsb-release && \
+#     (curl -sSf https://librealsense.intel.com/Debian/librealsense.pgp | apt-key add - && \
+#     echo "deb https://librealsense.intel.com/Debian/apt-repo $(lsb_release -cs) main" > /etc/apt/sources.list.d/librealsense.list && \
+#     apt-get update || echo "Warning: Could not add Intel RealSense repository") && \
+#     rm -rf /var/lib/apt/lists/*
+
+# This is failing 
+# # Install RealSense packages (optional - continue on error if not available)
+# RUN apt-get update && \
+#     (apt-get install -yq --no-install-recommends \
+#     librealsense2-utils librealsense2-dev librealsense2-dbg \
+#     ros-humble-realsense2-camera ros-humble-realsense2-description \
+#     || echo "Warning: Could not install RealSense packages") && \
+#     rm -rf /var/lib/apt/lists/*

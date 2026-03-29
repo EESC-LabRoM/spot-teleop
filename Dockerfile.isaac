@@ -16,3 +16,12 @@ RUN mkdir -p /workspace
 
 # Definir working directory como o workspace (não sobrescrever /isaac-sim)
 WORKDIR /workspace
+
+RUN cd /isaac-sim/exts && \
+    git clone https://github.com/stereolabs/zed-isaac-sim.git && \
+    cd zed-isaac-sim && \
+    git checkout 3d856e5ca40152707a95b3adc0e0a1f12b11f4e7 
+
+RUN cd /isaac-sim/exts/zed-isaac-sim && \
+    chmod +x ./build.sh  && \
+    ./build.sh 
