@@ -1,5 +1,4 @@
 import base64
-import json
 import re
 import site
 import sys
@@ -29,6 +28,7 @@ try:
     import rclpy
     from rclpy.node import Node
     from rclpy.duration import Duration
+    from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
     from sensor_msgs.msg import Image as RosImage, CameraInfo
     from geometry_msgs.msg import TransformStamped, PointStamped
     from cv_bridge import CvBridge
@@ -53,9 +53,7 @@ except ImportError:
     print("Aviso: Ultralytics SAM2 nao encontrado. Segmentacao SAM desativada.")
     SAM2VideoPredictor = None  # type: ignore
 
-VLLM_URL = "http://100.111.174.61:8000"
-DEBUG_LOG_PATH = "/home/spot-teleop/spot-ros2_ws/.cursor/debug-0dad56.log"
-DEBUG_SESSION_ID = "0dad56"
+VLLM_URL = "http://localhost:8000"
 # ===============================================
 
 # Ultralytics SAM2 tiny (auto-download)
@@ -349,68 +347,6 @@ def _parse_mask_panel_choice(content: str):
     if matches:
         return int(matches[-1]) - 1
     return None
-
-
-def ask_qwen_selection(mosaic_path, object_name):
-    """
-    Perguntar ao Qwen qual a melhor mascara.
-    """
-    base64_img = encode_image_to_base64(mosaic_path)
-    
-    prompt = f"""You see 3 side-by-side crops labeled 1, 2, and 3. Each shows a semi-transparent GREEN overlay on top of the photo. The green pixels are the segmentation mask.
-
-Your task: pick the panel where the green lies ON the actual '{object_name}' (the physical object to grasp — e.g. the valve wheel, handle, or body), NOT on the scene behind it.
-
-CRITICAL — reject wrong masks:
-- BAD: green covers mostly the background (shelves, walls, floor, empty space) while the '{object_name}' itself is largely NOT green. These are inverted or background masks — never choose them.
-- BAD: green covers a huge area of the warehouse/room around the object. Prefer a smaller mask that sits on the object.
-
-GOOD mask:
-- Green overlaps the visible parts of the '{object_name}' you care about (it is OK if only the wheel or a main part is covered, as long as that part IS the object).
-- Green should not dominate unrelated background.
-
-If multiple panels put green on the object, prefer the tightest mask that still clearly covers the '{object_name}'.
-
-Which image (1, 2, or 3) is the best segmentation for the '{object_name}'?
-You may reason step by step, then on the VERY LAST line of your reply output ONLY the digit 1, 2, or 3 (nothing else on that line)."""
-
-    payload = {
-        "model": "Qwen/Qwen3-VL-8B-Instruct",
-        "messages": [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_img}"}},
-                    {"type": "text", "text": prompt}
-                ]
-            }
-        ],
-        # Thinking precisa de folga; só nesta etapa (demais chamadas ao vLLM inalteradas).
-        "max_tokens": 512,
-        "temperature": 0.01,
-        "chat_template_kwargs": {"enable_thinking": True},
-    }
-
-    try:
-        print("Perguntando ao Qwen qual a melhor mascara (com thinking)...")
-        response = requests.post(f"{VLLM_URL}/v1/chat/completions", json=payload, timeout=90)
-        response.raise_for_status()
-        choice = response.json()["choices"][0]["message"]
-        content = choice.get("content") or ""
-        reasoning = choice.get("reasoning_content")
-        if reasoning:
-            print(f"Qwen (thinking): {reasoning[:500]}{'...' if len(reasoning) > 500 else ''}")
-        print(f"Qwen escolheu: {content}")
-        # Resposta final pode estar só em content ou só em reasoning_content (vLLM)
-        idx = _parse_mask_panel_choice(content)
-        if idx is None and reasoning:
-            idx = _parse_mask_panel_choice(reasoning)
-        if idx is not None:
-            return idx
-    except Exception as e:
-        print(f"Erro ao perguntar ao Qwen: {e}")
-    
-    return 0 # Fallback to first mask
 
 
 def _sam_prompt_masks(model, img_pil, point_xy, multimask_output=True):
@@ -721,7 +657,7 @@ If the object is NOT present or mostly occluded, return an empty list: []
 Ensure bounding box and grasp point coordinates are normalized to [0-1000] scale."""
 
     payload = {
-        "model": "Qwen/Qwen3-VL-8B-Instruct", 
+        "model": "Qwen/Qwen3-VL-4B-Instruct", 
         "messages": [
             {
                 "role": "user",
@@ -926,6 +862,8 @@ class DetectQwenNode(Node):
         self.declare_parameter('depth_topic', '/hand/depth')
         self.declare_parameter('camera_info_topic', '/hand/camera_info')
         self.declare_parameter('depth_info_topic', '/hand/camera_info')
+        self.declare_parameter('sync_queue_size', 20)
+        self.declare_parameter('sync_slop_sec', 0.25)
         self.declare_parameter('visualize', True)
         self.declare_parameter('tracking_window_name', 'SAM2 Live Tracking')
         
@@ -939,6 +877,8 @@ class DetectQwenNode(Node):
         depth_topic = self.get_parameter('depth_topic').value
         camera_info_topic = self.get_parameter('camera_info_topic').value
         depth_info_topic = self.get_parameter('depth_info_topic').value
+        self.sync_queue_size = int(max(5, self.get_parameter('sync_queue_size').value))
+        self.sync_slop_sec = float(max(0.05, self.get_parameter('sync_slop_sec').value))
         
         self.get_logger().info(f"Object prompt: '{self.object_prompt}'")
         self.get_logger().info(f"Confidence threshold: {self.confidence_threshold}")
@@ -969,6 +909,20 @@ class DetectQwenNode(Node):
         self.video_predictor = None
         self.tracking_active = False
         self.new_frame_available = False
+        self._node_start_wall = time.time()
+        self._last_synced_pair_wall = None
+        self._last_no_sync_warn_wall = 0.0
+        self._rgb_tap_count = 0
+        self._depth_tap_count = 0
+        self._last_rgb_stamp_sec = None
+        self._last_depth_stamp_sec = None
+        self._latest_rgb_msg = None
+        self._latest_depth_msg = None
+        self._last_pair_key = None
+        self._synced_pair_count = 0
+        self._last_stale_frame_warn_wall = 0.0
+        self._last_depth_stamp_ns = None
+        self._last_ros_now_ns = None
         self.tracking_frame_count = 0
         self.last_tracking_score = 0.0
         
@@ -1002,6 +956,7 @@ class DetectQwenNode(Node):
         self._target_pose_measure_wall_time = None
         self._target_pose_seq = 0
         self._odom_reject_streak = 0
+        self._last_hand_tf_diag_wall = 0.0
         
         # Trigger FOV câmeras secundárias (frontais): só logs nesta fase
         self.declare_parameter('enable_secondary_fov_trigger', True)
@@ -1017,8 +972,12 @@ class DetectQwenNode(Node):
         self.declare_parameter('fov_release_confirm_ticks', 2)
         self.declare_parameter('secondary_fov_tf_lookup_timeout_sec', 0.2)
         self.declare_parameter('secondary_fov_ignore_distortion', False)
-        self.declare_parameter('hand_tf_lookup_timeout_sec', 0.5)
-        self.declare_parameter('use_wall_time_tf_lookups', True)
+        self.declare_parameter('hand_tf_lookup_timeout_sec', 1.0)
+        # Histórico TF no nó (s). O default do tf2 (10s) apaga transforms em playback com saltos de tempo.
+        self.declare_parameter('tf_buffer_cache_time_sec', 120.0)
+        # False: lookup com stamp do depth / ROS time alinhado à imagem (real + sim em movimento).
+        # True: lookup em "agora" sem bloquear (rápido; pode misturar pose com frame atrasado).
+        self.declare_parameter('use_wall_time_tf_lookups', False)
         self.declare_parameter('show_secondary_debug_windows', True)
         self.declare_parameter('secondary_camera_rgb_suffix', '/rgb')
         self.declare_parameter('enable_secondary_video_tracking', True)
@@ -1042,6 +1001,13 @@ class DetectQwenNode(Node):
         self.declare_parameter('target_parent_frame', '')
         target_parent_frame_raw = str(self.get_parameter('target_parent_frame').value or '').strip()
         self.target_parent_frame = target_parent_frame_raw or self.odom_consistency_frame
+        # Correção de roll (Qwen): precisa de TF reference_frame -> câmera. Em sim, hand_cam muitas vezes
+        # liga a odom/world mas não a `robot_base_frame` (árvores desligadas). Default = mesmo parent do alvo.
+        self.declare_parameter('roll_correction_reference_frame', '')
+        _roll_ref = str(
+            self.get_parameter('roll_correction_reference_frame').value or ''
+        ).strip()
+        self.roll_correction_reference_frame = _roll_ref or self.target_parent_frame
         self.max_target_pose_age_sec = float(
             self.get_parameter('max_target_pose_age_sec').value
         )
@@ -1063,15 +1029,26 @@ class DetectQwenNode(Node):
         self.fov_release_confirm_ticks = int(
             max(1, self.get_parameter('fov_release_confirm_ticks').value)
         )
-        self.secondary_fov_tf_lookup_timeout_sec = float(
-            self.get_parameter('secondary_fov_tf_lookup_timeout_sec').value
-        )
+        _sec_fov_to = float(self.get_parameter('secondary_fov_tf_lookup_timeout_sec').value)
+        _MIN_TF_TIMEOUT = 0.05
+        if _sec_fov_to < _MIN_TF_TIMEOUT:
+            self.get_logger().info(
+                f"secondary_fov_tf_lookup_timeout_sec={_sec_fov_to} < {_MIN_TF_TIMEOUT}; "
+                f"a usar {_MIN_TF_TIMEOUT} s (evita falhas com timeout 0)."
+            )
+        self.secondary_fov_tf_lookup_timeout_sec = max(_MIN_TF_TIMEOUT, max(0.0, _sec_fov_to))
         self.secondary_fov_ignore_distortion = bool(
             self.get_parameter('secondary_fov_ignore_distortion').value
         )
-        self.hand_tf_lookup_timeout_sec = float(
-            max(0.0, self.get_parameter('hand_tf_lookup_timeout_sec').value)
-        )
+        _hand_to = float(max(0.0, self.get_parameter('hand_tf_lookup_timeout_sec').value))
+        if _hand_to < _MIN_TF_TIMEOUT:
+            self.get_logger().info(
+                f"hand_tf_lookup_timeout_sec={_hand_to} < {_MIN_TF_TIMEOUT}; "
+                f"a usar {_MIN_TF_TIMEOUT} s (timeout 0 impede espera pelo buffer TF no arranque)."
+            )
+        self.hand_tf_lookup_timeout_sec = max(_MIN_TF_TIMEOUT, _hand_to)
+        _tf_cache = float(self.get_parameter('tf_buffer_cache_time_sec').value)
+        self.tf_buffer_cache_time_sec = max(5.0, _tf_cache)
         self.use_wall_time_tf_lookups = bool(
             self.get_parameter('use_wall_time_tf_lookups').value
         )
@@ -1124,27 +1101,17 @@ class DetectQwenNode(Node):
                 'last_projected_uv': None,
             }
         
-        # TF2
-        self.tf_buffer = Buffer()
-        self.tf_listener = TransformListener(self.tf_buffer, self)
-        self.tf_broadcaster = TransformBroadcaster(self)
-        # region agent log
-        self._agent_debug_log(
-            run_id="pre-fix",
-            hypothesis_id="H1_H2_H3_H4",
-            location="detect_qwen.py:1114",
-            message="Tracking/TF runtime configuration snapshot",
-            data={
-                "tracking_min_mask_area": int(self.tracking_min_mask_area),
-                "tracking_lost_confirm_frames": int(self.tracking_lost_confirm_frames),
-                "tracking_redetect_cooldown_sec": float(self.tracking_redetect_cooldown_sec),
-                "robot_base_frame": str(self.robot_base_frame),
-                "target_parent_frame": str(self.target_parent_frame),
-                "target_frame_name": str(self.target_frame_name),
-                "use_wall_time_tf_lookups": bool(self.use_wall_time_tf_lookups),
-            },
+        # TF2 (cache longo ajuda simulação/playback quando o relógio salta ou há filas)
+        self.tf_buffer = Buffer(
+            cache_time=Duration(seconds=self.tf_buffer_cache_time_sec)
         )
-        # endregion
+        self.tf_listener = TransformListener(self.tf_buffer, self)
+        self.get_logger().info(
+            f"TF buffer cache_time={self.tf_buffer_cache_time_sec:.1f}s "
+            f"(param tf_buffer_cache_time_sec); hand lookup timeout={self.hand_tf_lookup_timeout_sec:.2f}s; "
+            f"tf_listener_spin_thread=False"
+        )
+        self.tf_broadcaster = TransformBroadcaster(self)
         
         # Camera info subscriber (one-shot, just need intrinsics)
         self.camera_info_sub = self.create_subscription(
@@ -1191,15 +1158,32 @@ class DetectQwenNode(Node):
                 f"jump_max={self.max_consistency_position_jump_m}m"
             )
         
-        # Synced RGB + Depth subscribers
-        self.rgb_sub = message_filters.Subscriber(self, RosImage, rgb_topic)
-        self.depth_sub = message_filters.Subscriber(self, RosImage, depth_topic)
+        # Synced RGB + Depth subscribers (ApproximateTimeSynchronizer).
+        self._image_qos = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=max(10, self.sync_queue_size),
+        )
+        self.rgb_sub = message_filters.Subscriber(
+            self, RosImage, rgb_topic, qos_profile=self._image_qos
+        )
+        self.depth_sub = message_filters.Subscriber(
+            self, RosImage, depth_topic, qos_profile=self._image_qos
+        )
         self.sync = message_filters.ApproximateTimeSynchronizer(
-            [self.rgb_sub, self.depth_sub], 
-            queue_size=5, 
-            slop=0.1  # 100ms tolerance
+            [self.rgb_sub, self.depth_sub],
+            queue_size=self.sync_queue_size,
+            slop=self.sync_slop_sec,
         )
         self.sync.registerCallback(self._synced_image_cb)
+        # Taps para diagnóstico (não participam do pareamento principal).
+        self.rgb_tap_sub = self.create_subscription(RosImage, rgb_topic, self._rgb_tap_cb, 10)
+        self.depth_tap_sub = self.create_subscription(RosImage, depth_topic, self._depth_tap_cb, 10)
+        self.get_logger().info(
+            f"RGB/Depth sync config (ATS): "
+            f"queue_size={self.sync_queue_size}, slop={self.sync_slop_sec:.3f}s, "
+            "reliability=BEST_EFFORT"
+        )
         
         # Tracking timer (10 Hz poll — actual rate controlled adaptively inside callback)
         self.tracking_timer = self.create_timer(0.1, self._tracking_timer_cb)
@@ -1218,6 +1202,10 @@ class DetectQwenNode(Node):
         self.get_logger().info(
             f"Segmentation mask topic: {mask_topic} (publish={self.publish_segmentation_mask})"
         )
+        self.get_logger().info(
+            f"Roll correction TF: {self.roll_correction_reference_frame!r} "
+            f"(param roll_correction_reference_frame; vazio => target_parent_frame)"
+        )
         self.get_logger().info("DetectQwenNode ready. Waiting for camera data...")
     
     def _camera_info_cb(self, msg: CameraInfo):
@@ -1234,64 +1222,139 @@ class DetectQwenNode(Node):
             )
             self.get_logger().info(f"Camera frame_id: '{self.camera_frame_id}'")
 
+    def _explain_hand_tf_stamp_failure(
+        self,
+        target_frame: str,
+        source_frame: str,
+        sensor_header,
+        exc: Exception,
+    ):
+        """Explica falhas de lookup no tempo do sensor (throttle; não esconde a causa)."""
+        now_wall = time.time()
+        if now_wall - self._last_hand_tf_diag_wall < 5.0:
+            return
+        self._last_hand_tf_diag_wall = now_wall
+        raw = str(exc)
+        m = re.search(
+            r"Requested time ([\d.]+) but the earliest data is at time ([\d.]+)",
+            raw,
+        )
+        stamp_msg_sec = None
+        if sensor_header is not None:
+            stamp_msg_sec = (
+                float(sensor_header.stamp.sec)
+                + float(sensor_header.stamp.nanosec) * 1e-9
+            )
+        now_ros = self.get_clock().now()
+        now_ros_sec = float(now_ros.nanoseconds) * 1e-9
+        parts = [
+            "[TF+sensor] lookup falhou com o stamp do header da mensagem (sem fallback silencioso).",
+            f"  Pedido: transformação {source_frame!r} → {target_frame!r} no tempo do depth/RGB.",
+        ]
+        if stamp_msg_sec is not None:
+            parts.append(f"  stamp no Header da mensagem: {stamp_msg_sec:.6f} s (domínio ROS do publicador).")
+        parts.append(f"  relógio atual do nó detect_qwen: {now_ros_sec:.6f} s.")
+        if m:
+            req_t = float(m.group(1))
+            early_t = float(m.group(2))
+            gap = early_t - req_t
+            parts.append(
+                f"  tf2 diz: pediste t={req_t:.6f}s, mas o buffer só tem dados desta cadeia a partir de t={early_t:.6f}s "
+                f"(o teu frame é ~{gap:.3f}s **mais antigo** que o histórico disponível)."
+            )
+            parts.append(
+                "  Interpretação: não é ‘só interpolação’ — o instante do depth está **antes** de qualquer transform "
+                "guardada para essa ligação. Causas típicas: (1) fila/atraso e estás a processar um frame velho enquanto "
+                "o TF já avançou ou foi reiniciado; (2) câmera e TF não partilham o mesmo relógio (/clock vs wall, ou "
+                "nós com use_sim_time incoerente); (3) static_transform / driver do braço publicado só depois do sim "
+                "já ter avançado. Corrigir na fonte (stamps e /clock), não mascarar com lookup em ‘agora’ sem saber."
+            )
+        elif re.search(r"extrapolation into the future", raw, re.I):
+            parts.append(
+                "  tf2: extrapolação para o **futuro** — o stamp do depth/imagem está **à frente** do último transform "
+                "conhecido nessa cadeia (ou à frente do /clock). Mesmo com ‘playback tick’, pode acontecer se a câmera "
+                "publicar antes do tf_static/dynamic desse instante, ou se o buffer perdeu histórico (aumenta "
+                "tf_buffer_cache_time_sec). Alternativa explícita: use_wall_time_tf_lookups:=true."
+            )
+        else:
+            parts.append(
+                "  Outro tipo de falha TF; vê a exceção abaixo. Verifica fixed frame, nomes de frames e conectividade."
+            )
+        parts.append(f"  Exceção: {raw}")
+        self.get_logger().error("\n".join(parts))
+
+    def _wait_hand_tf_chain_ready(self, max_wall_sec: float = 5.0) -> bool:
+        """
+        No arranque, imagem pode chegar antes do grafo TF.
+        Só exige o caminho usado em _mask_to_tf: target_parent_frame <- câmera.
+        (robot_base_frame pode estar noutra árvore que não inclui hand_cam — típico em sim.)
+        """
+        dh = getattr(self, "latest_depth_header", None)
+        source = getattr(self, "camera_frame_id", None) or (
+            dh.frame_id if dh is not None else "hand_cam"
+        )
+        target = self.target_parent_frame
+        deadline = time.time() + max(0.1, max_wall_sec)
+        step = Duration(seconds=self.hand_tf_lookup_timeout_sec)
+        ros_now = rclpy.time.Time()
+        t_wait0 = time.time()
+        warned = False
+        while time.time() < deadline:
+            try:
+                self.tf_buffer.lookup_transform(target, source, ros_now, timeout=step)
+                return True
+            except Exception:
+                pass
+            if not warned and (time.time() - t_wait0) > 0.5:
+                warned = True
+                self.get_logger().info(
+                    f"A aguardar TF {source!r} -> {target!r} (até {max_wall_sec:.1f}s)…"
+                )
+            time.sleep(0.02)
+        return False
+
     def _lookup_transform_with_sensor_stamp(
         self, target_frame: str, source_frame: str, sensor_header=None
     ):
         """
-        Ordem: stamp do sensor → Time(0) (último TF no buffer, evita extrapolação “future”
-        quando imagem corre à frente do estado) → Time() (relógio atual).
+        Com use_wall_time_tf_lookups: lookup em rclpy.time.Time() (instante do nó).
+
+        Caso contrário: **só** lookup no stamp do header do sensor — se falhar, regista diagnóstico e propaga
+        (sem fallback para Time(0)/agora, para não esconder desincronização).
         """
         timeout = Duration(seconds=self.hand_tf_lookup_timeout_sec)
         if self.use_wall_time_tf_lookups:
-            # Modo rápido: lookup não bloqueante em "agora" (wall-style).
-            # region agent log
-            self._agent_debug_log(
-                run_id="pre-fix",
-                hypothesis_id="H4",
-                location="detect_qwen.py:1220",
-                message="TF lookup mode selected",
-                data={
-                    "mode": "wall_time_now",
-                    "target_frame": str(target_frame),
-                    "source_frame": str(source_frame),
-                    "has_sensor_header": bool(sensor_header is not None),
-                },
-            )
-            # endregion
             return self.tf_buffer.lookup_transform(
                 target_frame,
                 source_frame,
                 rclpy.time.Time(),
-                timeout=Duration(seconds=0.0),
+                timeout=Duration(seconds=self.hand_tf_lookup_timeout_sec),
             )
-        if sensor_header is not None:
-            try:
-                st = rclpy.time.Time.from_msg(sensor_header.stamp)
-                t = self.tf_buffer.lookup_transform(
-                    target_frame, source_frame, st, timeout=timeout
-                )
-                return t
-            except Exception:
-                pass
+        if sensor_header is None:
+            err = RuntimeError(
+                "use_wall_time_tf_lookups=false requer header do depth/câmera; "
+                "latest_depth_header não está definido."
+            )
+            self._explain_hand_tf_stamp_failure(
+                target_frame, source_frame, sensor_header, err
+            )
+            raise err
+        st = rclpy.time.Time.from_msg(sensor_header.stamp)
         try:
-            t = self.tf_buffer.lookup_transform(
-                target_frame,
-                source_frame,
-                rclpy.time.Time(seconds=0, nanoseconds=0),
-                timeout=timeout,
+            return self.tf_buffer.lookup_transform(
+                target_frame, source_frame, st, timeout=timeout
             )
-            return t
-        except Exception:
-            t = self.tf_buffer.lookup_transform(
-                target_frame, source_frame, rclpy.time.Time(), timeout=timeout
+        except Exception as e:
+            self._explain_hand_tf_stamp_failure(
+                target_frame, source_frame, sensor_header, e
             )
-            return t
+            raise
 
     def _get_correction_angle(self):
         """
-        Compute the roll correction angle (degrees) by projecting gravity
-        into the camera image plane via a TF lookup robot_base_frame -> camera_frame.
-        Returns 0.0 on failure or if the angle is negligible (< 5 deg).
+        Ângulo de roll (graus) para endireitar a imagem no Qwen: projeta gravidade no plano da imagem
+        via TF roll_correction_reference_frame (default = target_parent_frame, ex. odom), não robot_base_frame,
+        para não exigir que hand_cam esteja na mesma árvore que `base`.
         """
         source_frame = getattr(self, 'camera_frame_id', None)
         if not source_frame:
@@ -1302,12 +1365,15 @@ class DetectQwenNode(Node):
             )
 
         sensor_h = getattr(self, "latest_depth_header", None)
+        ref = self.roll_correction_reference_frame
         try:
             t = self._lookup_transform_with_sensor_stamp(
-                self.robot_base_frame, source_frame, sensor_h
+                ref, source_frame, sensor_h
             )
         except Exception as e:
-            self.get_logger().warn(f"TF lookup failed for correction angle: {e}")
+            self.get_logger().warn(
+                f"TF lookup failed for correction angle ({ref!r} <- {source_frame!r}): {e}"
+            )
             return 0.0
 
         qx = t.transform.rotation.x
@@ -1342,6 +1408,8 @@ class DetectQwenNode(Node):
             self.latest_depth = self.bridge.imgmsg_to_cv2(depth_msg, desired_encoding='32FC1')
             self.latest_depth_header = depth_msg.header
             self.new_frame_available = True
+            self._last_synced_pair_wall = time.time()
+            self._synced_pair_count += 1
             
             # Trigger initial detection on first image
             if not self.initial_detection_done:
@@ -1351,6 +1419,20 @@ class DetectQwenNode(Node):
                 
         except Exception as e:
             self.get_logger().error(f"Image conversion error: {e}")
+
+    def _stamp_sec(self, msg: RosImage) -> float:
+        st = msg.header.stamp
+        return float(st.sec) + float(st.nanosec) * 1e-9
+
+    def _rgb_tap_cb(self, msg: RosImage):
+        self._rgb_tap_count += 1
+        self._last_rgb_stamp_sec = self._stamp_sec(msg)
+        self._latest_rgb_msg = msg
+
+    def _depth_tap_cb(self, msg: RosImage):
+        self._depth_tap_count += 1
+        self._last_depth_stamp_sec = self._stamp_sec(msg)
+        self._latest_depth_msg = msg
     
     # -----------------------------------------------------------------
     # INITIAL DETECTION (Qwen + SAM2 conditioning)
@@ -1372,6 +1454,11 @@ class DetectQwenNode(Node):
         self.new_frame_available = False
         t_start = time.time()
         self.get_logger().info(f"🔍 Running initial detection for '{self.object_prompt}'...")
+        if not self._wait_hand_tf_chain_ready(max_wall_sec=5.0):
+            self.get_logger().warn(
+                f"TF (câmera -> {self.target_parent_frame!r}) não ficou disponível em 5s; "
+                "Qwen/_mask_to_tf podem falhar até existir essa ligação no grafo."
+            )
         
         try:
             img_pil = self.latest_rgb
@@ -1511,19 +1598,6 @@ class DetectQwenNode(Node):
             mask_np = best_tracked_mask.astype(np.uint8)
             init_mask_area = int(mask_np.sum())
             self._adaptive_tracking_min_mask_area = max(300, int(init_mask_area * 0.45))
-            # region agent log
-            self._agent_debug_log(
-                run_id="post-fix",
-                hypothesis_id="H1",
-                location="detect_qwen.py:1499",
-                message="Adaptive tracking area threshold initialized",
-                data={
-                    "init_mask_area": int(init_mask_area),
-                    "tracking_min_mask_area_config": int(self.tracking_min_mask_area),
-                    "adaptive_tracking_min_mask_area": int(self._adaptive_tracking_min_mask_area),
-                },
-            )
-            # endregion
             
             self.last_tracking_score = score
             self.tracking_active = True
@@ -1540,7 +1614,6 @@ class DetectQwenNode(Node):
             
             # Compute centroid and update TF
             centroid_uv = self._mask_to_tf(mask_np, self.latest_depth.copy(), score)
-            
             self._publish_segmented_depth(mask_np, self.latest_depth.copy())
             self._publish_segmentation_mask(mask_np)
             # Visualization
@@ -1628,7 +1701,6 @@ class DetectQwenNode(Node):
             depth_map = self.latest_depth.copy()
 
             self.tracking_frame_count += 1
-
             with self._gpu_lock:
                 tracked_results = self.video_predictor(
                     np.array(img_pil.convert("RGB")),
@@ -1658,46 +1730,11 @@ class DetectQwenNode(Node):
                 self._tracking_lost_streak += 1
             else:
                 self._tracking_lost_streak = 0
-            # region agent log
-            if is_lost_now or self._tracking_lost_streak > 0 or (self.tracking_frame_count % 5 == 0):
-                self._agent_debug_log(
-                    run_id="pre-fix",
-                    hypothesis_id="H1_H2",
-                    location="detect_qwen.py:1593",
-                    message="Tracking lost-evaluation sample",
-                    data={
-                        "frame": int(self.tracking_frame_count),
-                        "score": float(score),
-                        "mask_area": int(mask_area),
-                        "tracking_min_mask_area": int(self.tracking_min_mask_area),
-                        "effective_min_area": int(effective_min_area),
-                        "is_lost_now": bool(is_lost_now),
-                        "lost_streak": int(self._tracking_lost_streak),
-                        "confirm_frames": int(self.tracking_lost_confirm_frames),
-                    },
-                )
-            # endregion
 
             if self._tracking_lost_streak >= self.tracking_lost_confirm_frames:
                 now_sec = time.time()
                 if (now_sec - self._last_redetect_time) >= self.tracking_redetect_cooldown_sec:
                     self._last_redetect_time = now_sec
-                    # region agent log
-                    self._agent_debug_log(
-                        run_id="pre-fix",
-                        hypothesis_id="H1_H2_H5",
-                        location="detect_qwen.py:1602",
-                        message="Tracking reset/redetect trigger fired",
-                        data={
-                            "frame": int(self.tracking_frame_count),
-                            "score": float(score),
-                            "mask_area": int(mask_area),
-                            "lost_streak": int(self._tracking_lost_streak),
-                            "last_redetect_time": float(self._last_redetect_time),
-                            "cooldown_sec": float(self.tracking_redetect_cooldown_sec),
-                        },
-                    )
-                    # endregion
                     self.get_logger().warn(
                         f"⚠️ Tracking lost (score={score:.3f}, area={mask_area}, "
                         f"streak={self._tracking_lost_streak}). Re-detecting..."
@@ -1851,6 +1888,24 @@ class DetectQwenNode(Node):
             return
 
         now = time.time()
+        if not self.initial_detection_done and self._last_synced_pair_wall is None:
+            if (now - self._node_start_wall) > 2.0 and (now - self._last_no_sync_warn_wall) > 2.0:
+                self._last_no_sync_warn_wall = now
+                stamp_delta = None
+                if self._last_rgb_stamp_sec is not None and self._last_depth_stamp_sec is not None:
+                    stamp_delta = float(abs(self._last_rgb_stamp_sec - self._last_depth_stamp_sec))
+                self.get_logger().warn(
+                    "Aguardando par RGB/depth sincronizado (request ainda não inicia). "
+                    f"slop={self.sync_slop_sec:.3f}s queue={self.sync_queue_size} "
+                    f"rgb_taps={self._rgb_tap_count} depth_taps={self._depth_tap_count} "
+                    f"last_dt={stamp_delta if stamp_delta is not None else 'n/a'}"
+                )
+        if self.tracking_active and not self.new_frame_available:
+            if (now - self._last_stale_frame_warn_wall) > 2.0:
+                self._last_stale_frame_warn_wall = now
+                age = None
+                if self._last_synced_pair_wall is not None:
+                    age = float(now - self._last_synced_pair_wall)
 
         if not self.tracking_active:
             if (
@@ -1936,19 +1991,6 @@ class DetectQwenNode(Node):
 
     def _reset_tracking(self):
         """Reset the tracking state for a fresh start."""
-        # region agent log
-        self._agent_debug_log(
-            run_id="pre-fix",
-            hypothesis_id="H5",
-            location="detect_qwen.py:1848",
-            message="Reset tracking state called",
-            data={
-                "tracking_active_before": bool(self.tracking_active),
-                "tracking_frame_count_before": int(self.tracking_frame_count),
-                "lost_streak_before": int(self._tracking_lost_streak),
-            },
-        )
-        # endregion
         self.tracking_active = False
         self.tracking_frame_count = 0
         self._tracking_lost_streak = 0
@@ -2094,24 +2136,6 @@ class DetectQwenNode(Node):
             target_x = px + tx
             target_y = py + ty
             target_z = pz + tz
-            # region agent log
-            self._agent_debug_log(
-                run_id="pre-fix",
-                hypothesis_id="H3_H4",
-                location="detect_qwen.py:1992",
-                message="Computed target transform in parent frame",
-                data={
-                    "parent_frame": str(self.target_parent_frame),
-                    "robot_base_frame": str(self.robot_base_frame),
-                    "source_frame": str(source_frame),
-                    "target_pose_seq": int(self._target_pose_seq + 1),
-                    "u": int(u),
-                    "v": int(v),
-                    "z_m": float(Z),
-                    "target_xyz": [float(target_x), float(target_y), float(target_z)],
-                },
-            )
-            # endregion
             
             # Publish TF
             tf_msg = TransformStamped()
@@ -2137,25 +2161,12 @@ class DetectQwenNode(Node):
                 )
             
         except Exception as e:
-            self.get_logger().error(f"❌ TF error (source_frame='{source_frame}'): {e}")
+            # Diagnóstico detalhado já foi emitido em _lookup_transform_with_sensor_stamp (throttle 5s).
+            self.get_logger().error(
+                f"❌ _mask_to_tf: falha no lookup TF (source_frame='{source_frame}'): {e}"
+            )
             
         return (u, v)
-
-    def _agent_debug_log(self, run_id: str, hypothesis_id: str, location: str, message: str, data: dict):
-        try:
-            payload = {
-                "sessionId": DEBUG_SESSION_ID,
-                "runId": run_id,
-                "hypothesisId": hypothesis_id,
-                "location": location,
-                "message": message,
-                "data": data,
-                "timestamp": int(time.time() * 1000),
-            }
-            with open(DEBUG_LOG_PATH, "a", encoding="utf-8") as fp:
-                fp.write(json.dumps(payload, ensure_ascii=False) + "\n")
-        except Exception:
-            pass
 
     def _rotate_point_by_quaternion(self, px, py, pz, qx, qy, qz, qw):
         """Rotate a 3D point by a quaternion."""
@@ -2180,26 +2191,6 @@ class DetectQwenNode(Node):
             # para o gate FOV (evita stale_target só porque _mask_to_tf não corre há >max_target_pose_age_sec).
             if self.tracking_active:
                 self._target_tf_wall_time = time.time()
-            # region agent log
-            if self.tracking_frame_count % 10 == 0:
-                now_wall = time.time()
-                self._agent_debug_log(
-                    run_id="pre-fix-3",
-                    hypothesis_id="H9",
-                    location="detect_qwen.py:2170",
-                    message="TF republish freshness state",
-                    data={
-                        "tracking_active": bool(self.tracking_active),
-                        "target_pose_seq": int(self._target_pose_seq),
-                        "wall_age_since_measure_ms": None
-                        if self._target_pose_measure_wall_time is None
-                        else float((now_wall - self._target_pose_measure_wall_time) * 1000.0),
-                        "wall_age_since_last_tf_touch_ms": None
-                        if self._target_tf_wall_time is None
-                        else float((now_wall - self._target_tf_wall_time) * 1000.0),
-                    },
-                )
-            # endregion
             self.tf_broadcaster.sendTransform(self.target_transform)
         self._update_secondary_fov_triggers()
 
@@ -2313,20 +2304,6 @@ class DetectQwenNode(Node):
         lookup(out_frame, in_frame): p_out = R * p_in + t.
         Evita usar target_object no buffer (TransformBroadcaster local por vezes não ecoa).
         """
-        # region agent log
-        self._agent_debug_log(
-            run_id="pre-fix-2",
-            hypothesis_id="H6",
-            location="detect_qwen.py:2288",
-            message="Secondary transform request",
-            data={
-                "out_frame": str(out_frame),
-                "source_assumed_frame": str(in_frame),
-                "target_parent_frame": str(self.target_parent_frame),
-                "pb_xyz": [float(p_in[0]), float(p_in[1]), float(p_in[2])],
-            },
-        )
-        # endregion
         t = self._lookup_transform_robust(
             out_frame,
             in_frame,
@@ -2335,36 +2312,12 @@ class DetectQwenNode(Node):
             f"{out_frame}<-{in_frame}",
         )
         if t is None:
-            # region agent log
-            self._agent_debug_log(
-                run_id="pre-fix-2",
-                hypothesis_id="H7",
-                location="detect_qwen.py:2303",
-                message="Secondary transform lookup failed",
-                data={
-                    "out_frame": str(out_frame),
-                    "source_frame": str(in_frame),
-                },
-            )
-            # endregion
             return None
         tr = t.transform.translation
         r = t.transform.rotation
         px, py, pz = float(p_in[0]), float(p_in[1]), float(p_in[2])
         rx, ry, rz = self._rotate_point_by_quaternion(px, py, pz, r.x, r.y, r.z, r.w)
         p_out = np.array([rx + tr.x, ry + tr.y, rz + tr.z], dtype=np.float64)
-        # region agent log
-        self._agent_debug_log(
-            run_id="pre-fix-2",
-            hypothesis_id="H6",
-            location="detect_qwen.py:2318",
-            message="Secondary transform output",
-            data={
-                "out_frame": str(out_frame),
-                "p_out_xyz": [float(p_out[0]), float(p_out[1]), float(p_out[2])],
-            },
-        )
-        # endregion
         return p_out
 
     def _lookup_transform_robust(
@@ -2380,13 +2333,13 @@ class DetectQwenNode(Node):
         faz fallback para último TF disponível (time=0).
         """
         if self.use_wall_time_tf_lookups:
-            # Modo rápido: sem espera/bloqueio.
+            wall_to = Duration(seconds=self.secondary_fov_tf_lookup_timeout_sec)
             try:
                 return self.tf_buffer.lookup_transform(
                     target_frame,
                     source_frame,
                     rclpy.time.Time(),
-                    timeout=Duration(seconds=0.0),
+                    timeout=wall_to,
                 )
             except Exception as e_now:
                 try:
@@ -2394,7 +2347,7 @@ class DetectQwenNode(Node):
                         target_frame,
                         source_frame,
                         rclpy.time.Time(seconds=0, nanoseconds=0),
-                        timeout=Duration(seconds=0.0),
+                        timeout=wall_to,
                     )
                 except Exception as e_t0:
                     self.get_logger().warn(
@@ -2435,13 +2388,29 @@ class DetectQwenNode(Node):
                     )
                     return None
 
+    def _fov_target_pose_freshness_wall_time(self):
+        """
+        Instante (wall clock) em que o gate FOV considera o alvo "atualizado".
+
+        _mask_to_tf só corre quando há par RGB/depth novo; pode haver >max_target_pose_age_sec
+        sem nova medição mesmo com tracking ativo e TF republicado a 10 Hz (_target_tf_wall_time).
+        Usar max(medição, último republish) evita loop STOP/START stale_target nesse caso.
+        """
+        m = self._target_pose_measure_wall_time
+        t = self._target_tf_wall_time
+        if self.tracking_active and t is not None:
+            if m is not None:
+                return max(m, t)
+            return t
+        return m
+
     def _update_secondary_fov_triggers(self):
         """FOV geométrico + consistência odom; atualiza triggers e UV projetado para tracking secundário."""
         if not self.enable_secondary_fov_trigger or not self._secondary_camera_names:
             return
 
         now_wall = time.time()
-        measure_time = self._target_pose_measure_wall_time
+        measure_time = self._fov_target_pose_freshness_wall_time()
         stale = (
             self.target_transform is None
             or measure_time is None
@@ -2595,58 +2564,14 @@ class DetectQwenNode(Node):
                 st['out_streak'] += 1
                 st['in_view_streak'] = 0
 
-            # Sincronização: não armar trigger em pose antiga.
-            pose_age_sec = (
-                (now_wall - self._target_pose_measure_wall_time)
-                if self._target_pose_measure_wall_time is not None
-                else 1e9
-            )
+            # Sincronização: não armar trigger em pose antiga (mesma base de frescura que stale).
+            fresh_t = self._fov_target_pose_freshness_wall_time()
+            pose_age_sec = (now_wall - fresh_t) if fresh_t is not None else 1e9
             if pose_age_sec > self.secondary_trigger_max_pose_age_sec:
                 if in_view_geom:
                     in_view_geom = False
                     st['out_streak'] = 1
                     st['in_view_streak'] = 0
-            # region agent log
-            self._agent_debug_log(
-                run_id="pre-fix-2",
-                hypothesis_id="H6_H8",
-                location="detect_qwen.py:2530",
-                message="Secondary FOV projection decision",
-                data={
-                    "cam_name": str(cam_name),
-                    "in_view_geom": bool(in_view_geom),
-                    "uv_dbg": None if uv_dbg is None else [float(uv_dbg[0]), float(uv_dbg[1])],
-                    "z_dbg": None if z_dbg is None else float(z_dbg),
-                    "in_view_streak": int(st['in_view_streak']),
-                    "out_streak": int(st['out_streak']),
-                    "trigger_active": bool(st['trigger_active']),
-                },
-            )
-            # endregion
-            # region agent log
-            if cam_name == self._secondary_camera_names[0] and (st['out_streak'] % 5 == 0 or st['trigger_active']):
-                now_wall = time.time()
-                self._agent_debug_log(
-                    run_id="pre-fix-3",
-                    hypothesis_id="H9_H10",
-                    location="detect_qwen.py:2575",
-                    message="Secondary trigger timing snapshot",
-                    data={
-                        "cam_name": str(cam_name),
-                        "in_view_geom": bool(in_view_geom),
-                        "trigger_active": bool(st['trigger_active']),
-                        "out_streak": int(st['out_streak']),
-                        "target_pose_seq": int(self._target_pose_seq),
-                        "age_since_measure_ms": None
-                        if self._target_pose_measure_wall_time is None
-                        else float((now_wall - self._target_pose_measure_wall_time) * 1000.0),
-                        "age_since_last_tf_touch_ms": None
-                        if self._target_tf_wall_time is None
-                        else float((now_wall - self._target_tf_wall_time) * 1000.0),
-                    },
-                )
-            # endregion
-
             if not st['trigger_active']:
                 if st['in_view_streak'] >= self.fov_trigger_confirm_ticks:
                     st['trigger_active'] = True
@@ -2687,15 +2612,23 @@ class DetectQwenNode(Node):
 def main(args=None):
     """ROS 2 node entry point."""
     rclpy.init(args=args)
-    node = DetectQwenNode()
+    node = None
     try:
+        node = DetectQwenNode()
         rclpy.spin(node)
     except KeyboardInterrupt:
         pass
     finally:
         cv2.destroyAllWindows()
-        node.destroy_node()
-        rclpy.shutdown()
+        if node is not None:
+            try:
+                node.destroy_node()
+            except Exception:
+                pass
+        try:
+            rclpy.shutdown()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
