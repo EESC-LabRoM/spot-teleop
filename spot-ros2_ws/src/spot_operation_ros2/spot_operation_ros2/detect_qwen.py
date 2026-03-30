@@ -6,6 +6,8 @@ import os
 import io
 import time
 import threading
+import json
+import uuid
 from collections import OrderedDict
 from pathlib import Path
 
@@ -27,6 +29,8 @@ except ImportError:
 try:
     import rclpy
     from rclpy.node import Node
+    from rclpy.executors import MultiThreadedExecutor
+    from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
     from rclpy.duration import Duration
     from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
     from sensor_msgs.msg import Image as RosImage, CameraInfo
@@ -53,8 +57,29 @@ except ImportError:
     print("Aviso: Ultralytics SAM2 nao encontrado. Segmentacao SAM desativada.")
     SAM2VideoPredictor = None  # type: ignore
 
-VLLM_URL = "http://localhost:8000"
+VLLM_URL = "http://100.111.174.61:8000"
 # ===============================================
+DEBUG_LOG_PATH = "/home/spot-teleop/spot-ros2_ws/.cursor/debug-13b6ac.log"
+DEBUG_SESSION_ID = "13b6ac"
+
+
+def _append_debug_log(hypothesis_id: str, location: str, message: str, data: dict):
+    payload = {
+        "sessionId": DEBUG_SESSION_ID,
+        "id": f"log_{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}",
+        "timestamp": int(time.time() * 1000),
+        "runId": "fov-trigger-odom-desync",
+        "hypothesisId": hypothesis_id,
+        "location": location,
+        "message": message,
+        "data": data,
+    }
+    try:
+        with open(DEBUG_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(json.dumps(payload, ensure_ascii=True) + "\n")
+    except Exception:
+        pass
+
 
 # Ultralytics SAM2 tiny (auto-download)
 SAM2_MODEL_NAME = "sam2.1_t.pt"
@@ -418,6 +443,19 @@ def parse_qwen_response(response_text: str, image_size: tuple[int, int] = None) 
     # Clean up markdown code blocks if present
     clean_text = response_text.replace("```json", "").replace("```", "").strip()
     
+    def _safe_confidence(raw_conf) -> float:
+        """Best-effort conversion to float confidence in [0, 1]."""
+        if raw_conf is None:
+            return 1.0
+        if isinstance(raw_conf, (int, float)):
+            return float(raw_conf)
+        s = str(raw_conf).strip().replace("%", "")
+        try:
+            val = float(s)
+            return (val / 100.0) if val > 1.0 else val
+        except Exception:
+            return 1.0
+
     # 0. Try JSON Parsing first (since model seems to prefer it now)
     try:
         data = json.loads(clean_text)
@@ -427,11 +465,16 @@ def parse_qwen_response(response_text: str, image_size: tuple[int, int] = None) 
                 print("DEBUG: Lista vazia retornada (objeto não encontrado pelo Qwen).")
                 return []
             for item in data:
+                if not isinstance(item, dict):
+                    continue
                 if 'bbox_2d' in item:
                     # JSON bbox_2d is typically [xmin, ymin, xmax, ymax] in PIXELS
                     b = item['bbox_2d']
+                    if not isinstance(b, (list, tuple)) or len(b) < 4:
+                        print(f"DEBUG: bbox_2d inválido em item JSON: {item}")
+                        continue
                     label = item.get('label', 'object')
-                    confidence = float(item.get('confidence', 1.0))
+                    confidence = _safe_confidence(item.get('confidence', 1.0))
                     
                     # Try to get 3 points, fallback to old single point format just in case
                     grasp_points = item.get('grasp_point_2ds', None)
@@ -446,19 +489,21 @@ def parse_qwen_response(response_text: str, image_size: tuple[int, int] = None) 
                     grasps_1000 = []
                     if grasp_points:
                         for pt in grasp_points:
+                            if not isinstance(pt, (list, tuple)) or len(pt) < 2:
+                                continue
                             gx, gy = pt[0], pt[1]
-                            grasps_1000.append([int(gx), int(gy)])
+                            grasps_1000.append([int(float(gx)), int(float(gy))])
                     
                     boxes.append({
                         'label': label,
-                        'bbox_1000': [int(xmin), int(ymin), int(xmax), int(ymax)],
+                        'bbox_1000': [int(float(xmin)), int(float(ymin)), int(float(xmax)), int(float(ymax))],
                         'grasps_1000': grasps_1000,
                         'confidence': confidence
                     })
             if boxes:
                 return boxes
     except Exception as e:
-        pass
+        print(f"DEBUG: Falha ao parsear JSON do Qwen: {e}. Trecho: {clean_text[:220]}")
 
     # regexes
     # 1. Strict: <box>[[...]]</box>
@@ -973,6 +1018,10 @@ class DetectQwenNode(Node):
         self.declare_parameter('secondary_fov_tf_lookup_timeout_sec', 0.2)
         self.declare_parameter('secondary_fov_ignore_distortion', False)
         self.declare_parameter('hand_tf_lookup_timeout_sec', 1.0)
+        # Ignore sensor-stamp lookups when frame is too old (prevents stale-frame TF extrapolation).
+        self.declare_parameter('max_sensor_age_for_tf_sec', 1.2)
+        # Small tolerance for "future extrapolation" jitter; allows bounded fallback to latest TF.
+        self.declare_parameter('tf_future_tolerance_sec', 0.35)
         # Histórico TF no nó (s). O default do tf2 (10s) apaga transforms em playback com saltos de tempo.
         self.declare_parameter('tf_buffer_cache_time_sec', 120.0)
         # False: lookup com stamp do depth / ROS time alinhado à imagem (real + sim em movimento).
@@ -1047,6 +1096,12 @@ class DetectQwenNode(Node):
                 f"a usar {_MIN_TF_TIMEOUT} s (timeout 0 impede espera pelo buffer TF no arranque)."
             )
         self.hand_tf_lookup_timeout_sec = max(_MIN_TF_TIMEOUT, _hand_to)
+        self.max_sensor_age_for_tf_sec = float(
+            max(0.05, self.get_parameter('max_sensor_age_for_tf_sec').value)
+        )
+        self.tf_future_tolerance_sec = float(
+            max(0.0, self.get_parameter('tf_future_tolerance_sec').value)
+        )
         _tf_cache = float(self.get_parameter('tf_buffer_cache_time_sec').value)
         self.tf_buffer_cache_time_sec = max(5.0, _tf_cache)
         self.use_wall_time_tf_lookups = bool(
@@ -1186,7 +1241,12 @@ class DetectQwenNode(Node):
         )
         
         # Tracking timer (10 Hz poll — actual rate controlled adaptively inside callback)
-        self.tracking_timer = self.create_timer(0.1, self._tracking_timer_cb)
+        
+        # Isolate heavy inference tracking step so it doesn't block TF listener
+        self.inference_cb_group = MutuallyExclusiveCallbackGroup()
+        self.tracking_timer = self.create_timer(
+            0.1, self._tracking_timer_cb, callback_group=self.inference_cb_group
+        )
         
         # TF publish timer (10 Hz)
         self.tf_timer = self.create_timer(0.1, self._tf_publish_cb)
@@ -1206,6 +1266,7 @@ class DetectQwenNode(Node):
             f"Roll correction TF: {self.roll_correction_reference_frame!r} "
             f"(param roll_correction_reference_frame; vazio => target_parent_frame)"
         )
+
         self.get_logger().info("DetectQwenNode ready. Waiting for camera data...")
     
     def _camera_info_cb(self, msg: CameraInfo):
@@ -1340,31 +1401,143 @@ class DetectQwenNode(Node):
             )
             raise err
         st = rclpy.time.Time.from_msg(sensor_header.stamp)
+        # #region agent log
+        try:
+            now_ros_sec = float(self.get_clock().now().nanoseconds) * 1e-9
+            sensor_sec = float(sensor_header.stamp.sec) + float(sensor_header.stamp.nanosec) * 1e-9
+            _append_debug_log(
+                "H6",
+                "detect_qwen.py:_lookup_transform_with_sensor_stamp:before_lookup",
+                "sensor-stamp tf lookup attempt",
+                {
+                    "target_frame": str(target_frame),
+                    "source_frame": str(source_frame),
+                    "sensor_stamp_sec": sensor_sec,
+                    "node_now_ros_sec": now_ros_sec,
+                    "sensor_age_vs_node_now_sec": now_ros_sec - sensor_sec,
+                    "timeout_sec": float(self.hand_tf_lookup_timeout_sec),
+                    "use_wall_time_tf_lookups": bool(self.use_wall_time_tf_lookups),
+                },
+            )
+        except Exception:
+            pass
+        # #endregion
         try:
             return self.tf_buffer.lookup_transform(
                 target_frame, source_frame, st, timeout=timeout
             )
         except Exception as e:
+            # #region agent log
+            raw = str(e)
+            req_t = None
+            latest_t = None
+            earliest_t = None
+            try:
+                m_future = re.search(
+                    r"Requested time ([\d.]+) but the latest data is at time ([\d.]+)",
+                    raw,
+                )
+                m_past = re.search(
+                    r"Requested time ([\d.]+) but the earliest data is at time ([\d.]+)",
+                    raw,
+                )
+                if m_future:
+                    req_t = float(m_future.group(1))
+                    latest_t = float(m_future.group(2))
+                if m_past:
+                    req_t = float(m_past.group(1))
+                    earliest_t = float(m_past.group(2))
+                _append_debug_log(
+                    "H7",
+                    "detect_qwen.py:_lookup_transform_with_sensor_stamp:lookup_error",
+                    "sensor-stamp tf lookup failure",
+                    {
+                        "target_frame": str(target_frame),
+                        "source_frame": str(source_frame),
+                        "exception": raw[:500],
+                        "requested_time_sec": req_t,
+                        "latest_time_sec": latest_t,
+                        "earliest_time_sec": earliest_t,
+                        "future_delta_sec": (req_t - latest_t) if (req_t is not None and latest_t is not None) else None,
+                        "past_delta_sec": (earliest_t - req_t) if (req_t is not None and earliest_t is not None) else None,
+                    },
+                )
+            except Exception:
+                pass
+            # #endregion
+            # Bounded fallback: if TF is only slightly behind sensor stamp, use latest available TF.
+            if latest_t is not None and req_t is not None:
+                future_delta = req_t - latest_t
+                if 0.0 <= future_delta <= self.tf_future_tolerance_sec:
+                    try:
+                        latest_sec = int(latest_t)
+                        latest_nsec = int((latest_t - latest_sec) * 1e9)
+                        t_latest = self.tf_buffer.lookup_transform(
+                            target_frame,
+                            source_frame,
+                            rclpy.time.Time(seconds=latest_sec, nanoseconds=latest_nsec),
+                            timeout=timeout,
+                        )
+                        # #region agent log
+                        try:
+                            _append_debug_log(
+                                "H8",
+                                "detect_qwen.py:_lookup_transform_with_sensor_stamp:bounded_fallback_success",
+                                "used bounded fallback to latest tf time",
+                                {
+                                    "target_frame": str(target_frame),
+                                    "source_frame": str(source_frame),
+                                    "future_delta_sec": float(future_delta),
+                                    "tolerance_sec": float(self.tf_future_tolerance_sec),
+                                    "latest_time_sec": float(latest_t),
+                                },
+                            )
+                        except Exception:
+                            pass
+                        # #endregion
+                        return t_latest
+                    except Exception as e_fb:
+                        # #region agent log
+                        try:
+                            _append_debug_log(
+                                "H8",
+                                "detect_qwen.py:_lookup_transform_with_sensor_stamp:bounded_fallback_failed",
+                                "bounded fallback to latest tf time failed",
+                                {
+                                    "target_frame": str(target_frame),
+                                    "source_frame": str(source_frame),
+                                    "future_delta_sec": float(future_delta),
+                                    "tolerance_sec": float(self.tf_future_tolerance_sec),
+                                    "fallback_exception": str(e_fb)[:300],
+                                },
+                            )
+                        except Exception:
+                            pass
+                        # #endregion
             self._explain_hand_tf_stamp_failure(
                 target_frame, source_frame, sensor_header, e
             )
             raise
 
-    def _get_correction_angle(self):
+    def _get_correction_angle(self, depth_header=None):
         """
         Ângulo de roll (graus) para endireitar a imagem no Qwen: projeta gravidade no plano da imagem
         via TF roll_correction_reference_frame (default = target_parent_frame, ex. odom), não robot_base_frame,
         para não exigir que hand_cam esteja na mesma árvore que `base`.
+
+        Args:
+            depth_header: snapshot of depth header to use for TF lookup (avoids desync
+                          when self.latest_depth_header is overwritten during inference).
         """
+        sensor_h = depth_header if depth_header is not None else getattr(self, "latest_depth_header", None)
         source_frame = getattr(self, 'camera_frame_id', None)
         if not source_frame:
             source_frame = (
-                self.latest_depth_header.frame_id
-                if hasattr(self, 'latest_depth_header')
+                sensor_h.frame_id
+                if sensor_h is not None
                 else 'hand_cam'
             )
 
-        sensor_h = getattr(self, "latest_depth_header", None)
         ref = self.roll_correction_reference_frame
         try:
             t = self._lookup_transform_with_sensor_stamp(
@@ -1410,6 +1583,7 @@ class DetectQwenNode(Node):
             self.new_frame_available = True
             self._last_synced_pair_wall = time.time()
             self._synced_pair_count += 1
+
             
             # Trigger initial detection on first image
             if not self.initial_detection_done:
@@ -1453,6 +1627,24 @@ class DetectQwenNode(Node):
         self.detection_running = True
         self.new_frame_available = False
         t_start = time.time()
+        # Atomic snapshot: freeze the depth header alongside image data so TF lookups
+        # use the stamp matching the actual frame being processed (not a later overwrite).
+        snapshot_header = getattr(self, 'latest_depth_header', None)
+        # Pre-lookup TF while sensor stamp is still fresh (~0.2s old).
+        # After Qwen + SAM2 inference (2-4s), the stamp would be stale.
+        cached_transform = None
+        try:
+            source_frame = getattr(self, 'camera_frame_id', None)
+            if not source_frame:
+                source_frame = snapshot_header.frame_id if snapshot_header is not None else 'hand_cam'
+            cached_transform = self._lookup_transform_with_sensor_stamp(
+                self.target_parent_frame, source_frame, snapshot_header
+            )
+        except Exception as e:
+            self.get_logger().warn(
+                f"Pre-lookup TF falhou (será tentado novamente em _mask_to_tf): {e}",
+                throttle_duration_sec=5.0,
+            )
         self.get_logger().info(f"🔍 Running initial detection for '{self.object_prompt}'...")
         if not self._wait_hand_tf_chain_ready(max_wall_sec=5.0):
             self.get_logger().warn(
@@ -1472,7 +1664,7 @@ class DetectQwenNode(Node):
             img_resized = img_pil.resize((new_w, new_h), Image.LANCZOS)
             
             # Correct camera roll before sending to Qwen
-            correction_angle = self._get_correction_angle()
+            correction_angle = self._get_correction_angle(depth_header=snapshot_header)
             M_fwd = None
             if abs(correction_angle) > 5.0:
                 img_for_qwen, M_fwd, rot_size = rotate_image_upright(img_resized, correction_angle)
@@ -1613,7 +1805,9 @@ class DetectQwenNode(Node):
                 self.grasp_offset = (0, 0)
             
             # Compute centroid and update TF
-            centroid_uv = self._mask_to_tf(mask_np, self.latest_depth.copy(), score)
+            centroid_uv = self._mask_to_tf(mask_np, self.latest_depth.copy(), score,
+                                            depth_header=snapshot_header,
+                                            cached_transform=cached_transform)
             self._publish_segmented_depth(mask_np, self.latest_depth.copy())
             self._publish_segmentation_mask(mask_np)
             # Visualization
@@ -1699,6 +1893,24 @@ class DetectQwenNode(Node):
         try:
             img_pil = self.latest_rgb
             depth_map = self.latest_depth.copy()
+            # Atomic snapshot: freeze depth header at same instant as image data.
+            snapshot_header = getattr(self, 'latest_depth_header', None)
+
+            # Pre-lookup TF while sensor stamp is still fresh (~0.2s old).
+            # After SAM2 inference (1-3s), the stamp would be stale → extrapolation.
+            cached_transform = None
+            try:
+                source_frame = getattr(self, 'camera_frame_id', None)
+                if not source_frame:
+                    source_frame = snapshot_header.frame_id if snapshot_header is not None else 'hand_cam'
+                cached_transform = self._lookup_transform_with_sensor_stamp(
+                    self.target_parent_frame, source_frame, snapshot_header
+                )
+            except Exception as e:
+                self.get_logger().warn(
+                    f"Pre-lookup TF falhou (será tentado novamente em _mask_to_tf): {e}",
+                    throttle_duration_sec=5.0,
+                )
 
             self.tracking_frame_count += 1
             with self._gpu_lock:
@@ -1743,7 +1955,9 @@ class DetectQwenNode(Node):
                     self._run_initial_detection()
                     return
 
-            centroid_uv = self._mask_to_tf(mask_np, depth_map, score)
+            centroid_uv = self._mask_to_tf(mask_np, depth_map, score,
+                                            depth_header=snapshot_header,
+                                            cached_transform=cached_transform)
 
             self._publish_segmented_depth(mask_np, depth_map)
             self._publish_segmentation_mask(mask_np)
@@ -1828,6 +2042,24 @@ class DetectQwenNode(Node):
                 v = int(round(iv))
                 u = max(0, min(w - 1, u))
                 v = max(0, min(h - 1, v))
+                # #region agent log
+                try:
+                    _append_debug_log(
+                        "H4",
+                        "detect_qwen.py:_run_secondary_camera_tracking:need_init",
+                        "secondary tracker initializing from trigger uv",
+                        {
+                            "cam_name": str(cam_name),
+                            "init_uv_raw": [float(iu), float(iv)],
+                            "init_uv_clamped": [int(u), int(v)],
+                            "image_wh": [int(w), int(h)],
+                            "trigger_active": bool(st.get("trigger_active")),
+                            "pending_secondary_init": bool(st.get("pending_secondary_init")),
+                        },
+                    )
+                except Exception:
+                    pass
+                # #endregion
                 with self._gpu_lock:
                     res = st['video_predictor'](
                         img_rgb,
@@ -2035,11 +2267,36 @@ class DetectQwenNode(Node):
         
         return float(np.median(valid)), True
 
-    def _mask_to_tf(self, mask_np, depth_map, score):
-        """Compute 3D centroid from mask and publish TF. Returns (u, v)."""
+    def _mask_to_tf(self, mask_np, depth_map, score, depth_header=None, cached_transform=None):
+        """Compute 3D centroid from mask and publish TF. Returns (u, v).
+
+        Args:
+            depth_header: snapshot of depth header captured at the same time as the
+                          image data. Used as fallback for TF lookup if cached_transform
+                          is not provided.
+            cached_transform: TransformStamped pre-looked-up before inference (while
+                              sensor stamp was still fresh). When provided, skips the
+                              live TF lookup entirely — avoids stale-stamp extrapolation.
+        """
         # Find centroid of the mask
         M = cv2.moments(mask_np)
         if M["m00"] == 0:
+            # #region agent log
+            try:
+                _append_debug_log(
+                    "H5",
+                    "detect_qwen.py:_mask_to_tf:zero_area_mask",
+                    "mask_to_tf received zero-area mask",
+                    {
+                        "tracking_frame_count": int(self.tracking_frame_count),
+                        "score": float(score),
+                        "mask_sum": int(mask_np.sum()),
+                        "tracking_active": bool(self.tracking_active),
+                    },
+                )
+            except Exception:
+                pass
+            # #endregion
             self.get_logger().warn("⚠️ _mask_to_tf: mask has zero area (m00=0)")
             return None
         
@@ -2111,19 +2368,23 @@ class DetectQwenNode(Node):
         
         # Transform to robot base (see robot_base_frame parameter)
         try:
-            source_frame = self.latest_depth_header.frame_id if hasattr(self, 'latest_depth_header') else 'hand_cam'
-            self.get_logger().info(
-                f"🔎 _mask_to_tf: centroid=({u},{v}) Z={Z:.3f}m -> cam3D=({X:.3f},{Y:.3f},{Z:.3f}) "
-                f"source_frame='{source_frame}'",
-                once=True
-            )
-            t = self._lookup_transform_with_sensor_stamp(
-                self.target_parent_frame,
-                source_frame,
-                self.latest_depth_header
-                if hasattr(self, "latest_depth_header")
-                else None,
-            )
+            # Use cached transform if available (pre-looked-up before inference)
+            if cached_transform is not None:
+                t = cached_transform
+                source_frame = t.child_frame_id  # for error logging only
+            else:
+                sensor_h = depth_header if depth_header is not None else getattr(self, 'latest_depth_header', None)
+                source_frame = sensor_h.frame_id if sensor_h is not None else 'hand_cam'
+                self.get_logger().info(
+                    f"🔎 _mask_to_tf: centroid=({u},{v}) Z={Z:.3f}m -> cam3D=({X:.3f},{Y:.3f},{Z:.3f}) "
+                    f"source_frame='{source_frame}'",
+                    once=True
+                )
+                t = self._lookup_transform_with_sensor_stamp(
+                    self.target_parent_frame,
+                    source_frame,
+                    sensor_h,
+                )
             tx = t.transform.translation.x
             ty = t.transform.translation.y
             tz = t.transform.translation.z
@@ -2449,6 +2710,25 @@ class DetectQwenNode(Node):
             if self._consistency_ref_ema is None:
                 self._consistency_ref_ema = p_consistency.copy()
             dist = float(np.linalg.norm(p_consistency - self._consistency_ref_ema))
+            # #region agent log
+            try:
+                _append_debug_log(
+                    "H1",
+                    "detect_qwen.py:_update_secondary_fov_triggers:consistency_check",
+                    "odom consistency distance check",
+                    {
+                        "dist_m": dist,
+                        "max_jump_m": float(self.max_consistency_position_jump_m),
+                        "reject_streak": int(self._odom_reject_streak),
+                        "target_parent_frame": str(self.target_parent_frame),
+                        "odom_consistency_frame": str(self.odom_consistency_frame),
+                        "p_consistency": [float(p_consistency[0]), float(p_consistency[1]), float(p_consistency[2])],
+                        "ref_ema": [float(self._consistency_ref_ema[0]), float(self._consistency_ref_ema[1]), float(self._consistency_ref_ema[2])],
+                    },
+                )
+            except Exception:
+                pass
+            # #endregion
             if dist > self.max_consistency_position_jump_m:
                 self._odom_reject_streak += 1
                 odom_ok = self._odom_reject_streak < self.odom_reject_confirm_ticks
@@ -2496,6 +2776,24 @@ class DetectQwenNode(Node):
                 continue
 
             if not odom_ok:
+                # #region agent log
+                try:
+                    _append_debug_log(
+                        "H2",
+                        "detect_qwen.py:_update_secondary_fov_triggers:odom_rejected",
+                        "secondary trigger blocked by odom rejection",
+                        {
+                            "cam_name": str(cam_name),
+                            "trigger_active_before_block": bool(st.get("trigger_active")),
+                            "reject_streak": int(self._odom_reject_streak),
+                            "reject_confirm_ticks": int(self.odom_reject_confirm_ticks),
+                            "in_view_streak": int(st.get("in_view_streak", 0)),
+                            "out_streak": int(st.get("out_streak", 0)),
+                        },
+                    )
+                except Exception:
+                    pass
+                # #endregion
                 if st['trigger_active']:
                     self.get_logger().info(
                         f"[FOV {cam_name}] STOP trigger (rejected_by_odom_error)"
@@ -2575,6 +2873,22 @@ class DetectQwenNode(Node):
             if not st['trigger_active']:
                 if st['in_view_streak'] >= self.fov_trigger_confirm_ticks:
                     st['trigger_active'] = True
+                    # #region agent log
+                    try:
+                        _append_debug_log(
+                            "H3",
+                            "detect_qwen.py:_update_secondary_fov_triggers:start_trigger",
+                            "secondary trigger turned ON",
+                            {
+                                "cam_name": str(cam_name),
+                                "in_view_streak": int(st.get("in_view_streak", 0)),
+                                "pose_age_sec": float(pose_age_sec),
+                                "projected_uv": list(st.get("last_projected_uv")) if st.get("last_projected_uv") is not None else None,
+                            },
+                        )
+                    except Exception:
+                        pass
+                    # #endregion
                     self.get_logger().info(
                         f"[FOV {cam_name}] START trigger (entered_fov) "
                         f"confirmações={self.fov_trigger_confirm_ticks}"
@@ -2592,6 +2906,21 @@ class DetectQwenNode(Node):
                 if luv is not None:
                     st['pending_secondary_init'] = True
                     st['init_uv'] = luv
+                    # #region agent log
+                    try:
+                        _append_debug_log(
+                            "H4",
+                            "detect_qwen.py:_update_secondary_fov_triggers:pending_init_set",
+                            "secondary pending init set from projected uv",
+                            {
+                                "cam_name": str(cam_name),
+                                "init_uv": [int(luv[0]), int(luv[1])],
+                                "prev_trigger": bool(prev_trig),
+                            },
+                        )
+                    except Exception:
+                        pass
+                    # #endregion
             if prev_trig and not st['trigger_active']:
                 self._release_secondary_predictor(cam_name)
                 self._maybe_resume_hand_after_secondary_stop()
@@ -2615,10 +2944,14 @@ def main(args=None):
     node = None
     try:
         node = DetectQwenNode()
-        rclpy.spin(node)
+        executor = MultiThreadedExecutor(num_threads=3)
+        executor.add_node(node)
+        executor.spin()
     except KeyboardInterrupt:
         pass
     finally:
+        if 'executor' in locals():
+            executor.shutdown()
         cv2.destroyAllWindows()
         if node is not None:
             try:
