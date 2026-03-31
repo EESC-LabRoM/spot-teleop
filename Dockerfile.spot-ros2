@@ -27,13 +27,6 @@ RUN curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key -o 
     | tee /etc/apt/sources.list.d/ros2.list > /dev/null \
     && apt-get update
 
-# Add Intel RealSense repository (with lsb-release) - continue on error if repository is unavailable
-RUN apt-get update && apt-get install -y gnupg lsb-release && \
-    (curl -sSf https://librealsense.intel.com/Debian/librealsense.pgp | apt-key add - && \
-    echo "deb https://librealsense.intel.com/Debian/apt-repo $(lsb_release -cs) main" > /etc/apt/sources.list.d/librealsense.list && \
-    apt-get update || echo "Warning: Could not add Intel RealSense repository") && \
-    rm -rf /var/lib/apt/lists/*
-
 # Install dependencies
 RUN apt-get update -q && \
     apt-get install -yq --no-install-recommends \
@@ -69,13 +62,6 @@ RUN apt-get update -q && \
     udev usbutils \
     && rm -rf /var/lib/apt/lists/*
 
-# Install RealSense packages (optional - continue on error if not available)
-RUN apt-get update && \
-    (apt-get install -yq --no-install-recommends \
-    librealsense2-utils librealsense2-dev librealsense2-dbg \
-    ros-humble-realsense2-camera ros-humble-realsense2-description \
-    || echo "Warning: Could not install RealSense packages") && \
-    rm -rf /var/lib/apt/lists/*
 
 # Set up workspace
 WORKDIR /home/spot-teleop/spot-ros2_ws
