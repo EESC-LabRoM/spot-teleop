@@ -39,7 +39,6 @@ try:
     import cv2
     import tf2_ros
     from tf2_ros import Buffer, TransformListener, TransformBroadcaster
-    import message_filters
     ROS_AVAILABLE = True
 except ImportError:
     ROS_AVAILABLE = False
@@ -57,7 +56,7 @@ except ImportError:
     print("Aviso: Ultralytics SAM2 nao encontrado. Segmentacao SAM desativada.")
     SAM2VideoPredictor = None  # type: ignore
 
-VLLM_URL = "http://100.111.174.61:8000"
+VLLM_URL = "http://localhost:8000"
 # ===============================================
 DEBUG_LOG_PATH = "/home/spot-teleop/spot-ros2_ws/.cursor/debug-13b6ac.log"
 DEBUG_SESSION_ID = "13b6ac"
@@ -79,6 +78,49 @@ def _append_debug_log(hypothesis_id: str, location: str, message: str, data: dic
             f.write(json.dumps(payload, ensure_ascii=True) + "\n")
     except Exception:
         pass
+
+
+# Debug session 2ec7e8: RGB/depth sync (NDJSON)
+_SYNC_DEBUG_LOG_PATH = "/home/spot-teleop/spot-ros2_ws/.cursor/debug-2ec7e8.log"
+_SYNC_DEBUG_SESSION = "2ec7e8"
+
+
+def _sync_debug_ndjson(hypothesis_id: str, location: str, message: str, data: dict):
+    payload = {
+        "sessionId": _SYNC_DEBUG_SESSION,
+        "id": f"log_{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}",
+        "timestamp": int(time.time() * 1000),
+        "runId": "rgb-depth-sync",
+        "hypothesisId": hypothesis_id,
+        "location": location,
+        "message": message,
+        "data": data,
+    }
+    try:
+        with open(_SYNC_DEBUG_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(json.dumps(payload, ensure_ascii=True) + "\n")
+    except Exception:
+        pass
+
+
+def _ui_debug_ndjson(hypothesis_id: str, location: str, message: str, data: dict):
+    # #region agent log
+    payload = {
+        "sessionId": "eb5d37",
+        "id": f"log_{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}",
+        "timestamp": int(time.time() * 1000),
+        "runId": "repro-ui",
+        "hypothesisId": hypothesis_id,
+        "location": location,
+        "message": message,
+        "data": data,
+    }
+    try:
+        with open("/home/spot-teleop/spot-ros2_ws/.cursor/debug-eb5d37.log", "a", encoding="utf-8") as f:
+            f.write(json.dumps(payload, ensure_ascii=True) + "\n")
+    except Exception:
+        pass
+    # #endregion
 
 
 # Ultralytics SAM2 tiny (auto-download)
@@ -468,9 +510,18 @@ def parse_qwen_response(response_text: str, image_size: tuple[int, int] = None) 
                 if not isinstance(item, dict):
                     continue
                 if 'bbox_2d' in item:
-                    # JSON bbox_2d is typically [xmin, ymin, xmax, ymax] in PIXELS
+                    # JSON bbox_2d may come either as one box [x1,y1,x2,y2]
+                    # or as list of boxes [[...], [...]]; keep first valid.
                     b = item['bbox_2d']
-                    if not isinstance(b, (list, tuple)) or len(b) < 4:
+                    bbox_candidate = None
+                    if isinstance(b, (list, tuple)) and len(b) >= 4 and not isinstance(b[0], (list, tuple)):
+                        bbox_candidate = b
+                    elif isinstance(b, (list, tuple)) and len(b) > 0 and isinstance(b[0], (list, tuple)):
+                        for cand in b:
+                            if isinstance(cand, (list, tuple)) and len(cand) >= 4:
+                                bbox_candidate = cand
+                                break
+                    if bbox_candidate is None:
                         print(f"DEBUG: bbox_2d inválido em item JSON: {item}")
                         continue
                     label = item.get('label', 'object')
@@ -484,7 +535,12 @@ def parse_qwen_response(response_text: str, image_size: tuple[int, int] = None) 
                     
                     # O prompt já pede no formato [0-1000], portanto os valores já vêm normalizados!
                     # Não devemos dividir pelo tamanho da imagem novamente.
-                    xmin, ymin, xmax, ymax = b[0], b[1], b[2], b[3]
+                    xmin, ymin, xmax, ymax = (
+                        bbox_candidate[0],
+                        bbox_candidate[1],
+                        bbox_candidate[2],
+                        bbox_candidate[3],
+                    )
                     
                     grasps_1000 = []
                     if grasp_points:
@@ -918,8 +974,11 @@ class DetectQwenNode(Node):
         self.robot_base_frame = self.get_parameter('robot_base_frame').value
         self.visualize = self.get_parameter('visualize').value
         self.tracking_window_name = self.get_parameter('tracking_window_name').value
+        self._ui_debug_calls = 0
         rgb_topic = self.get_parameter('rgb_topic').value
         depth_topic = self.get_parameter('depth_topic').value
+        self._param_rgb_topic = rgb_topic
+        self._param_depth_topic = depth_topic
         camera_info_topic = self.get_parameter('camera_info_topic').value
         depth_info_topic = self.get_parameter('depth_info_topic').value
         self.sync_queue_size = int(max(5, self.get_parameter('sync_queue_size').value))
@@ -929,6 +988,18 @@ class DetectQwenNode(Node):
         self.get_logger().info(f"Confidence threshold: {self.confidence_threshold}")
         self.get_logger().info(f"Target frame: {self.target_frame_name}")
         self.get_logger().info(f"Robot base frame (TF): {self.robot_base_frame}")
+        _ui_debug_ndjson(
+            "H17",
+            "detect_qwen.py:__init__",
+            "ui_debug_config",
+            {
+                "visualize": bool(self.visualize),
+                "tracking_window_name": str(self.tracking_window_name),
+                "DISPLAY": str(os.environ.get("DISPLAY", "")),
+                "WAYLAND_DISPLAY": str(os.environ.get("WAYLAND_DISPLAY", "")),
+                "XDG_SESSION_TYPE": str(os.environ.get("XDG_SESSION_TYPE", "")),
+            },
+        )
         
         # State
         self.bridge = CvBridge()
@@ -965,6 +1036,7 @@ class DetectQwenNode(Node):
         self._latest_depth_msg = None
         self._last_pair_key = None
         self._synced_pair_count = 0
+        self._debug_ndjson_sync_cb_logged = False
         self._last_stale_frame_warn_wall = 0.0
         self._last_depth_stamp_ns = None
         self._last_ros_now_ns = None
@@ -1160,11 +1232,11 @@ class DetectQwenNode(Node):
         self.tf_buffer = Buffer(
             cache_time=Duration(seconds=self.tf_buffer_cache_time_sec)
         )
-        self.tf_listener = TransformListener(self.tf_buffer, self)
+        self.tf_listener = TransformListener(self.tf_buffer, self, spin_thread=True)
         self.get_logger().info(
             f"TF buffer cache_time={self.tf_buffer_cache_time_sec:.1f}s "
             f"(param tf_buffer_cache_time_sec); hand lookup timeout={self.hand_tf_lookup_timeout_sec:.2f}s; "
-            f"tf_listener_spin_thread=False"
+            f"tf_listener_spin_thread=True"
         )
         self.tf_broadcaster = TransformBroadcaster(self)
         
@@ -1213,32 +1285,65 @@ class DetectQwenNode(Node):
                 f"jump_max={self.max_consistency_position_jump_m}m"
             )
         
-        # Synced RGB + Depth subscribers (ApproximateTimeSynchronizer).
-        self._image_qos = QoSProfile(
+        # Per-topic QoS (2ec7e8 logs): default RELIABLE→rgb worked, depth 0 taps; ALL BEST_EFFORT→
+        # depth worked, rgb 0 taps — /hand/rgb and /hand/depth publishers offer different profiles.
+        d_hand = max(10, int(self.sync_queue_size))
+        self._hand_rgb_qos = QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=d_hand,
+        )
+        self._hand_depth_qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
             history=HistoryPolicy.KEEP_LAST,
-            depth=max(10, self.sync_queue_size),
+            depth=d_hand,
         )
-        self.rgb_sub = message_filters.Subscriber(
-            self, RosImage, rgb_topic, qos_profile=self._image_qos
+        self.rgb_tap_sub = self.create_subscription(
+            RosImage, rgb_topic, self._rgb_tap_cb, self._hand_rgb_qos
         )
-        self.depth_sub = message_filters.Subscriber(
-            self, RosImage, depth_topic, qos_profile=self._image_qos
+        self.depth_tap_sub = self.create_subscription(
+            RosImage, depth_topic, self._depth_tap_cb, self._hand_depth_qos
         )
-        self.sync = message_filters.ApproximateTimeSynchronizer(
-            [self.rgb_sub, self.depth_sub],
-            queue_size=self.sync_queue_size,
-            slop=self.sync_slop_sec,
-        )
-        self.sync.registerCallback(self._synced_image_cb)
-        # Taps para diagnóstico (não participam do pareamento principal).
-        self.rgb_tap_sub = self.create_subscription(RosImage, rgb_topic, self._rgb_tap_cb, 10)
-        self.depth_tap_sub = self.create_subscription(RosImage, depth_topic, self._depth_tap_cb, 10)
         self.get_logger().info(
-            f"RGB/Depth sync config (ATS): "
-            f"queue_size={self.sync_queue_size}, slop={self.sync_slop_sec:.3f}s, "
-            "reliability=BEST_EFFORT"
+            f"RGB/Depth pairing: tap subs, slop={self.sync_slop_sec:.3f}s, queue={d_hand}, "
+            f"QoS rgb=RELIABLE depth=BEST_EFFORT"
         )
+        # #region agent log
+        try:
+            pub_r = int(self.count_publishers(rgb_topic))
+            pub_d = int(self.count_publishers(depth_topic))
+        except Exception as _e_pc:
+            pub_r, pub_d = -1, -1
+        cand_topics = []
+        try:
+            for tn, ttypes in self.get_topic_names_and_types():
+                if "hand" in tn or "/rgb" in tn or "depth" in tn:
+                    cand_topics.append({"topic": tn, "types": list(ttypes)[:3]})
+                if len(cand_topics) >= 48:
+                    break
+        except Exception as _e_gt:
+            cand_topics = [{"error": str(_e_gt)}]
+        use_sim = None
+        try:
+            use_sim = bool(self.get_parameter("use_sim_time").value)
+        except Exception:
+            pass
+        _sync_debug_ndjson(
+            "H1",
+            "detect_qwen.py:__init__:after_sync_subs",
+            "publisher_counts_and_graph_hint",
+            {
+                "rgb_topic": rgb_topic,
+                "depth_topic": depth_topic,
+                "count_publishers_rgb": pub_r,
+                "count_publishers_depth": pub_d,
+                "ros_domain_id": os.environ.get("ROS_DOMAIN_ID", ""),
+                "use_sim_time_param": use_sim,
+                "candidate_topics_sample": cand_topics,
+            },
+        )
+        self._debug_sync_timer = self.create_timer(3.0, self._debug_sync_post_start_cb)
+        # #endregion
         
         # Tracking timer (10 Hz poll — actual rate controlled adaptively inside callback)
         
@@ -1269,6 +1374,37 @@ class DetectQwenNode(Node):
 
         self.get_logger().info("DetectQwenNode ready. Waiting for camera data...")
     
+    def _debug_sync_post_start_cb(self):
+        # #region agent log
+        try:
+            self._debug_sync_timer.cancel()
+        except Exception:
+            pass
+        rt = getattr(self, "_param_rgb_topic", "")
+        dt = getattr(self, "_param_depth_topic", "")
+        try:
+            pr = int(self.count_publishers(rt))
+            pd = int(self.count_publishers(dt))
+        except Exception as _e2:
+            pr, pd = -1, -1
+        _sync_debug_ndjson(
+            "H5",
+            "detect_qwen.py:_debug_sync_post_start_cb",
+            "publisher_counts_t_plus_3s",
+            {
+                "rgb_topic": rt,
+                "depth_topic": dt,
+                "count_publishers_rgb": pr,
+                "count_publishers_depth": pd,
+                "rgb_taps": int(getattr(self, "_rgb_tap_count", 0)),
+                "depth_taps": int(getattr(self, "_depth_tap_count", 0)),
+                "synced_pairs": int(getattr(self, "_synced_pair_count", 0)),
+                "hand_rgb_qos": "RELIABLE",
+                "hand_depth_qos": "BEST_EFFORT",
+            },
+        )
+        # #endregion
+
     def _camera_info_cb(self, msg: CameraInfo):
         """Extract camera intrinsics once."""
         if self.camera_intrinsics is None:
@@ -1573,6 +1709,26 @@ class DetectQwenNode(Node):
 
     def _synced_image_cb(self, rgb_msg: RosImage, depth_msg: RosImage):
         """Store latest synced RGB + Depth pair."""
+        # #region agent log
+        if not self._debug_ndjson_sync_cb_logged:
+            self._debug_ndjson_sync_cb_logged = True
+            try:
+                rs = self._stamp_sec(rgb_msg)
+                ds = self._stamp_sec(depth_msg)
+            except Exception:
+                rs, ds = None, None
+            _sync_debug_ndjson(
+                "H4",
+                "detect_qwen.py:_synced_image_cb:first",
+                "first_synced_pair_received",
+                {
+                    "rgb_stamp_sec": rs,
+                    "depth_stamp_sec": ds,
+                    "abs_dt": abs(rs - ds) if rs is not None and ds is not None else None,
+                    "slop_sec": float(self.sync_slop_sec),
+                },
+            )
+        # #endregion
         try:
             cv_rgb = self.bridge.imgmsg_to_cv2(rgb_msg, desired_encoding='bgr8')
             cv_rgb = cv2.cvtColor(cv_rgb, cv2.COLOR_BGR2RGB)
@@ -1602,12 +1758,66 @@ class DetectQwenNode(Node):
         self._rgb_tap_count += 1
         self._last_rgb_stamp_sec = self._stamp_sec(msg)
         self._latest_rgb_msg = msg
+        # #region agent log
+        if self._rgb_tap_count == 1:
+            _sync_debug_ndjson(
+                "H2",
+                "detect_qwen.py:_rgb_tap_cb:first",
+                "first_rgb_message",
+                {"encoding": str(msg.encoding), "stamp_sec": self._last_rgb_stamp_sec},
+            )
+        # #endregion
+        self._try_emit_synced_pair_from_taps()
 
     def _depth_tap_cb(self, msg: RosImage):
         self._depth_tap_count += 1
         self._last_depth_stamp_sec = self._stamp_sec(msg)
         self._latest_depth_msg = msg
-    
+        # #region agent log
+        if self._depth_tap_count == 1:
+            _sync_debug_ndjson(
+                "H3",
+                "detect_qwen.py:_depth_tap_cb:first",
+                "first_depth_message",
+                {"encoding": str(msg.encoding), "stamp_sec": self._last_depth_stamp_sec},
+            )
+        # #endregion
+        self._try_emit_synced_pair_from_taps()
+
+    def _try_emit_synced_pair_from_taps(self):
+        """Emit one synced RGB+depth pair when header times close (same slop as former ATS)."""
+        rmsg = self._latest_rgb_msg
+        dmsg = self._latest_depth_msg
+        if rmsg is None or dmsg is None:
+            return
+        rs = self._stamp_sec(rmsg)
+        ds = self._stamp_sec(dmsg)
+        if abs(rs - ds) > self.sync_slop_sec:
+            return
+        key = (
+            int(rmsg.header.stamp.sec),
+            int(rmsg.header.stamp.nanosec),
+            int(dmsg.header.stamp.sec),
+            int(dmsg.header.stamp.nanosec),
+        )
+        if key == self._last_pair_key:
+            return
+        self._last_pair_key = key
+        # #region agent log
+        _sync_debug_ndjson(
+            "FIX",
+            "detect_qwen.py:_try_emit_synced_pair_from_taps",
+            "emit_synced_pair_from_taps",
+            {
+                "rgb_stamp_sec": rs,
+                "depth_stamp_sec": ds,
+                "abs_dt": abs(rs - ds),
+                "runId": "post-fix",
+            },
+        )
+        # #endregion
+        self._synced_image_cb(rmsg, dmsg)
+
     # -----------------------------------------------------------------
     # INITIAL DETECTION (Qwen + SAM2 conditioning)
     # -----------------------------------------------------------------
@@ -2157,6 +2367,21 @@ class DetectQwenNode(Node):
     def _update_display(self, img_pil, mask_np, score, centroid_uv=None):
         """Update OpenCV debug window with tracking overlay."""
         try:
+            self._ui_debug_calls += 1
+            if self._ui_debug_calls <= 8:
+                _ui_debug_ndjson(
+                    "H17",
+                    "detect_qwen.py:_update_display",
+                    "imshow_attempt",
+                    {
+                        "call_idx": int(self._ui_debug_calls),
+                        "window": str(self.tracking_window_name),
+                        "has_image": img_pil is not None,
+                        "mask_present": mask_np is not None,
+                        "DISPLAY": str(os.environ.get("DISPLAY", "")),
+                        "WAYLAND_DISPLAY": str(os.environ.get("WAYLAND_DISPLAY", "")),
+                    },
+                )
             # Convert PIL → BGR for OpenCV
             img_bgr = cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR)
             
@@ -2186,6 +2411,12 @@ class DetectQwenNode(Node):
             cv2.waitKey(1)
             
         except Exception as e:
+            _ui_debug_ndjson(
+                "H17",
+                "detect_qwen.py:_update_display",
+                "imshow_exception",
+                {"error": str(e)[:240]},
+            )
             self.get_logger().warn(f"Visualization error: {e}")
 
     def _publish_segmentation_mask(self, mask_np):
