@@ -8,6 +8,7 @@
 	required = true
 [safe]
 	directory = /home/nexus/spot-teleop/spot-ros2_ws
+	directory = /home/spot-teleop/spot-ros2_ws/src/curobo
 [user]
 	email = murilo.mv4321@usp.br
 	name = murilo-vinicius04

@@ -15,3 +15,5 @@ zed_ws/log
 isaac-ros_ws/build/
 isaac-ros_ws/install/
 isaac-ros_ws/log/
+.cache
+*.pyc
