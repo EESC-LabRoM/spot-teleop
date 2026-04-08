@@ -18,7 +18,71 @@ from sensor_msgs.msg import Image as RosImage
 from std_srvs.srv import Trigger
 from tf2_ros import Buffer, TransformListener
 
-from .detect_qwen import inverse_rotate_coords_1000, rotate_image_upright
+def rotate_image_upright(img_pil, angle_deg):
+    """
+    Rotate a PIL image by angle_deg (CCW positive, OpenCV convention).
+    Expands canvas so no content is clipped. Fills border with neutral gray.
+    Returns (rotated_pil, M_forward, (rot_w, rot_h)).
+    """
+    img_np = np.array(img_pil.convert("RGB"))
+    h, w = img_np.shape[:2]
+    center = (w / 2.0, h / 2.0)
+    M = cv2.getRotationMatrix2D(center, angle_deg, 1.0)
+    cos_a = abs(M[0, 0])
+    sin_a = abs(M[0, 1])
+    rot_w = int(h * sin_a + w * cos_a)
+    rot_h = int(h * cos_a + w * sin_a)
+    M[0, 2] += (rot_w - w) / 2.0
+    M[1, 2] += (rot_h - h) / 2.0
+    rotated_np = cv2.warpAffine(img_np, M, (rot_w, rot_h), borderValue=(127, 127, 127))
+    rotated_pil = Image.fromarray(rotated_np)
+    return rotated_pil, M, (rot_w, rot_h)
+
+
+def inverse_rotate_coords_1000(bbox_1000, grasps_1000, M_forward, rotated_size, original_size):
+    """
+    Map bbox and grasp points from the rotated image's [0-1000] space
+    back to the original image's [0-1000] space.
+    """
+    rot_w, rot_h = rotated_size
+    orig_w, orig_h = original_size
+    M_inv = cv2.invertAffineTransform(M_forward)
+
+    xmin = bbox_1000[0] / 1000.0 * rot_w
+    ymin = bbox_1000[1] / 1000.0 * rot_h
+    xmax = bbox_1000[2] / 1000.0 * rot_w
+    ymax = bbox_1000[3] / 1000.0 * rot_h
+
+    corners = np.array([
+        [xmin, ymin], [xmax, ymin], [xmax, ymax], [xmin, ymax],
+    ], dtype=np.float64)
+    ones = np.ones((4, 1), dtype=np.float64)
+    corners_h = np.hstack([corners, ones])
+    orig_corners = (M_inv @ corners_h.T).T
+
+    ox_min = max(0.0, np.min(orig_corners[:, 0]))
+    oy_min = max(0.0, np.min(orig_corners[:, 1]))
+    ox_max = min(float(orig_w), np.max(orig_corners[:, 0]))
+    oy_max = min(float(orig_h), np.max(orig_corners[:, 1]))
+
+    corrected_bbox = [
+        int(ox_min / orig_w * 1000),
+        int(oy_min / orig_h * 1000),
+        int(ox_max / orig_w * 1000),
+        int(oy_max / orig_h * 1000),
+    ]
+
+    corrected_grasps = []
+    for g in (grasps_1000 or []):
+        gx_px = g[0] / 1000.0 * rot_w
+        gy_px = g[1] / 1000.0 * rot_h
+        pt_h = np.array([gx_px, gy_px, 1.0])
+        orig_pt = M_inv @ pt_h
+        ox = max(0.0, min(float(orig_w), orig_pt[0]))
+        oy = max(0.0, min(float(orig_h), orig_pt[1]))
+        corrected_grasps.append([int(ox / orig_w * 1000), int(oy / orig_h * 1000)])
+
+    return corrected_bbox, corrected_grasps
 
 
 class RollImageNode(Node):

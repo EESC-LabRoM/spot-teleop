@@ -1,50 +1,497 @@
 #!/usr/bin/env python3
 import json
+import os
+import site
+import threading
 import time
 import uuid
+from collections import OrderedDict
+from pathlib import Path
 
 import cv2
+import message_filters
 import numpy as np
 import rclpy
+from PIL import Image, ImageDraw, ImageFont
+from cv_bridge import CvBridge
+from geometry_msgs.msg import PointStamped
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallbackGroup
+from rclpy.node import Node
+from sensor_msgs.msg import CameraInfo, Image as RosImage
 from std_msgs.msg import String
 
-from .detect_qwen import (
-    DetectQwenNode,
-    _best_mask_from_results,
-    _sam_prompt_masks,
-    create_crop_mosaic,
-    draw_result,
-    load_sam_model,
-    select_best_mask_by_bbox_iou,
+# Inject venv so torch/ultralytics are found via ros2 run
+_VENV_SITE = (
+    "/home/spot-teleop/spot-ros2_ws/src/spot_operation_ros2"
+    "/venv_valve_detection/lib/python3.10/site-packages"
 )
+if os.path.isdir(_VENV_SITE):
+    site.addsitedir(_VENV_SITE)
+
+try:
+    import torch
+    from ultralytics import SAM
+    from ultralytics.models.sam import SAM2VideoPredictor
+    SAM2_AVAILABLE = True
+except ImportError:
+    SAM2_AVAILABLE = False
+    SAM2VideoPredictor = None  # type: ignore
+
+# ---------------------------------------------------------------------------
+# SAM2 model loading (singletons)
+# ---------------------------------------------------------------------------
+
+SAM2_MODEL_NAME = "sam2.1_t.pt"
+_sam_model = None       # singleton SAM image predictor
+_sam_video_model = None  # singleton SAM video predictor
+
+if SAM2_AVAILABLE:
+    class SAM2ROSVideoPredictor(SAM2VideoPredictor):
+        """SAM2VideoPredictor adaptado para fluxo ROS (numpy frame a frame)."""
+
+        def __init__(self, cfg=None, overrides=None, _callbacks=None):
+            from ultralytics.utils import DEFAULT_CFG
+            if cfg is None:
+                cfg = DEFAULT_CFG
+            super().__init__(cfg, overrides, _callbacks)
+            self.callbacks["on_predict_start"] = [
+                self._init_state_ros if cb is SAM2VideoPredictor.init_state else cb
+                for cb in self.callbacks["on_predict_start"]
+            ]
+            self._ros_frame_idx = 0
+
+        @staticmethod
+        def _init_state_ros(predictor):
+            if len(predictor.inference_state) > 0:
+                return
+            ds = predictor.dataset
+            num_frames = getattr(ds, "frames", 10**9)
+            predictor.inference_state = {
+                "num_frames": num_frames,
+                "point_inputs_per_obj": {},
+                "mask_inputs_per_obj": {},
+                "constants": {},
+                "obj_id_to_idx": OrderedDict(),
+                "obj_idx_to_id": OrderedDict(),
+                "obj_ids": [],
+                "output_dict": {"cond_frame_outputs": {}, "non_cond_frame_outputs": {}},
+                "output_dict_per_obj": {},
+                "temp_output_dict_per_obj": {},
+                "consolidated_frame_inds": {
+                    "cond_frame_outputs": set(),
+                    "non_cond_frame_outputs": set(),
+                },
+                "tracking_has_started": False,
+                "frames_already_tracked": [],
+            }
+
+        def inference(self, im, bboxes=None, points=None, labels=None, masks=None):
+            if self.dataset is not None:
+                self.dataset.frame = self._ros_frame_idx
+            try:
+                return super().inference(im, bboxes=bboxes, points=points, labels=labels, masks=masks)
+            finally:
+                self._ros_frame_idx += 1
 
 
-class Sam2TrackerNode(DetectQwenNode):
+def _trim_sam2_memory(predictor, keep_frames: int = 6):
+    """Remove old frames from SAM2 inference_state, keeping only the last `keep_frames`.
+
+    SAM2 only attends to ~6 past frames, so older entries are pure GPU waste.
+    This avoids a full reset+reseed cycle — the predictor keeps tracking seamlessly.
+    """
+    state = getattr(predictor, 'inference_state', None)
+    if not state:
+        return
+    for bucket in ('cond_frame_outputs', 'non_cond_frame_outputs'):
+        od = state.get('output_dict', {}).get(bucket)
+        ci = state.get('consolidated_frame_inds', {}).get(bucket)
+        if not od:
+            continue
+        sorted_keys = sorted(od.keys())
+        to_remove = sorted_keys[:-keep_frames] if len(sorted_keys) > keep_frames else []
+        for k in to_remove:
+            del od[k]
+            if ci is not None:
+                ci.discard(k)
+    if 'frames_already_tracked' in state:
+        tracked = state['frames_already_tracked']
+        if len(tracked) > keep_frames:
+            state['frames_already_tracked'] = tracked[-keep_frames:]
+
+
+def _load_sam_model():
+    global _sam_model
+    if not SAM2_AVAILABLE:
+        return None
+    if _sam_model is None:
+        try:
+            _sam_model = SAM(SAM2_MODEL_NAME)
+        except Exception as e:
+            print(f"Erro ao carregar SAM2: {e}")
+            return None
+    return _sam_model
+
+
+def _load_sam_video_model():
+    global _sam_video_model
+    if not SAM2_AVAILABLE:
+        return None
+    if _sam_video_model is None:
+        try:
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
+            _sam_video_model = SAM2ROSVideoPredictor(
+                overrides={
+                    "conf": 0.01,
+                    "task": "segment",
+                    "mode": "predict",
+                    "imgsz": 1024,
+                    "model": SAM2_MODEL_NAME,
+                    "save": False,
+                    "verbose": False,
+                }
+            )
+        except Exception as e:
+            print(f"Erro ao carregar SAM2 tracker: {e}")
+            return None
+    return _sam_video_model
+
+# ---------------------------------------------------------------------------
+# Mask utilities
+# ---------------------------------------------------------------------------
+
+
+def _best_mask_from_results(results):
+    if not results:
+        return None, 0.0
+    r = results[0]
+    if r.masks is None or r.masks.data is None or len(r.masks.data) == 0:
+        return None, 0.0
+    masks_np = (r.masks.data > 0).to(dtype=torch.uint8).cpu().numpy()
+    if r.boxes is not None and r.boxes.conf is not None and len(r.boxes.conf) == len(masks_np):
+        scores_np = r.boxes.conf.cpu().numpy()
+    else:
+        scores_np = np.ones(len(masks_np), dtype=np.float32)
+    best_idx = int(np.argmax(scores_np))
+    return masks_np[best_idx], float(scores_np[best_idx])
+
+
+def _sam_prompt_masks(model, img_pil, point_xy, multimask_output=True):
+    img_np = np.array(img_pil.convert("RGB"))
+    results = model(img_np, points=[point_xy], labels=[1], conf=0.0, verbose=False)
+    if not results:
+        return np.empty((0, img_np.shape[0], img_np.shape[1]), dtype=np.uint8), np.array([])
+    r = results[0]
+    if r.masks is None or r.masks.data is None or len(r.masks.data) == 0:
+        return np.empty((0, img_np.shape[0], img_np.shape[1]), dtype=np.uint8), np.array([])
+    masks_np = (r.masks.data > 0).to(dtype=torch.uint8).cpu().numpy()
+    if r.boxes is not None and r.boxes.conf is not None and len(r.boxes.conf) == len(masks_np):
+        scores_np = r.boxes.conf.cpu().numpy()
+    else:
+        scores_np = np.ones(len(masks_np), dtype=np.float32)
+    return masks_np, scores_np
+
+
+def select_best_mask_by_bbox_iou(masks, bbox, image_size):
+    x1, y1, x2, y2 = bbox
+    w, h = image_size
+    bbox_region = np.zeros((h, w), dtype=bool)
+    bbox_region[y1:y2, x1:x2] = True
+    bbox_area = int(bbox_region.sum())
+    best_idx, best_iou = 0, -1.0
+    for i in range(len(masks)):
+        m = masks[i]
+        if hasattr(m, 'cpu'):
+            m = m.cpu().numpy()
+        if m.ndim > 2:
+            m = m.squeeze()
+        if m.shape[0] != h or m.shape[1] != w:
+            m = np.array(
+                Image.fromarray((m * 255).astype(np.uint8)).resize((w, h), Image.NEAREST)
+            ) > 127
+        else:
+            m = m > 0.5
+        intersection = int((m & bbox_region).sum())
+        union = int((m | bbox_region).sum())
+        iou = intersection / union if union > 0 else 0.0
+        if iou > best_iou:
+            best_iou = iou
+            best_idx = i
+    return best_idx
+
+
+def create_crop_mosaic(image_pil, masks, bbox, output_path="debug_mosaic.jpg"):
+    w, h = image_pil.size
+    x1, y1, x2, y2 = bbox
+    bw, bh = x2 - x1, y2 - y1
+    margin_w, margin_h = int(bw * 0.1), int(bh * 0.1)
+    cx1, cy1 = max(0, x1 - margin_w), max(0, y1 - margin_h)
+    cx2, cy2 = min(w, x2 + margin_w), min(h, y2 + margin_h)
+    crop_w, crop_h = cx2 - cx1, cy2 - cy1
+    base_crop = image_pil.crop((cx1, cy1, cx2, cy2))
+    mosaic = Image.new("RGB", (crop_w * 3, crop_h))
+    draw = ImageDraw.Draw(mosaic)
+    try:
+        font = ImageFont.truetype("DejaVuSans.ttf", 40)
+    except Exception:
+        font = ImageFont.load_default()
+    for i in range(min(3, len(masks))):
+        m = masks[i]
+        if hasattr(m, 'cpu'):
+            m = m.cpu().numpy()
+        if m.ndim > 2:
+            m = m.squeeze()
+        mask_pil = Image.fromarray((m * 255).astype(np.uint8))
+        if mask_pil.size != image_pil.size:
+            mask_pil = mask_pil.resize(image_pil.size, Image.NEAREST)
+        mask_crop = mask_pil.crop((cx1, cy1, cx2, cy2))
+        green = Image.new("RGBA", base_crop.size, (0, 255, 0, 100))
+        comp = base_crop.convert("RGBA").copy()
+        comp.paste(green, (0, 0), mask_crop)
+        mosaic.paste(comp.convert("RGB"), (i * crop_w, 0))
+        draw.text((i * crop_w + 10, 10), str(i + 1), fill="white", font=font)
+        draw.text((i * crop_w + 12, 12), str(i + 1), fill="black", font=font)
+    mosaic.save(output_path)
+    print(f"Debug Mosaic saved to: {output_path}")
+    return output_path
+
+
+def draw_result(image_input, boxes: list, output_path: str):
+    if isinstance(image_input, (str, Path)):
+        img = Image.open(image_input)
+    elif isinstance(image_input, Image.Image):
+        img = image_input.copy()
+    else:
+        raise ValueError("Invalid image input for drawing")
+    draw = ImageDraw.Draw(img)
+    w, h = img.size
+    try:
+        font = ImageFont.truetype("DejaVuSans.ttf", 24)
+    except IOError:
+        font = ImageFont.load_default()
+    for box_data in boxes:
+        label = box_data['label']
+        b1000 = box_data['bbox_1000']
+        x1 = max(0, int((b1000[0] / 1000.0) * w))
+        y1 = max(0, int((b1000[1] / 1000.0) * h))
+        x2 = min(w - 1, int((b1000[2] / 1000.0) * w))
+        y2 = min(h - 1, int((b1000[3] / 1000.0) * h))
+        color = '#00FF00'
+        for i in range(4):
+            draw.rectangle([x1 - i, y1 - i, x2 + i, y2 + i], outline=color)
+        if hasattr(draw, 'textbbox'):
+            tb = draw.textbbox((0, 0), label, font=font)
+            text_w, text_h = tb[2] - tb[0], tb[3] - tb[1]
+        else:
+            text_w, text_h = draw.textsize(label, font=font)
+        draw.rectangle([x1, y1 - text_h - 4, x1 + text_w + 4, y1], fill=color)
+        draw.text((x1 + 2, y1 - text_h - 2), label, fill='black', font=font)
+        for g1000 in box_data.get('grasps_1000', []):
+            gx = max(0, min(w - 1, int((g1000[0] / 1000.0) * w)))
+            gy = max(0, min(h - 1, int((g1000[1] / 1000.0) * h)))
+            r = 5
+            draw.ellipse([gx - r, gy - r, gx + r, gy + r], fill='red')
+    if img.mode == 'RGBA':
+        img = img.convert('RGB')
+    img.save(output_path)
+    print(f"\nImagem salva em: {output_path}")
+
+
+# ---------------------------------------------------------------------------
+# Node
+# ---------------------------------------------------------------------------
+
+class Sam2TrackerNode(Node):
     """2D-only tracker node: seed -> SAM2 tracking -> filtered grasp uv."""
 
     def __init__(self):
-        super().__init__()
+        super().__init__('sam2_tracker_node')
+
+        # Parameters
+        self.declare_parameter('rgb_topic', '/hand/rgb')
+        self.declare_parameter('depth_topic', '/hand/depth')
+        self.declare_parameter('visualize', True)
+        self.declare_parameter('tracking_window_name', 'SAM2 Live Tracking')
+        self.declare_parameter('segmentation_mask_topic', '/hand/segmentation_mask')
+        self.declare_parameter('publish_segmentation_mask', True)
+        self.declare_parameter('active_tracking_interval', 0.2)
+        self.declare_parameter('tracking_lost_confirm_frames', 5)
+        self.declare_parameter('seed_command_topic', '/perception/seed_command')
+        self.declare_parameter('tracking_state_topic', '/tracking_state')
+        self.declare_parameter('tracking_3d_topic', '/tracking_3d_point')
+        self.declare_parameter('depth_info_topic', '/hand/camera_info')
+        self.declare_parameter('secondary_cameras', '')
+        self.declare_parameter('secondary_fov_timeout_sec', 3.0)
+        self.declare_parameter('secondary_max_centroid_dist_px', 120.0)
+        self.declare_parameter('secondary_fov_enter_count', 5)  # consecutive seeds to arm init
+        self.declare_parameter('sam2_memory_reset_interval', 200)  # frames between memory resets
+
+        self.visualize = self.get_parameter('visualize').value
+        self.tracking_window_name = self.get_parameter('tracking_window_name').value
+        self.publish_segmentation_mask = self.get_parameter('publish_segmentation_mask').value
+        self.active_tracking_interval = self.get_parameter('active_tracking_interval').value
+        self.tracking_lost_confirm_frames = int(
+            max(1, self.get_parameter('tracking_lost_confirm_frames').value)
+        )
+
+        rgb_topic = self.get_parameter('rgb_topic').value
+        depth_topic = self.get_parameter('depth_topic').value
+        mask_topic = self.get_parameter('segmentation_mask_topic').value
+        seed_topic = self.get_parameter('seed_command_topic').value
+        tracking_state_topic = self.get_parameter('tracking_state_topic').value
+        tracking_3d_topic = self.get_parameter('tracking_3d_topic').value
+        tracking_point_topic = tracking_3d_topic if tracking_3d_topic else '/tracking_3d_point'
+        depth_info_topic = self.get_parameter('depth_info_topic').value
+
+        # State
+        self.bridge = CvBridge()
+        self.latest_rgb = None
+        self.latest_depth = None
+        self.latest_depth_header = None
+        self._latest_rgb_header = None
+        self._last_mask_np = None   # last known mask; None = publish zeros (all background)
+        self._last_mask_shape = None  # (h, w) cached from first frame
+        self.camera_frame_id = None
+        self.camera_intrinsics = None
+        self.new_frame_available = False
+        self.detection_running = False
         self.initial_detection_done = True
-        self.declare_parameter("seed_command_topic", "/perception/seed_command")
-        self.declare_parameter("tracking_state_topic", "/tracking_state")
-        self.declare_parameter("tracking_2d_topic", "/tracking_2d_result")
 
-        seed_topic = self.get_parameter("seed_command_topic").value
-        tracking_state_topic = self.get_parameter("tracking_state_topic").value
-        tracking_2d_topic = self.get_parameter("tracking_2d_topic").value
+        # Tracking state
+        self.video_predictor = None
+        self.tracking_active = False
+        self.tracking_frame_count = 0
+        self.last_tracking_score = 0.0
+        self._tracking_lost_streak = 0
+        self._last_track_time = 0.0
 
+        # Sam2TrackerNode-specific state
         self._pending_seed = None
         self._seed_cb_count = 0
+        self._hand_ui_calls = 0
+        self._dbg_timer_count = 0
+
+        # Snapshot state for relocalization
+        self._snapshot_rgb = None
+        self._snapshot_depth = None
+        self._snapshot_header = None
+        self._snapshot_taken = False
+
+        # GPU lock shared between hand and secondary cameras
+        self._gpu_lock = threading.Lock()
+
+        # Secondary cameras
+        secondary_cameras_str = str(self.get_parameter('secondary_cameras').value)
+        self._secondary_cameras = [c.strip() for c in secondary_cameras_str.split(',') if c.strip()]
+        self._secondary_cam_state = {}
+        self._secondary_mask_pubs = {}
+        self._secondary_fov_timeout_sec = float(self.get_parameter('secondary_fov_timeout_sec').value)
+        self._secondary_max_centroid_dist_px = float(self.get_parameter('secondary_max_centroid_dist_px').value)
+        self._secondary_fov_enter_count = int(max(1, self.get_parameter('secondary_fov_enter_count').value))
+        self._sam2_memory_reset_interval = int(max(1, self.get_parameter('sam2_memory_reset_interval').value))
+
+        # Callback groups
+        self.img_cb_group = ReentrantCallbackGroup()
+        self.inference_cb_group = MutuallyExclusiveCallbackGroup()
+
+        # Publishers
+        self.mask_pub = self.create_publisher(RosImage, mask_topic, 10)
+        self._tracking_state_pub = self.create_publisher(String, tracking_state_topic, 10)
+        self._tracking_2d_pub = self.create_publisher(PointStamped, tracking_point_topic, 10)
+        self._seed_3d_pub = self.create_publisher(PointStamped, "/tracking/seed_3d", 10)
+
+        # RGB+depth sync via ApproximateTimeSynchronizer
+        self.color_sub = message_filters.Subscriber(self, RosImage, rgb_topic)
+        self.depth_sub = message_filters.Subscriber(self, RosImage, depth_topic)
+        self.sync = message_filters.ApproximateTimeSynchronizer(
+            [self.color_sub, self.depth_sub], queue_size=10, slop=0.1
+        )
+        self.sync.registerCallback(self._synced_image_cb)
 
         self._seed_sub = self.create_subscription(String, seed_topic, self._seed_command_cb, 10)
-        self._tracking_state_pub = self.create_publisher(String, tracking_state_topic, 10)
-        self._tracking_2d_pub = self.create_publisher(String, tracking_2d_topic, 10)
-        self._hand_ui_calls = 0
+        self._cam_info_sub = self.create_subscription(CameraInfo, depth_info_topic, self._camera_info_cb, 10)
+        self._coord_state_sub = self.create_subscription(
+            String, "/coordinator/state", self._coordinator_state_cb, 10
+        )
+        self._seed_pixel_sub = self.create_subscription(
+            PointStamped, "/tracking/seed_pixel", self._seed_pixel_cb, 10
+        )
+
+        # Register secondary cameras
+        for cam in self._secondary_cameras:
+            self._secondary_cam_state[cam] = {
+                'video_predictor': None,
+                'tracking_initialized': False,
+                'needs_reinit': False,
+                'init_uv': None,
+                'last_seed_time': 0.0,
+                'consecutive_seed_count': 0,  # hysteresis: counts consecutive seeds to arm init
+                'latest_rgb': None,
+                'latest_rgb_header': None,
+                'last_mask_np': None,
+                'mask_shape': None,
+                'new_frame_available': False,
+                'tracking_frame_count': 0,
+                'last_score': 0.0,
+                'lost_streak': 0,
+                # display cache — updated each tracking step so stale frames still show last state
+                '_disp_state': 'OUT_OF_FOV',
+                '_disp_mask': None,
+                '_disp_score': 0.0,
+                '_disp_centroid': None,
+            }
+            self.create_subscription(
+                RosImage, f'/{cam}/rgb',
+                lambda msg, c=cam: self._secondary_rgb_cb(msg, c), 10
+            )
+            self.create_subscription(
+                PointStamped, f'/{cam}/tracking/seed_pixel',
+                lambda msg, c=cam: self._secondary_seed_pixel_cb(msg, c), 10
+            )
+            self._secondary_mask_pubs[cam] = self.create_publisher(
+                RosImage, f'/{cam}/segmentation_mask', 10
+            )
+        if self._secondary_cameras:
+            self.get_logger().info(f"Secondary cameras registered: {self._secondary_cameras}")
+
+        self.tracking_timer = self.create_timer(
+            0.1, self._tracking_timer_cb, callback_group=self.inference_cb_group
+        )
 
         self.get_logger().info(
-            f"SAM2 tracker 2D enabled. seed_topic={seed_topic}, tracking2d={tracking_2d_topic}"
+            f"Sam2TrackerNode ready. rgb={rgb_topic}, depth={depth_topic}, "
+            f"seed={seed_topic}, tracking3d={tracking_point_topic}"
         )
-        self._dbg_timer_count = 0
+
+    def _camera_info_cb(self, msg: CameraInfo):
+        if self.camera_intrinsics is not None:
+            return
+        fx = float(msg.k[0])
+        fy = float(msg.k[4])
+        cx = float(msg.k[2])
+        cy = float(msg.k[5])
+        self.camera_intrinsics = (fx, fy, cx, cy)
+        self.camera_frame_id = msg.header.frame_id
+        self.get_logger().info(
+            f"Camera intrinsics set fx={fx:.1f} fy={fy:.1f} cx={cx:.1f} cy={cy:.1f} frame={self.camera_frame_id}"
+        )
+
+    def _coordinator_state_cb(self, msg: String):
+        state = msg.data.strip().upper()
+        if state == "RELOCALIZING" and not self._snapshot_taken:
+            if self.latest_rgb is not None and self.latest_depth is not None:
+                self._snapshot_rgb = self.latest_rgb.copy()
+                self._snapshot_depth = self.latest_depth.copy()
+                self._snapshot_header = self.latest_depth_header
+                self._snapshot_taken = True
+                snap_stamp = self._snapshot_header.stamp
+                snap_sec = snap_stamp.sec + snap_stamp.nanosec * 1e-9
+                self.get_logger().info(
+                    f"[TRACKER] Snapshot taken for relocalization stamp={snap_sec:.3f} frame={self._snapshot_header.frame_id}"
+                )
+        elif state != "RELOCALIZING":
+            self._snapshot_taken = False
 
     def _dbg_log(self, hypothesis_id: str, location: str, message: str, data: dict):
         # #region agent log
@@ -65,12 +512,101 @@ class Sam2TrackerNode(DetectQwenNode):
             pass
         # #endregion
 
-    def _run_initial_detection(self):
-        # Disable internal Qwen path; this node only starts from external seed.
-        return
+    def _synced_image_cb(self, rgb_msg: RosImage, depth_msg: RosImage):
+        """Recebe par RGB+depth sincronizado e armazena para o tracking loop."""
+        try:
+            cv_rgb = self.bridge.imgmsg_to_cv2(rgb_msg, desired_encoding='bgr8')
+            cv_rgb = cv2.cvtColor(cv_rgb, cv2.COLOR_BGR2RGB)
+            self.latest_rgb = Image.fromarray(cv_rgb)
+            self._last_mask_shape = (rgb_msg.height, rgb_msg.width)
+            self.latest_depth = self.bridge.imgmsg_to_cv2(depth_msg, desired_encoding='32FC1')
+            self.latest_depth_header = depth_msg.header
+            self._latest_rgb_header = rgb_msg.header
+            self.new_frame_available = True
+        except Exception as e:
+            self.get_logger().error(f"Image conversion error: {e}")
+            return
+        # Publish last known mask (or zeros) with this frame's exact timestamp so
+        # nvblox ExactTimeSynchronizer (color+mask) always fires on every frame.
+        self._publish_mask_for_header(rgb_msg.header)
 
-    def _synced_image_cb(self, rgb_msg, depth_msg):
-        super()._synced_image_cb(rgb_msg, depth_msg)
+    def _update_display(self, img_pil, mask_np, score, centroid_uv=None):
+        """Update OpenCV debug window with tracking overlay."""
+        try:
+            img_bgr = cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR)
+            if mask_np is not None:
+                overlay = np.zeros_like(img_bgr)
+                overlay[mask_np > 0] = [0, 255, 0]
+                img_bgr = cv2.addWeighted(img_bgr, 1.0, overlay, 0.5, 0)
+                contours, _ = cv2.findContours(mask_np, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                cv2.drawContours(img_bgr, contours, -1, (0, 255, 0), 2)
+            if centroid_uv:
+                u, v = int(centroid_uv[0]), int(centroid_uv[1])
+                cv2.circle(img_bgr, (u, v), 5, (0, 0, 255), -1)
+                text = f"Score: {score:.3f} | X: {u} Y: {v}"
+            else:
+                text = f"Score: {score:.3f}"
+            cv2.putText(img_bgr, text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+            cv2.imshow(self.tracking_window_name, img_bgr)
+            cv2.waitKey(1)
+        except Exception as e:
+            self.get_logger().warn(f"Visualization error: {e}")
+
+    def _publish_mask_for_header(self, header):
+        """Publish last known mask (or zeros) stamped with the given header.
+
+        Called on every incoming frame so nvblox's synchronizers always get a
+        mask at the exact timestamp of the color/depth image.  When not
+        tracking, zeros are published — all pixels are treated as background
+        (static TSDF) which is the correct behaviour.
+        """
+        if not self.publish_segmentation_mask:
+            return
+        try:
+            if self._last_mask_np is not None:
+                m = ((self._last_mask_np > 0).astype(np.uint8) * 255)
+            else:
+                h, w = self._last_mask_shape if self._last_mask_shape else (480, 640)
+                m = np.zeros((h, w), dtype=np.uint8)
+            msg = self.bridge.cv2_to_imgmsg(m, encoding='mono8')
+            msg.header = header
+            self.mask_pub.publish(msg)
+        except Exception as e:
+            self.get_logger().error(f"Error publishing segmentation mask: {e}")
+
+    def _publish_segmentation_mask(self, mask_np):
+        """Update the last known mask so the next per-frame publish uses it."""
+        if not self.publish_segmentation_mask:
+            return
+        self._last_mask_np = mask_np
+
+    def _get_valid_depth(self, depth_map, u, v, radius=3):
+        h, w = depth_map.shape[:2]
+        v_c = min(max(0, int(v)), h - 1)
+        u_c = min(max(0, int(u)), w - 1)
+        v_min, v_max = max(0, v_c - radius), min(h, v_c + radius + 1)
+        u_min, u_max = max(0, u_c - radius), min(w, u_c + radius + 1)
+        patch = depth_map[v_min:v_max, u_min:u_max]
+        finite = patch[np.isfinite(patch) & (patch > 0)]
+        if len(finite) == 0:
+            return 0.0, False
+        med = float(np.median(finite))
+        if med > 20.0:
+            med = med / 1000.0
+        if med <= 0.05 or med >= 10.0:
+            return 0.0, False
+        return med, True
+
+    def _pixel_to_camera_point(self, u: int, v: int, depth_map):
+        if self.camera_intrinsics is None:
+            return None
+        z, ok = self._get_valid_depth(depth_map, u, v)
+        if not ok:
+            return None
+        fx, fy, cx, cy = self.camera_intrinsics
+        x = (float(u) - cx) * z / fx
+        y = (float(v) - cy) * z / fy
+        return (x, y, z)
 
     def _seed_command_cb(self, msg: String):
         try:
@@ -97,30 +633,32 @@ class Sam2TrackerNode(DetectQwenNode):
         except Exception as exc:
             self.get_logger().warn(f"Ignoring invalid seed command JSON: {exc}")
 
-    def _publish_tracking_2d(self, u: int, v: int, score: float, mask_area: int, header):
-        payload = {
-            "stamp_sec": int(header.stamp.sec),
-            "stamp_nanosec": int(header.stamp.nanosec),
-            "frame_id": str(header.frame_id),
-            "u": int(u),
-            "v": int(v),
-            "score": float(score),
-            "mask_area": int(mask_area),
-        }
-        msg = String()
-        msg.data = json.dumps(payload, ensure_ascii=True)
+    def _publish_tracking_3d(self, x: float, y: float, z: float, header):
+        msg = PointStamped()
+        msg.header = header
+        msg.point.x = float(x)
+        msg.point.y = float(y)
+        msg.point.z = float(z)
+        if not msg.header.frame_id:
+            msg.header.frame_id = self.camera_frame_id or 'hand_cam'
         self._tracking_2d_pub.publish(msg)
 
     def _apply_seed_command(self, seed: dict):
+        """Run SAM image predictor on snapshot, back-project grasp to 3D, publish seed_3d."""
         bbox_1000 = seed.get("bbox_1000")
         grasps_1000 = seed.get("grasps_1000", [])
         if not isinstance(bbox_1000, list) or len(bbox_1000) < 4:
             raise RuntimeError("missing bbox_1000 in seed")
-        if self.latest_rgb is None or not hasattr(self, "latest_depth_header") or self.latest_depth_header is None:
-            raise RuntimeError("latest frame unavailable for seed apply")
 
-        img_pil = self.latest_rgb.copy()
-        header = self.latest_depth_header
+        # Use snapshot from RELOCALIZING state, fallback to latest
+        img_pil = self._snapshot_rgb if self._snapshot_rgb is not None else self.latest_rgb
+        depth_for_seed = self._snapshot_depth if self._snapshot_depth is not None else self.latest_depth
+        header = self._snapshot_header if self._snapshot_header is not None else self.latest_depth_header
+
+        if img_pil is None or header is None:
+            raise RuntimeError("frame unavailable for seed apply")
+
+        img_pil = img_pil.copy()
         orig_w, orig_h = img_pil.size
 
         x1 = int((bbox_1000[0] / 1000.0) * orig_w)
@@ -141,9 +679,8 @@ class Sam2TrackerNode(DetectQwenNode):
         if not grasp_points_uv:
             grasp_points_uv = [[(x1 + x2) // 2, (y1 + y2) // 2]]
 
-        # Keep parity with detect_qwen debug artifacts.
         seed_box = {
-            "label": str(seed.get("label", self.object_prompt)),
+            "label": str(seed.get("label", "target")),
             "bbox_1000": [float(v) for v in bbox_1000[:4]],
             "grasps_1000": [[float(p[0]), float(p[1])] for p in grasps_1000 if isinstance(p, list) and len(p) >= 2],
             "confidence": float(seed.get("confidence", 1.0)),
@@ -151,9 +688,8 @@ class Sam2TrackerNode(DetectQwenNode):
         draw_result(img_pil, [seed_box], "camera_capture_detected.jpg")
         self.get_logger().info("Saved camera capture: camera_capture_detected.jpg")
 
-        sam_img_predictor = load_sam_model()
+        sam_img_predictor = _load_sam_model()
         grasp_u, grasp_v = grasp_points_uv[0]
-        best_mask = None
         if sam_img_predictor is not None:
             all_masks = []
             for pt in grasp_points_uv:
@@ -167,41 +703,91 @@ class Sam2TrackerNode(DetectQwenNode):
                     create_crop_mosaic(img_pil, all_masks, bbox, "debug_mosaic.jpg")
                     self.get_logger().info("Saved mosaic: debug_mosaic.jpg")
                     best_idx = int(select_best_mask_by_bbox_iou(all_masks, bbox, img_pil.size))
-                best_mask = all_masks[best_idx]
                 grasp_u, grasp_v = grasp_points_uv[min(best_idx, len(grasp_points_uv) - 1)]
 
-        img_np = np.array(img_pil.convert("RGB"))
-        init_results = self.video_predictor(img_np, points=[[grasp_u, grasp_v]], labels=[1])
+        # Back-project grasp pixel to 3D using snapshot depth
+        snap_stamp_sec = header.stamp.sec + header.stamp.nanosec * 1e-9
+        self.get_logger().info(
+            f"[TRACKER] Back-projecting pixel ({grasp_u},{grasp_v}) snapshot_stamp={snap_stamp_sec:.3f} frame={header.frame_id}"
+        )
+        point_cam = self._pixel_to_camera_point(grasp_u, grasp_v, depth_for_seed)
+        if point_cam is None:
+            raise RuntimeError("No valid depth at grasp point in snapshot")
+
+        # Publish seed 3D for tf_projection to reproject to current frame
+        msg_3d = PointStamped()
+        msg_3d.header = header  # stamp=T0, frame=hand_cam
+        msg_3d.point.x = float(point_cam[0])
+        msg_3d.point.y = float(point_cam[1])
+        msg_3d.point.z = float(point_cam[2])
+        self._seed_3d_pub.publish(msg_3d)
+        self.get_logger().info(
+            f"[TRACKER] Seed 3D published ({point_cam[0]:.3f}, {point_cam[1]:.3f}, {point_cam[2]:.3f})"
+        )
+
+        # Clear snapshot
+        self._snapshot_rgb = None
+        self._snapshot_depth = None
+        self._snapshot_header = None
+
+    def _seed_pixel_cb(self, msg: PointStamped):
+        """Receive reprojected pixel from tf_projection and init video predictor on current frame."""
+        u = int(msg.point.x)
+        v = int(msg.point.y)
+
+        if self.latest_rgb is None:
+            self.get_logger().error("No current frame for video predictor init")
+            return
+
+        img_np = np.array(self.latest_rgb.convert("RGB"))
+
+        # Lazy-init video predictor
+        if self.video_predictor is None:
+            self.get_logger().info("Lazy-loading SAM2 VideoPredictor...")
+            self.video_predictor = _load_sam_video_model()
+            if self.video_predictor is None:
+                self.get_logger().error("Failed to load SAM2 VideoPredictor")
+                return
+
+        # Reset state for clean init
+        self.video_predictor.inference_state = {}
+        self.video_predictor._ros_frame_idx = 0
+
+        with self._gpu_lock:
+            init_results = self.video_predictor(img_np, points=[[u, v]], labels=[1])
         best_tracked_mask, score = _best_mask_from_results(init_results)
         if best_tracked_mask is None:
-            raise RuntimeError("tracker init produced no mask")
+            self.get_logger().error("Video predictor init produced no mask from reprojected pixel")
+            return
 
-        mask_np = best_tracked_mask.astype(np.uint8) if best_mask is None else best_mask.astype(np.uint8)
+        mask_np = best_tracked_mask.astype(np.uint8)
         self.tracking_active = True
         self.tracking_frame_count = 1
         self.last_tracking_score = score
-        self.grasp_points_uv_stored = grasp_points_uv
+        self._tracking_lost_streak = 0
         self._publish_segmentation_mask(mask_np)
 
+        header = self.latest_depth_header
         m = cv2.moments(mask_np)
         if m["m00"] != 0:
             mask_u = int(m["m10"] / m["m00"])
             mask_v = int(m["m01"] / m["m00"])
-            self.grasp_offset = (grasp_u - mask_u, grasp_v - mask_v)
-            u_out, v_out = grasp_u, grasp_v
+            self.grasp_offset = (u - mask_u, v - mask_v)
         else:
             self.grasp_offset = (0, 0)
-            u_out, v_out = grasp_u, grasp_v
-        self._publish_tracking_2d(u_out, v_out, float(score), int(mask_np.sum()), header)
+
+        point_cam = self._pixel_to_camera_point(u, v, self.latest_depth)
+        if point_cam is not None and header is not None:
+            self._publish_tracking_3d(point_cam[0], point_cam[1], point_cam[2], header)
+        else:
+            self.get_logger().warn("No valid depth for tracking point after reproject")
+
+        self.get_logger().info(
+            f"[TRACKER] Video predictor initialized from reprojected pixel ({u}, {v}), score={score:.3f}"
+        )
         if self.visualize:
             self._hand_ui_calls += 1
-            self._dbg_log(
-                "H17",
-                "sam2_tracker_node.py:_apply_seed_command",
-                "hand_imshow_attempt",
-                {"call_idx": self._hand_ui_calls, "tracking_active": bool(self.tracking_active)},
-            )
-            self._update_display(img_pil, mask_np, float(score), centroid_uv=(u_out, v_out))
+            self._update_display(self.latest_rgb, mask_np, float(score), centroid_uv=(u, v))
 
     def _run_tracking_step_2d(self, now: float):
         if self.latest_rgb is None or self.latest_depth is None:
@@ -215,7 +801,8 @@ class Sam2TrackerNode(DetectQwenNode):
         self._last_track_time = now
         img_pil = self.latest_rgb
         img_np = np.array(img_pil.convert("RGB"))
-        tracked_results = self.video_predictor(img_np)
+        with self._gpu_lock:
+            tracked_results = self.video_predictor(img_np)
         best_tracked_mask, score = _best_mask_from_results(tracked_results)
         if best_tracked_mask is None:
             self._tracking_lost_streak += 1
@@ -224,7 +811,6 @@ class Sam2TrackerNode(DetectQwenNode):
             return
 
         mask_np = best_tracked_mask.astype(np.uint8)
-        mask_area = int(mask_np.sum())
         self.last_tracking_score = float(score)
         self.tracking_frame_count += 1
         self._tracking_lost_streak = 0
@@ -235,13 +821,24 @@ class Sam2TrackerNode(DetectQwenNode):
             return
         u = int(m["m10"] / m["m00"])
         v = int(m["m01"] / m["m00"])
+        # Trim old SAM2 memory every N frames — keeps only the last 6 frames in
+        # inference_state so GPU usage stays bounded without any reseed or state reset.
+        if self.tracking_frame_count % self._sam2_memory_reset_interval == 0:
+            _trim_sam2_memory(self.video_predictor, keep_frames=6)
+            self.get_logger().info(
+                f"[TRACKER] SAM2 memory trimmed at frame {self.tracking_frame_count}"
+            )
         if hasattr(self, "grasp_offset"):
             u += int(self.grasp_offset[0])
             v += int(self.grasp_offset[1])
-        h = self.latest_depth_header if hasattr(self, "latest_depth_header") and self.latest_depth_header else None
+        h = self.latest_depth_header if self.latest_depth_header is not None else None
         if h is None:
             return
-        self._publish_tracking_2d(u, v, float(score), mask_area, h)
+        point_cam = self._pixel_to_camera_point(u, v, self.latest_depth)
+        if point_cam is not None:
+            self._publish_tracking_3d(point_cam[0], point_cam[1], point_cam[2], h)
+        else:
+            self.get_logger().warn("No valid depth for tracking point", throttle_duration_sec=1.0)
         if self.visualize:
             self._hand_ui_calls += 1
             if self._hand_ui_calls <= 12:
@@ -252,10 +849,350 @@ class Sam2TrackerNode(DetectQwenNode):
                     {
                         "call_idx": self._hand_ui_calls,
                         "tracking_active": bool(self.tracking_active),
-                        "mask_area": int(mask_area),
+                        "mask_area": int(mask_np.sum()),
                     },
                 )
             self._update_display(img_pil, mask_np, float(score), centroid_uv=(u, v))
+
+    def _secondary_rgb_cb(self, msg: RosImage, cam: str):
+        """Store latest RGB frame for a secondary camera."""
+        st = self._secondary_cam_state.get(cam)
+        if st is None:
+            return
+        try:
+            cv_rgb = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
+            cv_rgb = cv2.cvtColor(cv_rgb, cv2.COLOR_BGR2RGB)
+            st['latest_rgb'] = Image.fromarray(cv_rgb)
+            st['latest_rgb_header'] = msg.header
+            st['mask_shape'] = (msg.height, msg.width)
+            st['new_frame_available'] = True
+        except Exception as e:
+            self.get_logger().error(f"[{cam}] RGB conversion error: {e}")
+            return
+        # Publish last known mask (or zeros) at this frame's exact timestamp
+        self._publish_secondary_mask_for_header(cam, msg.header)
+
+    def _secondary_seed_pixel_cb(self, msg: PointStamped, cam: str):
+        """Receive seed pixel for a secondary camera.
+        point.z == 1.0: VLM re-seed → force SAM2 reinit immediately.
+        point.z == 0.0: continuous tracking update → only update init_uv;
+                         if not tracking, increment consecutive_seed_count for hysteresis.
+        """
+        st = self._secondary_cam_state.get(cam)
+        if st is None:
+            return
+        st['init_uv'] = (float(msg.point.x), float(msg.point.y))
+        st['last_seed_time'] = time.time()
+        force_reinit = float(msg.point.z) > 0.5
+        if force_reinit:
+            st['needs_reinit'] = True
+            st['consecutive_seed_count'] = self._secondary_fov_enter_count  # bypass hysteresis
+        elif not st['tracking_initialized']:
+            st['consecutive_seed_count'] += 1
+            if st['consecutive_seed_count'] >= self._secondary_fov_enter_count:
+                st['needs_reinit'] = True
+
+    def _publish_secondary_mask_for_header(self, cam: str, header):
+        """Publish last known mask (or zeros) for a secondary camera at the given header stamp."""
+        st = self._secondary_cam_state.get(cam)
+        pub = self._secondary_mask_pubs.get(cam)
+        if st is None or pub is None:
+            return
+        try:
+            last = st.get('last_mask_np')
+            if last is not None:
+                m = ((last > 0).astype(np.uint8) * 255)
+            else:
+                shape = st.get('mask_shape') or (480, 640)
+                m = np.zeros(shape, dtype=np.uint8)
+            ros_mask = self.bridge.cv2_to_imgmsg(m, encoding='mono8')
+            ros_mask.header = header
+            pub.publish(ros_mask)
+        except Exception as e:
+            self.get_logger().error(f"[{cam}] Error publishing mask: {e}")
+
+    def _publish_secondary_mask(self, cam: str, mask_np):
+        """Update last known mask for a secondary camera."""
+        st = self._secondary_cam_state.get(cam)
+        if st is not None:
+            st['last_mask_np'] = mask_np
+
+    def _update_secondary_display(
+        self, cam: str, img_pil, state: str,
+        mask_np=None, score: float = 0.0,
+        centroid_uv=None, expected_uv=None,
+        arming_count: int = 0, arming_total: int = 0,
+    ):
+        """Show debug window for a secondary camera with rich state info.
+
+        state: one of 'OUT_OF_FOV', 'ARMING', 'TRACKING', 'BACKGROUND', 'LOST'
+        expected_uv: TF-projected target pixel — always drawn as a crosshair
+        arming_count/arming_total: shown during ARMING phase (e.g. 3/5)
+        """
+        try:
+            img_bgr = cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR)
+
+            # State-specific overlay and label
+            if state == 'TRACKING' and mask_np is not None:
+                overlay = np.zeros_like(img_bgr)
+                overlay[mask_np > 0] = [0, 255, 0]
+                img_bgr = cv2.addWeighted(img_bgr, 1.0, overlay, 0.5, 0)
+                contours, _ = cv2.findContours(mask_np, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                cv2.drawContours(img_bgr, contours, -1, (0, 255, 0), 2)
+                if centroid_uv:
+                    cu, cv_ = int(centroid_uv[0]), int(centroid_uv[1])
+                    cv2.circle(img_bgr, (cu, cv_), 6, (0, 0, 255), -1)
+                    label = f"TRACKING  score={score:.3f}  centroid=({cu},{cv_})"
+                else:
+                    label = f"TRACKING  score={score:.3f}"
+                label_color = (0, 220, 0)
+
+            elif state == 'BACKGROUND' and mask_np is not None:
+                overlay = np.zeros_like(img_bgr)
+                overlay[mask_np > 0] = [0, 0, 200]
+                img_bgr = cv2.addWeighted(img_bgr, 1.0, overlay, 0.4, 0)
+                label = f"BACKGROUND REJECTED  score={score:.3f}"
+                if centroid_uv and expected_uv:
+                    dist = ((centroid_uv[0]-expected_uv[0])**2 + (centroid_uv[1]-expected_uv[1])**2)**0.5
+                    label += f"  dist={dist:.0f}px"
+                label_color = (0, 0, 255)
+
+            elif state == 'ARMING':
+                label_color = (0, 220, 255)  # yellow
+                if arming_total > 0:
+                    label = f"IN FOV — arming ({arming_count}/{arming_total})"
+                else:
+                    label = "IN FOV — arming"
+
+            elif state == 'LOST':
+                label_color = (0, 165, 255)  # orange
+                label = "LOST (no mask)"
+
+            else:  # OUT_OF_FOV
+                label_color = (160, 160, 160)  # gray
+                label = "OUT OF FOV"
+
+            # Always draw TF-projected expected pixel as a crosshair
+            if expected_uv is not None:
+                ex, ey = int(expected_uv[0]), int(expected_uv[1])
+                r = 10
+                cv2.line(img_bgr, (ex - r, ey), (ex + r, ey), (255, 200, 0), 2)
+                cv2.line(img_bgr, (ex, ey - r), (ex, ey + r), (255, 200, 0), 2)
+                cv2.circle(img_bgr, (ex, ey), r, (255, 200, 0), 1)
+
+            # Header bar with state
+            header = f"[{cam}]  {label}"
+            cv2.putText(img_bgr, header, (10, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 0, 0), 3)
+            cv2.putText(img_bgr, header, (10, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.65, label_color, 2)
+
+            cv2.imshow(f"SAM2 {cam}", img_bgr)
+            cv2.waitKey(1)
+        except Exception as e:
+            self.get_logger().warn(f"[{cam}] Visualization error: {e}")
+
+    def _run_secondary_tracking_step(self, cam: str):
+        """Run one SAM2 tracking step for a secondary camera.
+
+        Always updates the debug window (even without a new frame) so all 3 windows
+        remain visible from the moment the node starts.
+        """
+        st = self._secondary_cam_state[cam]
+        img_pil = st['latest_rgb']
+        now = time.time()
+
+        # ── FOV timeout: if no seed received recently, object left FOV ──────────
+        if st['tracking_initialized'] and st['last_seed_time'] > 0.0:
+            if (now - st['last_seed_time']) > self._secondary_fov_timeout_sec:
+                st['tracking_initialized'] = False
+                st['needs_reinit'] = False
+                st['consecutive_seed_count'] = 0  # must accumulate again to re-arm
+                st['_disp_state'] = 'OUT_OF_FOV'
+                st['_disp_mask'] = None
+                st['_disp_score'] = 0.0
+                st['_disp_centroid'] = None
+                self.get_logger().info(
+                    f"[{cam}] Object left FOV (no seed for >{self._secondary_fov_timeout_sec:.1f}s)",
+                    throttle_duration_sec=3.0,
+                )
+
+        # ── Always refresh display, even without a new SAM2 frame ─────────────
+        if not st['new_frame_available']:
+            if self.visualize and img_pil is not None:
+                self._update_secondary_display(
+                    cam, img_pil, st['_disp_state'],
+                    mask_np=st['_disp_mask'],
+                    score=st['_disp_score'],
+                    centroid_uv=st['_disp_centroid'],
+                    expected_uv=st.get('init_uv'),
+                    arming_count=st['consecutive_seed_count'],
+                    arming_total=self._secondary_fov_enter_count,
+                )
+            return
+
+        st['new_frame_available'] = False
+        img_np = np.array(img_pil.convert('RGB'))
+
+        # ── Object not in FOV at all (no seed ever or timed out) ─────────────
+        no_seed_ever = st['last_seed_time'] == 0.0
+        fov_timed_out = (
+            st['last_seed_time'] > 0.0
+            and (now - st['last_seed_time']) > self._secondary_fov_timeout_sec
+        )
+        if no_seed_ever or fov_timed_out:
+            st['_disp_state'] = 'OUT_OF_FOV'
+            st['_disp_mask'] = None
+            if self.visualize:
+                self._update_secondary_display(
+                    cam, img_pil, 'OUT_OF_FOV',
+                    expected_uv=st.get('init_uv'),
+                )
+            return
+
+        # ── ARMING: in FOV but not yet armed (hysteresis not met) ────────────
+        if not st['tracking_initialized'] and not st['needs_reinit']:
+            st['_disp_state'] = 'ARMING'
+            st['_disp_mask'] = None
+            if self.visualize:
+                self._update_secondary_display(
+                    cam, img_pil, 'ARMING',
+                    expected_uv=st.get('init_uv'),
+                    arming_count=st['consecutive_seed_count'],
+                    arming_total=self._secondary_fov_enter_count,
+                )
+            return
+
+        # ── Lazy-init per-camera predictor (separate instance, shared GPU lock) ──
+        if st['video_predictor'] is None:
+            if not SAM2_AVAILABLE:
+                return
+            try:
+                st['video_predictor'] = SAM2ROSVideoPredictor(overrides={
+                    'conf': 0.01,
+                    'task': 'segment',
+                    'mode': 'predict',
+                    'imgsz': 1024,
+                    'model': SAM2_MODEL_NAME,
+                    'save': False,
+                    'verbose': False,
+                })
+                self.get_logger().info(f"[{cam}] SAM2 predictor loaded")
+            except Exception as exc:
+                self.get_logger().error(f"[{cam}] Failed to init SAM2 predictor: {exc}")
+                return
+
+        init_needed = not st['tracking_initialized'] or st['needs_reinit']
+
+        # ── SAM2 init / re-seed ───────────────────────────────────────────────
+        if init_needed and st['init_uv'] is not None:
+            u, v = int(st['init_uv'][0]), int(st['init_uv'][1])
+            st['video_predictor'].inference_state = {}
+            st['video_predictor']._ros_frame_idx = 0
+            with self._gpu_lock:
+                results = st['video_predictor'](img_np, points=[[u, v]], labels=[1])
+            mask, score = _best_mask_from_results(results)
+            if mask is not None:
+                st['tracking_initialized'] = True
+                st['needs_reinit'] = False
+                st['tracking_frame_count'] = 1
+                st['last_score'] = score
+                st['lost_streak'] = 0
+                mask_u8 = mask.astype(np.uint8)
+                self._publish_secondary_mask(cam, mask_u8)
+                st['_disp_state'] = 'TRACKING'
+                st['_disp_mask'] = mask_u8
+                st['_disp_score'] = score
+                st['_disp_centroid'] = (u, v)
+                if self.visualize:
+                    self._update_secondary_display(
+                        cam, img_pil, 'TRACKING',
+                        mask_np=mask_u8, score=score,
+                        centroid_uv=(u, v), expected_uv=st['init_uv'],
+                    )
+                self.get_logger().info(
+                    f"[{cam}] SAM2 initialized at ({u},{v}), score={score:.3f}",
+                )
+            else:
+                st['_disp_state'] = 'LOST'
+                st['_disp_mask'] = None
+                if self.visualize:
+                    self._update_secondary_display(
+                        cam, img_pil, 'LOST',
+                        expected_uv=st.get('init_uv'),
+                    )
+
+        # ── Continuous SAM2 tracking ──────────────────────────────────────────
+        elif st['tracking_initialized']:
+            with self._gpu_lock:
+                results = st['video_predictor'](img_np)
+            mask, score = _best_mask_from_results(results)
+            if mask is not None and score > 0.0:
+                mask_u8 = mask.astype(np.uint8)
+                m_cv = cv2.moments(mask_u8)
+                centroid = None
+                if m_cv["m00"] != 0:
+                    centroid = (int(m_cv["m10"] / m_cv["m00"]), int(m_cv["m01"] / m_cv["m00"]))
+
+                # 2D consistency: centroid must be near TF-projected target
+                consistent = True
+                if centroid is not None and st['init_uv'] is not None:
+                    eu, ev = st['init_uv']
+                    dist = ((centroid[0] - eu) ** 2 + (centroid[1] - ev) ** 2) ** 0.5
+                    if dist > self._secondary_max_centroid_dist_px:
+                        consistent = False
+                        st['lost_streak'] += 1
+                        self.get_logger().warn(
+                            f"[{cam}] Centroid ({centroid[0]},{centroid[1]}) too far from "
+                            f"expected ({eu:.0f},{ev:.0f}), dist={dist:.0f}px — background?",
+                            throttle_duration_sec=1.0,
+                        )
+                        if st['lost_streak'] >= self.tracking_lost_confirm_frames:
+                            st['tracking_initialized'] = False
+                            st['needs_reinit'] = True
+
+                if consistent:
+                    st['tracking_frame_count'] += 1
+                    st['last_score'] = score
+                    st['lost_streak'] = 0
+                    self._publish_secondary_mask(cam, mask_u8)
+                    # Trim old SAM2 memory every N frames (same rationale as primary camera)
+                    if st['tracking_frame_count'] % self._sam2_memory_reset_interval == 0:
+                        _trim_sam2_memory(st['video_predictor'], keep_frames=6)
+                        self.get_logger().info(
+                            f"[{cam}] SAM2 memory trimmed at frame {st['tracking_frame_count']}"
+                        )
+                    st['_disp_state'] = 'TRACKING'
+                    st['_disp_mask'] = mask_u8
+                    st['_disp_score'] = score
+                    st['_disp_centroid'] = centroid
+                    if self.visualize:
+                        self._update_secondary_display(
+                            cam, img_pil, 'TRACKING',
+                            mask_np=mask_u8, score=score,
+                            centroid_uv=centroid, expected_uv=st.get('init_uv'),
+                        )
+                else:
+                    st['_disp_state'] = 'BACKGROUND'
+                    st['_disp_mask'] = mask_u8
+                    st['_disp_score'] = score
+                    st['_disp_centroid'] = centroid
+                    if self.visualize:
+                        self._update_secondary_display(
+                            cam, img_pil, 'BACKGROUND',
+                            mask_np=mask_u8, score=score,
+                            centroid_uv=centroid, expected_uv=st.get('init_uv'),
+                        )
+            else:
+                st['lost_streak'] += 1
+                if st['lost_streak'] >= self.tracking_lost_confirm_frames:
+                    st['tracking_initialized'] = False
+                    st['needs_reinit'] = True
+                st['_disp_state'] = 'LOST'
+                st['_disp_mask'] = None
+                if self.visualize:
+                    self._update_secondary_display(
+                        cam, img_pil, 'LOST',
+                        expected_uv=st.get('init_uv'),
+                    )
 
     def _tracking_timer_cb(self):
         self._dbg_timer_count += 1
@@ -306,6 +1243,9 @@ class Sam2TrackerNode(DetectQwenNode):
         st = String()
         st.data = "TRACKING" if self.tracking_active else "LOST"
         self._tracking_state_pub.publish(st)
+
+        for cam in self._secondary_cameras:
+            self._run_secondary_tracking_step(cam)
 
 
 def main(args=None):

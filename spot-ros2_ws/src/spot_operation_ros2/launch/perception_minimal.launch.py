@@ -7,6 +7,7 @@ from launch_ros.actions import Node
 def generate_launch_description():
     use_sim_time = LaunchConfiguration("use_sim_time")
     executor_threads = LaunchConfiguration("executor_threads")
+    secondary_cameras = LaunchConfiguration("secondary_cameras")
     return LaunchDescription(
         [
             DeclareLaunchArgument(
@@ -19,18 +20,29 @@ def generate_launch_description():
                 default_value="3",
                 description="Perception node executor thread count.",
             ),
+            DeclareLaunchArgument(
+                "secondary_cameras",
+                default_value="frontleft,frontright",
+                description="CSV of secondary camera names for SAM2 tracking. Set to '' to disable.",
+            ),
             Node(
                 package="spot_operation_ros2",
                 executable="sam2_tracker_node",
                 name="sam2_tracker_node",
-                parameters=[{"use_sim_time": use_sim_time}],
+                parameters=[{
+                    "use_sim_time": use_sim_time,
+                    "secondary_cameras": secondary_cameras,
+                }],
                 output="screen",
             ),
             Node(
                 package="spot_operation_ros2",
                 executable="tf_projection_node",
                 name="tf_projection_node",
-                parameters=[{"use_sim_time": use_sim_time}],
+                parameters=[{
+                    "use_sim_time": use_sim_time,
+                    "secondary_cameras": secondary_cameras,
+                }],
                 output="screen",
             ),
             Node(

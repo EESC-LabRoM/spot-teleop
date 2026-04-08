@@ -22,7 +22,6 @@ class CoordinatorNode(Node):
         self.declare_parameter("seed_command_topic", "/perception/seed_command")
         self.declare_parameter("vlm_service_name", "/roll/trigger_relocalize")
         self.declare_parameter("loop_hz", 2.0)
-        self.declare_parameter("max_seed_age_sec", 10.0)
         self.declare_parameter("relocalize_cooldown_sec", 1.5)
         self.declare_parameter("seed_apply_grace_sec", 2.0)
 
@@ -30,7 +29,6 @@ class CoordinatorNode(Node):
         seed_command_topic = self.get_parameter("seed_command_topic").value
         service_name = self.get_parameter("vlm_service_name").value
         loop_hz = float(max(0.5, self.get_parameter("loop_hz").value))
-        self.max_seed_age_sec = float(max(1.0, self.get_parameter("max_seed_age_sec").value))
         self.relocalize_cooldown_sec = float(
             max(0.0, self.get_parameter("relocalize_cooldown_sec").value)
         )
@@ -48,6 +46,7 @@ class CoordinatorNode(Node):
             String, tracking_state_topic, self._tracking_state_cb, 10
         )
         self._seed_pub = self.create_publisher(String, seed_command_topic, 10)
+        self._state_pub = self.create_publisher(String, "/coordinator/state", 10)
         self._vlm_client = self.create_client(Trigger, service_name)
         self._timer = self.create_timer(1.0 / loop_hz, self._tick)
         self._diag_timer = self.create_timer(2.0, self._diag_cb)
@@ -137,6 +136,11 @@ class CoordinatorNode(Node):
             )
         # #endregion
 
+    def _publish_state(self):
+        state_msg = String()
+        state_msg.data = self.state
+        self._state_pub.publish(state_msg)
+
     def _tick(self):
         now = time.time()
         self._dbg_tick_count += 1
@@ -154,6 +158,7 @@ class CoordinatorNode(Node):
             )
         if self.tracking_state == "TRACKING":
             self.state = "TRACKING"
+            self._publish_state()
             return
         if now < self._seed_apply_deadline:
             self.state = "SEEDING"
@@ -163,23 +168,29 @@ class CoordinatorNode(Node):
                 "seed_apply_grace_active",
                 {"remaining_sec": float(self._seed_apply_deadline - now)},
             )
+            self._publish_state()
             return
         # Trigger relocalization only when explicitly LOST.
         # UNKNOWN/IDLE/other states should not spam API calls.
         if self.tracking_state != "LOST":
             self.state = "IDLE"
+            self._publish_state()
             return
         if self._vlm_inflight:
             self.state = "RELOCALIZING"
+            self._publish_state()
             return
         if now - self._last_relocalize_attempt < self.relocalize_cooldown_sec:
+            self._publish_state()
             return
         if not self._vlm_client.wait_for_service(timeout_sec=0.0):
             self.state = "DEGRADED"
+            self._publish_state()
             return
         self._last_relocalize_attempt = now
         self._vlm_inflight = True
         self.state = "RELOCALIZING"
+        self._publish_state()
         self._dbg_log(
             "H16",
             "coordinator_node.py:_tick",
@@ -214,34 +225,6 @@ class CoordinatorNode(Node):
             return
         try:
             seed = json.loads(result.message)
-            stamp_sec = float(seed.get("frame_stamp_sec", 0.0))
-            stamp_ns = int(seed.get("frame_stamp_nanosec", 0))
-            seed_time = stamp_sec + stamp_ns * 1e-9
-            now_ros = self.get_clock().now().nanoseconds * 1e-9
-            seed_age = now_ros - seed_time
-            self._dbg_log(
-                "H2",
-                "coordinator_node.py:_handle_vlm_result",
-                "seed_age_check",
-                {
-                    "now_ros": now_ros,
-                    "seed_time": seed_time,
-                    "seed_age": seed_age,
-                    "max_seed_age_sec": self.max_seed_age_sec,
-                    "seed_has_bbox": isinstance(seed.get("bbox_1000"), list),
-                },
-            )
-
-            if seed_age < -1000.0 or seed_age > 100000.0:
-                self.get_logger().warn(
-                    f"Dominio de tempo incoerente: now_ros={now_ros:.1f}, seed={seed_time:.1f}. "
-                    "Verifique use_sim_time no coordinator."
-                )
-
-            if seed_age > 100.0 and seed_age < 100000.0:
-                self.state = "DEGRADED"
-                self.get_logger().warn(f"Dropping stale seed (age={seed_age:.1f}s)")
-                return
             msg = String()
             msg.data = json.dumps(seed, ensure_ascii=True)
             self._seed_pub.publish(msg)
@@ -256,7 +239,7 @@ class CoordinatorNode(Node):
                 },
             )
             self.get_logger().info(
-                f"[COORD] seed published (subs={int(self._seed_pub.get_subscription_count())}, age={seed_age:.3f}s)",
+                f"[COORD] seed published (subs={int(self._seed_pub.get_subscription_count())})",
                 throttle_duration_sec=1.0,
             )
             self.state = "IDLE"
