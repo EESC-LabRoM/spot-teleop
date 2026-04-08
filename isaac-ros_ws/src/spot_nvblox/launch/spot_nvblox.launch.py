@@ -16,8 +16,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Launch file para nvblox com 2 câmeras do Boston Dynamics Spot.
-Câmeras: frontleft, frontright
+Launch file para nvblox com Spot — 3 câmeras (frontleft, frontright, hand).
+Hand: sim usa /hand/depth_reprojected; real usa depth simples (/hand/depth).
 """
 
 from launch import LaunchDescription
@@ -41,7 +41,7 @@ def generate_launch_description():
     
     global_frame_arg = DeclareLaunchArgument(
         'global_frame',
-        default_value='vision',
+        default_value='odom',
         description='Global frame for nvblox'
     )
 
@@ -51,28 +51,31 @@ def generate_launch_description():
         description='Whether to use simulation'
     )
 
+    use_segmentation_arg = DeclareLaunchArgument(
+        'use_segmentation',
+        default_value='true',
+        description='Use segmentation masks'
+    )
+
     # Launch Configurations
     sim = LaunchConfiguration('sim')
     use_sim_time = LaunchConfiguration('use_sim_time')
+    use_segmentation = LaunchConfiguration('use_segmentation')
 
     # Remappings das câmeras do Spot para o formato do nvblox
     # Sim: /{camera}/rgb, /{camera}/depth, /{camera}/camera_info
-    # Real: /camera/{camera}/image, /depth/{camera}/image, /camera/{camera}/camera_info
-    camera_names = ['frontleft', 'frontright']
+    # Real: /camera/{camera}/image_rgb, /depth_registered/{camera}/image, /camera/{camera}/camera_info
+    camera_names = ['frontleft', 'frontright', 'hand']
     remappings = []
     for i, cam in enumerate(camera_names):
-        # Simulation topics
         sim_depth = f'/{cam}/depth'
         sim_rgb = f'/{cam}/rgb'
         sim_info = f'/{cam}/camera_info'
 
-        # Real topics (from user ros2 topic list)
         real_depth = f'/depth_registered/{cam}/image'
-        real_rgb = f'/camera/{cam}/image_rgb' # Converted to RGB8
+        real_rgb = f'/camera/{cam}/image_rgb'
         real_rgb_info = f'/camera/{cam}/camera_info'
         real_depth_info = f'/depth_registered/{cam}/camera_info'
-
-
 
         remappings.extend([
             (f'camera_{i}/depth/image', PythonExpression([f"'{sim_depth}' if '", sim, "' == 'true' else '", real_depth, "'"])),
@@ -81,10 +84,16 @@ def generate_launch_description():
             (f'camera_{i}/color/camera_info', PythonExpression([f"'{sim_info}' if '", sim, "' == 'true' else '", real_rgb_info, "'"]))
         ])
 
+    # Máscaras de segmentação → formato nvblox (camera_i/mask/image + camera_i/mask/camera_info)
+    for i, cam in enumerate(camera_names):
+        remappings.extend([
+            (f'camera_{i}/mask/image', f'/{cam}/segmentation_mask'),
+            (f'camera_{i}/mask/camera_info', PythonExpression([f"'/{cam}/camera_info' if '", sim, f"' == 'true' else '/camera/{cam}/camera_info'"])),
+        ])
+
     # Parâmetros do nvblox - MODO ALTA PRECISÃO (SAFE)
     nvblox_params = {
-        # Número de câmeras
-        'num_cameras': 2,
+        'num_cameras': 3,
         
         'global_frame': LaunchConfiguration('global_frame'),
         'use_tf_transforms': True,
@@ -92,7 +101,10 @@ def generate_launch_description():
         # --- O SEGREDO DA ALTA RESOLUÇÃO ---
         'voxel_size': 0.02,  # Mantém os 2cm que a gente quer
         
-        'mapping_type': 'static_tsdf',
+        'mapping_type': PythonExpression([
+            "'human_with_static_tsdf' if '", use_segmentation, "' == 'true' else 'static_tsdf'"
+        ]),
+        'use_segmentation': use_segmentation,
         
         # --- SEGURA A EMOÇÃO NOS HZ (Isso evita o crash) ---
         # 40Hz é insanidade pra voxel de 2cm.
@@ -117,7 +129,7 @@ def generate_launch_description():
         
         # Limpeza
         'map_clearing_radius_m': 5.0,  # Limpa o que ficar muito longe pra liberar RAM
-        'map_clearing_frame_id': 'body',
+        'map_clearing_frame_id': 'base',
         
         # Visualização
         'layer_visualization_exclusion_height_m': 100.0,
@@ -130,11 +142,16 @@ def generate_launch_description():
         # Pra manipulação vc precisa do que tá na sua cara, não na parede do fundo.
         'static_mapper.projective_integrator_max_integration_distance_m': 4.5,
         
-        # Truncation: 4 voxels * 2cm = 8cm de banda. Suficiente e economiza RAM.
-        'static_mapper.projective_integrator_truncation_distance_vox': 4.0,
+        # Truncation: 6 voxels * 2cm = 12cm, com margem acima de occupied_region_half_width_m.
+        'static_mapper.projective_integrator_truncation_distance_vox': 6.0,
+        'dynamic_mapper.projective_integrator_truncation_distance_vox': 6.0,
         
         'static_mapper.projective_integrator_max_weight': 100.0,
         'static_mapper.mesh_integrator_min_weight': 0.0001,
+
+        # Foreground mapper (regiões mascaradas) — truncation precisa ser >= occupied_region_half_width_m / voxel_size
+        # 0.2m / 0.02m = 10 voxels mínimo para silenciar o warning
+        'foreground_mapper.projective_integrator_truncation_distance_vox': 10.0,
         
         'layer_streamer_bandwidth_limit_mbps': -1.0,
         'decay_tsdf_rate_hz': 0.0,
@@ -175,6 +192,7 @@ def generate_launch_description():
         use_sim_time_arg,
         sim_arg,
         global_frame_arg,
+        use_segmentation_arg,
 
         *rgb_converters,
         nvblox_node,
