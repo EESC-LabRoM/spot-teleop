@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
+import collections
 import json
 import os
 import site
+import shutil
 import threading
 import time
 import uuid
@@ -18,7 +20,7 @@ from geometry_msgs.msg import PointStamped
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallbackGroup
 from rclpy.node import Node
 from sensor_msgs.msg import CameraInfo, Image as RosImage
-from std_msgs.msg import String
+from std_msgs.msg import Float64, String
 
 # Inject venv so torch/ultralytics are found via ros2 run
 _VENV_SITE = (
@@ -44,6 +46,31 @@ except ImportError:
 SAM2_MODEL_NAME = "sam2.1_t.pt"
 _sam_model = None       # singleton SAM image predictor
 _sam_video_model = None  # singleton SAM video predictor
+
+
+def _find_workspace_root() -> Path:
+    for parent in Path(__file__).resolve().parents:
+        if parent.name == "spot-ros2_ws":
+            return parent
+    return Path(__file__).resolve().parents[3]
+
+
+_WORKSPACE_ROOT = _find_workspace_root()
+_SNAPSHOT_TEMP_DIR = _WORKSPACE_ROOT / "tmp" / "sam2_tracker_snapshots"
+
+
+def _prepare_snapshot_temp_dir() -> Path:
+    snapshot_dir = _SNAPSHOT_TEMP_DIR
+    snapshot_dir.mkdir(parents=True, exist_ok=True)
+    for child in snapshot_dir.iterdir():
+        try:
+            if child.is_dir():
+                shutil.rmtree(child)
+            else:
+                child.unlink()
+        except Exception:
+            pass
+    return snapshot_dir
 
 if SAM2_AVAILABLE:
     class SAM2ROSVideoPredictor(SAM2VideoPredictor):
@@ -253,7 +280,6 @@ def create_crop_mosaic(image_pil, masks, bbox, output_path="debug_mosaic.jpg"):
         draw.text((i * crop_w + 10, 10), str(i + 1), fill="white", font=font)
         draw.text((i * crop_w + 12, 12), str(i + 1), fill="black", font=font)
     mosaic.save(output_path)
-    print(f"Debug Mosaic saved to: {output_path}")
     return output_path
 
 
@@ -295,7 +321,6 @@ def draw_result(image_input, boxes: list, output_path: str):
     if img.mode == 'RGBA':
         img = img.convert('RGB')
     img.save(output_path)
-    print(f"\nImagem salva em: {output_path}")
 
 
 # ---------------------------------------------------------------------------
@@ -322,10 +347,12 @@ class Sam2TrackerNode(Node):
         self.declare_parameter('tracking_3d_topic', '/tracking_3d_point')
         self.declare_parameter('depth_info_topic', '/hand/camera_info')
         self.declare_parameter('secondary_cameras', '')
+        self.declare_parameter('secondary_rgb_topic_pattern', '/{cam}/rgb')
         self.declare_parameter('secondary_fov_timeout_sec', 3.0)
         self.declare_parameter('secondary_max_centroid_dist_px', 120.0)
         self.declare_parameter('secondary_fov_enter_count', 5)  # consecutive seeds to arm init
         self.declare_parameter('sam2_memory_reset_interval', 200)  # frames between memory resets
+        self.declare_parameter('camera_speed_topic', '/hand/camera_speed')
 
         self.visualize = self.get_parameter('visualize').value
         self.tracking_window_name = self.get_parameter('tracking_window_name').value
@@ -343,6 +370,7 @@ class Sam2TrackerNode(Node):
         tracking_3d_topic = self.get_parameter('tracking_3d_topic').value
         tracking_point_topic = tracking_3d_topic if tracking_3d_topic else '/tracking_3d_point'
         depth_info_topic = self.get_parameter('depth_info_topic').value
+        secondary_rgb_topic_pattern = str(self.get_parameter('secondary_rgb_topic_pattern').value)
 
         # State
         self.bridge = CvBridge()
@@ -357,6 +385,8 @@ class Sam2TrackerNode(Node):
         self.new_frame_available = False
         self.detection_running = False
         self.initial_detection_done = True
+        # Ring buffer of recent (stamp_sec, rgb_pil, depth_np, header) for seed frame lookup
+        self._frame_buffer = collections.deque(maxlen=60)
 
         # Tracking state
         self.video_predictor = None
@@ -372,11 +402,22 @@ class Sam2TrackerNode(Node):
         self._hand_ui_calls = 0
         self._dbg_timer_count = 0
 
+        # Hand display state (updated throughout pipeline, displayed every frame)
+        self._hand_disp_state = 'IDLE'       # IDLE | RELOCALIZING | TRACKING | LOST
+        self._hand_disp_mask = None
+        self._hand_disp_score = 0.0
+        self._hand_disp_centroid = None
+        self._hand_disp_label = ''           # detection label from VLM
+        self._hand_disp_conf = 0.0           # detection confidence
+        self._hand_disp_bbox = None          # [x1,y1,x2,y2] in pixels
+
         # Snapshot state for relocalization
         self._snapshot_rgb = None
         self._snapshot_depth = None
         self._snapshot_header = None
         self._snapshot_taken = False
+        self._snapshot_run_idx = 0
+        self._snapshot_temp_dir = _prepare_snapshot_temp_dir()
 
         # GPU lock shared between hand and secondary cameras
         self._gpu_lock = threading.Lock()
@@ -411,6 +452,13 @@ class Sam2TrackerNode(Node):
 
         self._seed_sub = self.create_subscription(String, seed_topic, self._seed_command_cb, 10)
         self._cam_info_sub = self.create_subscription(CameraInfo, depth_info_topic, self._camera_info_cb, 10)
+        self._hand_cam_speed = None
+        self.create_subscription(
+            Float64,
+            str(self.get_parameter('camera_speed_topic').value),
+            self._cam_speed_cb,
+            10,
+        )
         self._coord_state_sub = self.create_subscription(
             String, "/coordinator/state", self._coordinator_state_cb, 10
         )
@@ -420,6 +468,7 @@ class Sam2TrackerNode(Node):
 
         # Register secondary cameras
         for cam in self._secondary_cameras:
+            secondary_rgb_topic = secondary_rgb_topic_pattern.replace('{cam}', cam)
             self._secondary_cam_state[cam] = {
                 'video_predictor': None,
                 'tracking_initialized': False,
@@ -442,7 +491,7 @@ class Sam2TrackerNode(Node):
                 '_disp_centroid': None,
             }
             self.create_subscription(
-                RosImage, f'/{cam}/rgb',
+                RosImage, secondary_rgb_topic,
                 lambda msg, c=cam: self._secondary_rgb_cb(msg, c), 10
             )
             self.create_subscription(
@@ -453,7 +502,9 @@ class Sam2TrackerNode(Node):
                 RosImage, f'/{cam}/segmentation_mask', 10
             )
         if self._secondary_cameras:
-            self.get_logger().info(f"Secondary cameras registered: {self._secondary_cameras}")
+            self.get_logger().info(
+                f"Secondary cameras registered: {self._secondary_cameras}, rgb_pattern={secondary_rgb_topic_pattern}"
+            )
 
         self.tracking_timer = self.create_timer(
             0.1, self._tracking_timer_cb, callback_group=self.inference_cb_group
@@ -461,7 +512,7 @@ class Sam2TrackerNode(Node):
 
         self.get_logger().info(
             f"Sam2TrackerNode ready. rgb={rgb_topic}, depth={depth_topic}, "
-            f"seed={seed_topic}, tracking3d={tracking_point_topic}"
+            f"seed={seed_topic}, tracking3d={tracking_point_topic}, snapshot_dir={self._snapshot_temp_dir}"
         )
 
     def _camera_info_cb(self, msg: CameraInfo):
@@ -477,6 +528,9 @@ class Sam2TrackerNode(Node):
             f"Camera intrinsics set fx={fx:.1f} fy={fy:.1f} cx={cx:.1f} cy={cy:.1f} frame={self.camera_frame_id}"
         )
 
+    def _cam_speed_cb(self, msg: Float64):
+        self._hand_cam_speed = float(msg.data)
+
     def _coordinator_state_cb(self, msg: String):
         state = msg.data.strip().upper()
         if state == "RELOCALIZING" and not self._snapshot_taken:
@@ -487,11 +541,142 @@ class Sam2TrackerNode(Node):
                 self._snapshot_taken = True
                 snap_stamp = self._snapshot_header.stamp
                 snap_sec = snap_stamp.sec + snap_stamp.nanosec * 1e-9
+                self._save_snapshot_to_temp_dir()
                 self.get_logger().info(
                     f"[TRACKER] Snapshot taken for relocalization stamp={snap_sec:.3f} frame={self._snapshot_header.frame_id}"
                 )
+            # Pause secondary cameras: clear stale SAM2 state so they wait for a fresh
+            # force_reinit seed from tf_projection_node (published only after VLM succeeds).
+            for cam, st in self._secondary_cam_state.items():
+                if st['tracking_initialized'] or st['needs_reinit']:
+                    self.get_logger().info(f"[TRACKER] Pausing secondary cam {cam} during relocalization")
+                st['tracking_initialized'] = False
+                st['needs_reinit'] = False
+                st['consecutive_seed_count'] = 0
+                st['last_seed_time'] = 0.0
+                st['_disp_state'] = 'OUT_OF_FOV'
+                st['_disp_mask'] = None
+                st['_disp_centroid'] = None
+            if not self.tracking_active:
+                self._hand_disp_state = 'RELOCALIZING'
         elif state != "RELOCALIZING":
             self._snapshot_taken = False
+            if not self.tracking_active and self._hand_disp_state == 'RELOCALIZING':
+                self._hand_disp_state = 'IDLE'
+
+    def _save_snapshot_to_temp_dir(self):
+        """Persist the current relocalization snapshot to a fixed temp directory."""
+        if self._snapshot_rgb is None or self._snapshot_depth is None or self._snapshot_header is None:
+            return
+
+        self._snapshot_run_idx += 1
+        run_tag = f"snapshot_{self._snapshot_run_idx:04d}"
+        rgb_path = self._snapshot_temp_dir / f"{run_tag}_rgb.png"
+        depth_path = self._snapshot_temp_dir / f"{run_tag}_depth.npy"
+        meta_path = self._snapshot_temp_dir / f"{run_tag}_meta.json"
+
+        try:
+            self._snapshot_rgb.save(rgb_path)
+            np.save(depth_path, self._snapshot_depth)
+            header_stamp = self._snapshot_header.stamp
+            metadata = {
+                "snapshot_index": int(self._snapshot_run_idx),
+                "stamp_sec": float(header_stamp.sec + header_stamp.nanosec * 1e-9),
+                "stamp_nanosec": int(header_stamp.nanosec),
+                "frame_id": self._snapshot_header.frame_id,
+                "rgb_size": [int(self._snapshot_rgb.width), int(self._snapshot_rgb.height)],
+                "depth_shape": [int(v) for v in self._snapshot_depth.shape[:2]],
+                "rgb_file": str(rgb_path),
+                "depth_file": str(depth_path),
+            }
+            meta_path.write_text(json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8")
+            self.get_logger().info(f"[TRACKER] Snapshot saved in temp dir: {self._snapshot_temp_dir}")
+        except Exception as exc:
+            self.get_logger().warn(f"[TRACKER] Failed to save snapshot to temp dir: {exc}")
+
+    def _save_backproject_debug_image(self, img_pil, depth_map, pixel_uv, req_tag: str):
+        """Save a visual debug artifact for the back-project step.
+
+        The artifact contains the RGB frame on the left and a colorized depth
+        visualization on the right, both annotated with the sampled pixel.
+        """
+        if img_pil is None or depth_map is None or pixel_uv is None:
+            return None
+
+        try:
+            rgb_np = np.array(img_pil.convert("RGB"))
+            h, w = rgb_np.shape[:2]
+
+            depth = np.asarray(depth_map, dtype=np.float32)
+            u, v = int(pixel_uv[0]), int(pixel_uv[1])
+            u = max(0, min(w - 1, u))
+            v = max(0, min(h - 1, v))
+
+            # Sample depth value at selected pixel (in metres)
+            depth_val_m = float(depth[v, u]) if np.isfinite(depth[v, u]) and depth[v, u] > 0 else None
+
+            finite = depth[np.isfinite(depth) & (depth > 0)]
+            if finite.size > 0:
+                # Normalize around a tight window centred on the sampled pixel's
+                # neighbourhood so near objects fill the full colour range.
+                sample_val = depth_val_m if depth_val_m is not None else float(np.median(finite))
+                spread = max(0.3, float(np.std(finite)))
+                d_min = max(float(np.min(finite)), sample_val - 2.0 * spread)
+                d_max = min(float(np.max(finite)), sample_val + 2.0 * spread)
+                if d_max <= d_min:
+                    d_min, d_max = float(np.percentile(finite, 2)), float(np.percentile(finite, 98))
+                depth_clip = np.clip(depth, d_min, d_max)
+                depth_norm = ((depth_clip - d_min) / (d_max - d_min) * 255.0).astype(np.uint8)
+                depth_color = cv2.applyColorMap(depth_norm, cv2.COLORMAP_TURBO)
+            else:
+                depth_color = np.zeros((h, w, 3), dtype=np.uint8)
+
+            rgb_bgr = cv2.cvtColor(rgb_np, cv2.COLOR_RGB2BGR)
+
+            # Overlay panel: depth colormap blended over RGB
+            overlay = cv2.addWeighted(rgb_bgr, 0.45, depth_color, 0.55, 0)
+
+            # Crosshair marker on all three panels
+            marker_color_rgb   = (0, 80, 255)   # red-ish on RGB
+            marker_color_depth = (255, 255, 255) # white on depth
+            marker_color_ov    = (0, 255, 255)   # yellow on overlay
+            for panel, col in [(rgb_bgr, marker_color_rgb), (depth_color, marker_color_depth), (overlay, marker_color_ov)]:
+                cv2.circle(panel, (u, v), 9, col, 2)
+                cv2.line(panel, (u - 14, v), (u + 14, v), col, 1)
+                cv2.line(panel, (u, v - 14), (u, v + 14), col, 1)
+
+            # Depth value label near the marker
+            if depth_val_m is not None:
+                depth_label = f"{depth_val_m:.3f} m"
+                lx, ly = u + 14, v - 8
+                for panel in (depth_color, overlay):
+                    cv2.putText(panel, depth_label, (lx, ly), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 3)
+                    cv2.putText(panel, depth_label, (lx, ly), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1)
+
+            for panel, caption in [(rgb_bgr, "RGB"), (depth_color, f"depth  [{d_min:.2f}-{d_max:.2f} m]"), (overlay, "overlay")]:
+                cv2.putText(panel, caption, (10, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 0, 0), 3)
+                cv2.putText(panel, caption, (10, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 1)
+
+            composite = np.hstack([rgb_bgr, depth_color, overlay])
+            out_path = self._snapshot_temp_dir / f"{req_tag}_backproject.png"
+            cv2.imwrite(str(out_path), composite)
+
+            meta_path = self._snapshot_temp_dir / f"{req_tag}_backproject.json"
+            header_stamp = self._snapshot_header.stamp if self._snapshot_header is not None else None
+            metadata = {
+                "req_tag": req_tag,
+                "pixel_uv": [u, v],
+                "rgb_size": [int(w), int(h)],
+                "depth_shape": [int(v) for v in depth.shape[:2]],
+                "stamp_sec": float(header_stamp.sec + header_stamp.nanosec * 1e-9) if header_stamp else None,
+                "frame_id": self._snapshot_header.frame_id if self._snapshot_header is not None else None,
+                "file": str(out_path),
+            }
+            meta_path.write_text(json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8")
+            return out_path
+        except Exception as exc:
+            self.get_logger().warn(f"[TRACKER] Failed to save backproject debug image: {exc}")
+            return None
 
     def _dbg_log(self, hypothesis_id: str, location: str, message: str, data: dict):
         # #region agent log
@@ -523,30 +708,83 @@ class Sam2TrackerNode(Node):
             self.latest_depth_header = depth_msg.header
             self._latest_rgb_header = rgb_msg.header
             self.new_frame_available = True
+            stamp_sec = rgb_msg.header.stamp.sec + rgb_msg.header.stamp.nanosec * 1e-9
+            self._frame_buffer.append((stamp_sec, self.latest_rgb, self.latest_depth, depth_msg.header))
         except Exception as e:
             self.get_logger().error(f"Image conversion error: {e}")
             return
         # Publish last known mask (or zeros) with this frame's exact timestamp so
         # nvblox ExactTimeSynchronizer (color+mask) always fires on every frame.
         self._publish_mask_for_header(rgb_msg.header)
+        # Always refresh display so feed is visible even before detection
+        if self.visualize and not self.tracking_active:
+            self._update_display(self.latest_rgb)
 
-    def _update_display(self, img_pil, mask_np, score, centroid_uv=None):
-        """Update OpenCV debug window with tracking overlay."""
+    def _update_display(self, img_pil=None):
+        """Refresh the hand camera debug window using current _hand_disp_* state."""
+        if img_pil is None:
+            img_pil = self.latest_rgb
+        if img_pil is None:
+            return
         try:
             img_bgr = cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR)
-            if mask_np is not None:
+            state = self._hand_disp_state
+            mask_np = self._hand_disp_mask
+            score = self._hand_disp_score
+            centroid_uv = self._hand_disp_centroid
+
+            # Mask overlay
+            if mask_np is not None and state == 'TRACKING':
                 overlay = np.zeros_like(img_bgr)
                 overlay[mask_np > 0] = [0, 255, 0]
                 img_bgr = cv2.addWeighted(img_bgr, 1.0, overlay, 0.5, 0)
                 contours, _ = cv2.findContours(mask_np, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
                 cv2.drawContours(img_bgr, contours, -1, (0, 255, 0), 2)
-            if centroid_uv:
+
+            # Centroid dot
+            if centroid_uv is not None and state == 'TRACKING':
                 u, v = int(centroid_uv[0]), int(centroid_uv[1])
-                cv2.circle(img_bgr, (u, v), 5, (0, 0, 255), -1)
-                text = f"Score: {score:.3f} | X: {u} Y: {v}"
-            else:
-                text = f"Score: {score:.3f}"
-            cv2.putText(img_bgr, text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                cv2.circle(img_bgr, (u, v), 6, (0, 0, 255), -1)
+
+            # Detection bbox (shown while seed was received, until tracking stabilises)
+            if self._hand_disp_bbox is not None and state in ('RELOCALIZING', 'TRACKING'):
+                x1, y1, x2, y2 = [int(c) for c in self._hand_disp_bbox]
+                cv2.rectangle(img_bgr, (x1, y1), (x2, y2), (0, 200, 255), 2)
+                det_txt = f"{self._hand_disp_label}  {self._hand_disp_conf:.2f}"
+                cv2.putText(img_bgr, det_txt, (x1, max(y1 - 6, 14)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 3)
+                cv2.putText(img_bgr, det_txt, (x1, max(y1 - 6, 14)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 200, 255), 2)
+
+            # Header bar
+            if state == 'TRACKING':
+                label_color = (0, 220, 0)
+                if centroid_uv is not None:
+                    u, v = int(centroid_uv[0]), int(centroid_uv[1])
+                    label = f"TRACKING  score={score:.3f}  centroid=({u},{v})"
+                else:
+                    label = f"TRACKING  score={score:.3f}"
+            elif state == 'RELOCALIZING':
+                label_color = (0, 220, 255)
+                det = f"  [{self._hand_disp_label}  {self._hand_disp_conf:.2f}]" if self._hand_disp_label else ""
+                label = f"RELOCALIZING{det}"
+            elif state == 'LOST':
+                label_color = (0, 165, 255)
+                label = "LOST (no mask)"
+            else:  # IDLE
+                label_color = (160, 160, 160)
+                label = "IDLE — waiting for detection"
+
+            header = f"[hand]  {label}"
+            cv2.putText(img_bgr, header, (10, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 0, 0), 3)
+            cv2.putText(img_bgr, header, (10, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.65, label_color, 2)
+
+            if self._hand_cam_speed is not None:
+                speed_label = f"cam_speed: {self._hand_cam_speed:.3f} m/s"
+                speed_color = (0, 220, 0) if self._hand_cam_speed <= 0.05 else (0, 100, 255)
+                cv2.putText(img_bgr, speed_label, (10, 52), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 3)
+                cv2.putText(img_bgr, speed_label, (10, 52), cv2.FONT_HERSHEY_SIMPLEX, 0.6, speed_color, 2)
+
             cv2.imshow(self.tracking_window_name, img_bgr)
             cv2.waitKey(1)
         except Exception as e:
@@ -580,7 +818,13 @@ class Sam2TrackerNode(Node):
             return
         self._last_mask_np = mask_np
 
-    def _get_valid_depth(self, depth_map, u, v, radius=3):
+    def _get_valid_depth(self, depth_map, u, v, radius=8):
+        """Return robust depth estimate near (u,v).
+
+        Uses a larger patch (radius=8 → 17×17) and returns the median of the
+        closest-third of valid values. This avoids being pulled to background
+        depth when the grasp point falls inside a hole (e.g. valve center).
+        """
         h, w = depth_map.shape[:2]
         v_c = min(max(0, int(v)), h - 1)
         u_c = min(max(0, int(u)), w - 1)
@@ -590,12 +834,47 @@ class Sam2TrackerNode(Node):
         finite = patch[np.isfinite(patch) & (patch > 0)]
         if len(finite) == 0:
             return 0.0, False
+        finite_m = finite.copy()
+        if finite_m.max() > 20.0:
+            finite_m = finite_m / 1000.0
+        finite_m = finite_m[(finite_m > 0.05) & (finite_m < 10.0)]
+        if len(finite_m) == 0:
+            return 0.0, False
+        # Use median of the closest third to prefer foreground over background
+        finite_m.sort()
+        n = max(1, len(finite_m) // 3)
+        z = float(np.median(finite_m[:n]))
+        if z <= 0.05 or z >= 10.0:
+            return 0.0, False
+        return z, True
+
+    def _get_depth_from_mask(self, depth_map, mask_np):
+        """Return median valid depth sampled from the tracked mask pixels."""
+        ys, xs = np.where(mask_np > 0)
+        if len(ys) == 0:
+            return 0.0, False
+        vals = depth_map[ys, xs]
+        finite = vals[np.isfinite(vals) & (vals > 0)]
+        if len(finite) == 0:
+            return 0.0, False
         med = float(np.median(finite))
         if med > 20.0:
             med = med / 1000.0
         if med <= 0.05 or med >= 10.0:
             return 0.0, False
         return med, True
+
+    def _lookup_frame_at_stamp(self, target_stamp_sec: float):
+        """Find the frame in the ring buffer closest to target_stamp_sec.
+        Returns (rgb_pil, depth_np, header) or (None, None, None) if buffer empty."""
+        if not self._frame_buffer:
+            return None, None, None
+        best = min(self._frame_buffer, key=lambda e: abs(e[0] - target_stamp_sec))
+        dt = abs(best[0] - target_stamp_sec)
+        self.get_logger().info(
+            f"[TRACKER] frame lookup: target={target_stamp_sec:.3f} best={best[0]:.3f} dt={dt*1000:.1f}ms"
+        )
+        return best[1], best[2], best[3]
 
     def _pixel_to_camera_point(self, u: int, v: int, depth_map):
         if self.camera_intrinsics is None:
@@ -650,10 +929,19 @@ class Sam2TrackerNode(Node):
         if not isinstance(bbox_1000, list) or len(bbox_1000) < 4:
             raise RuntimeError("missing bbox_1000 in seed")
 
-        # Use snapshot from RELOCALIZING state, fallback to latest
-        img_pil = self._snapshot_rgb if self._snapshot_rgb is not None else self.latest_rgb
-        depth_for_seed = self._snapshot_depth if self._snapshot_depth is not None else self.latest_depth
-        header = self._snapshot_header if self._snapshot_header is not None else self.latest_depth_header
+        # Use the exact frame the VLM processed (by stamp) from the ring buffer
+        vlm_stamp = seed.get("frame_stamp_sec")
+        if vlm_stamp is not None:
+            img_pil, depth_for_seed, header = self._lookup_frame_at_stamp(float(vlm_stamp))
+        else:
+            img_pil, depth_for_seed, header = None, None, None
+
+        # Fallback: snapshot taken at RELOCALIZING, then latest
+        if img_pil is None:
+            img_pil = self._snapshot_rgb if self._snapshot_rgb is not None else self.latest_rgb
+            depth_for_seed = self._snapshot_depth if self._snapshot_depth is not None else self.latest_depth
+            header = self._snapshot_header if self._snapshot_header is not None else self.latest_depth_header
+            self.get_logger().warn("[TRACKER] frame_stamp_sec not in seed or buffer miss — using snapshot/latest fallback")
 
         if img_pil is None or header is None:
             raise RuntimeError("frame unavailable for seed apply")
@@ -668,6 +956,12 @@ class Sam2TrackerNode(Node):
         x1, y1 = max(0, x1), max(0, y1)
         x2, y2 = min(orig_w - 1, x2), min(orig_h - 1, y2)
         bbox = [x1, y1, x2, y2]
+
+        # Store detection info for display
+        self._hand_disp_label = str(seed.get('label', ''))
+        self._hand_disp_conf = float(seed.get('confidence', 0.0))
+        self._hand_disp_bbox = bbox
+        self._hand_disp_state = 'RELOCALIZING'
 
         grasp_points_uv = []
         for g in grasps_1000:
@@ -707,12 +1001,19 @@ class Sam2TrackerNode(Node):
 
         # Back-project grasp pixel to 3D using snapshot depth
         snap_stamp_sec = header.stamp.sec + header.stamp.nanosec * 1e-9
+        backproject_tag = f"backproject_{self._snapshot_run_idx:04d}"
+        debug_path = self._save_backproject_debug_image(img_pil, depth_for_seed, (grasp_u, grasp_v), backproject_tag)
+        if debug_path is not None:
+            self.get_logger().info(f"[TRACKER] Back-project debug saved: {debug_path}")
         self.get_logger().info(
             f"[TRACKER] Back-projecting pixel ({grasp_u},{grasp_v}) snapshot_stamp={snap_stamp_sec:.3f} frame={header.frame_id}"
         )
         point_cam = self._pixel_to_camera_point(grasp_u, grasp_v, depth_for_seed)
         if point_cam is None:
             raise RuntimeError("No valid depth at grasp point in snapshot")
+        self.get_logger().info(
+            f"[TRACKER] depth at grasp ({grasp_u},{grasp_v}): z={point_cam[2]:.3f}m"
+        )
 
         # Publish seed 3D for tf_projection to reproject to current frame
         msg_3d = PointStamped()
@@ -777,6 +1078,18 @@ class Sam2TrackerNode(Node):
             self.grasp_offset = (0, 0)
 
         point_cam = self._pixel_to_camera_point(u, v, self.latest_depth)
+        if point_cam is None:
+            # Reprojected pixel may be in a depth hole; fall back to mask centroid or mask pixels
+            mask_u_c = mask_u if m["m00"] != 0 else u
+            mask_v_c = mask_v if m["m00"] != 0 else v
+            z, ok = self._get_valid_depth(self.latest_depth, mask_u_c, mask_v_c, radius=10)
+            if not ok:
+                z, ok = self._get_depth_from_mask(self.latest_depth, mask_np)
+            if ok and header is not None and self.camera_intrinsics is not None:
+                fx, fy, cx, cy = self.camera_intrinsics
+                x = (float(mask_u_c) - cx) * z / fx
+                y = (float(mask_v_c) - cy) * z / fy
+                point_cam = (x, y, z)
         if point_cam is not None and header is not None:
             self._publish_tracking_3d(point_cam[0], point_cam[1], point_cam[2], header)
         else:
@@ -785,9 +1098,13 @@ class Sam2TrackerNode(Node):
         self.get_logger().info(
             f"[TRACKER] Video predictor initialized from reprojected pixel ({u}, {v}), score={score:.3f}"
         )
+        self._hand_disp_state = 'TRACKING'
+        self._hand_disp_mask = mask_np
+        self._hand_disp_score = float(score)
+        self._hand_disp_centroid = (u, v)
         if self.visualize:
             self._hand_ui_calls += 1
-            self._update_display(self.latest_rgb, mask_np, float(score), centroid_uv=(u, v))
+            self._update_display(self.latest_rgb)
 
     def _run_tracking_step_2d(self, now: float):
         if self.latest_rgb is None or self.latest_depth is None:
@@ -808,6 +1125,9 @@ class Sam2TrackerNode(Node):
             self._tracking_lost_streak += 1
             if self._tracking_lost_streak >= self.tracking_lost_confirm_frames:
                 self.tracking_active = False
+                self._hand_disp_state = 'LOST'
+                self._hand_disp_mask = None
+                self._hand_disp_centroid = None
             return
 
         mask_np = best_tracked_mask.astype(np.uint8)
@@ -828,6 +1148,7 @@ class Sam2TrackerNode(Node):
             self.get_logger().info(
                 f"[TRACKER] SAM2 memory trimmed at frame {self.tracking_frame_count}"
             )
+        mask_centroid_u, mask_centroid_v = u, v
         if hasattr(self, "grasp_offset"):
             u += int(self.grasp_offset[0])
             v += int(self.grasp_offset[1])
@@ -835,10 +1156,25 @@ class Sam2TrackerNode(Node):
         if h is None:
             return
         point_cam = self._pixel_to_camera_point(u, v, self.latest_depth)
+        if point_cam is None:
+            # Centroid+offset landed in a depth hole; try the mask centroid with wider radius
+            z, ok = self._get_valid_depth(self.latest_depth, mask_centroid_u, mask_centroid_v, radius=10)
+            if not ok:
+                # Last resort: sample depth from all mask pixels
+                z, ok = self._get_depth_from_mask(self.latest_depth, mask_np)
+            if ok and self.camera_intrinsics is not None:
+                fx, fy, cx, cy = self.camera_intrinsics
+                x = (float(mask_centroid_u) - cx) * z / fx
+                y = (float(mask_centroid_v) - cy) * z / fy
+                point_cam = (x, y, z)
         if point_cam is not None:
             self._publish_tracking_3d(point_cam[0], point_cam[1], point_cam[2], h)
         else:
             self.get_logger().warn("No valid depth for tracking point", throttle_duration_sec=1.0)
+        self._hand_disp_state = 'TRACKING'
+        self._hand_disp_mask = mask_np
+        self._hand_disp_score = float(score)
+        self._hand_disp_centroid = (u, v)
         if self.visualize:
             self._hand_ui_calls += 1
             if self._hand_ui_calls <= 12:
@@ -852,7 +1188,7 @@ class Sam2TrackerNode(Node):
                         "mask_area": int(mask_np.sum()),
                     },
                 )
-            self._update_display(img_pil, mask_np, float(score), centroid_uv=(u, v))
+            self._update_display(img_pil)
 
     def _secondary_rgb_cb(self, msg: RosImage, cam: str):
         """Store latest RGB frame for a secondary camera."""

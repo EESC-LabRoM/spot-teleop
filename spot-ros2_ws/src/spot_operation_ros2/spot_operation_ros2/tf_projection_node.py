@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 import math
 import re
+import time
 
 import rclpy
 from geometry_msgs.msg import PointStamped, PoseStamped, TransformStamped
 from rclpy.duration import Duration
 from rclpy.node import Node
 from sensor_msgs.msg import CameraInfo
-from std_msgs.msg import String
+from std_msgs.msg import Float64, String
 from tf2_ros import Buffer, TransformBroadcaster, TransformListener
 
 
@@ -27,6 +28,12 @@ class TFProjectionNode(Node):
         self.declare_parameter("tf_lookup_timeout_sec", 1.0)
         self.declare_parameter("tf_buffer_cache_time_sec", 120.0)
         self.declare_parameter("secondary_cameras", "")
+        self.declare_parameter("camera_info_topic", "/hand/camera_info")
+        self.declare_parameter("secondary_camera_info_topic_pattern", "/{cam}/camera_info")
+        self.declare_parameter("hand_camera_frame", "hand_color_image_sensor")
+        self.declare_parameter("camera_speed_reference_frame", "vision")
+        self.declare_parameter("camera_speed_topic", "/hand/camera_speed")
+        self.declare_parameter("camera_speed_hz", 15.0)
 
         tracking_3d_topic = str(self.get_parameter("tracking_3d_topic").value)
         tracking_state_topic = str(self.get_parameter("tracking_state_topic").value)
@@ -47,6 +54,10 @@ class TFProjectionNode(Node):
             max(0.01, self.get_parameter("tf_lookup_timeout_sec").value)
         )
         tf_cache = float(max(1.0, self.get_parameter("tf_buffer_cache_time_sec").value))
+        camera_info_topic = str(self.get_parameter("camera_info_topic").value)
+        secondary_camera_info_topic_pattern = str(
+            self.get_parameter("secondary_camera_info_topic_pattern").value
+        )
 
         self.tf_buffer = Buffer(cache_time=Duration(seconds=tf_cache))
         self.tf_listener = TransformListener(self.tf_buffer, self, spin_thread=True)
@@ -64,6 +75,17 @@ class TFProjectionNode(Node):
         )
         self._hold_timer = self.create_timer(1.0 / hold_hz, self._hold_last_target_cb)
 
+        # Camera speed publisher (for VLM stability gate)
+        self._hand_camera_frame = str(self.get_parameter("hand_camera_frame").value)
+        self._cam_speed_ref_frame = str(self.get_parameter("camera_speed_reference_frame").value)
+        self._cam_speed_pub = self.create_publisher(
+            Float64, str(self.get_parameter("camera_speed_topic").value), 10
+        )
+        self._prev_cam_pos = None
+        self._prev_cam_pos_time = None
+        cam_speed_hz = float(max(1.0, self.get_parameter("camera_speed_hz").value))
+        self._cam_speed_timer = self.create_timer(1.0 / cam_speed_hz, self._publish_cam_speed)
+
         # Seed reprojection: 3D@T0 → pixel@T_now
         self._seed_3d_sub = self.create_subscription(
             PointStamped, "/tracking/seed_3d", self._seed_3d_cb, 10
@@ -72,7 +94,7 @@ class TFProjectionNode(Node):
             PointStamped, "/tracking/seed_pixel", 10
         )
         self._cam_info_sub = self.create_subscription(
-            CameraInfo, "/hand/camera_info", self._camera_info_cb, 10
+            CameraInfo, camera_info_topic, self._camera_info_cb, 10
         )
         self.camera_intrinsics = None
 
@@ -83,22 +105,26 @@ class TFProjectionNode(Node):
         self._secondary_image_size = {}   # cam → (w, h)
         self._secondary_seed_pixel_pubs = {}
         for cam in self._secondary_cameras:
+            secondary_camera_info_topic = secondary_camera_info_topic_pattern.replace("{cam}", cam)
             self._secondary_intrinsics[cam] = None
             self._secondary_image_size[cam] = None
             self._secondary_seed_pixel_pubs[cam] = self.create_publisher(
                 PointStamped, f"/{cam}/tracking/seed_pixel", 10
             )
             self.create_subscription(
-                CameraInfo, f"/{cam}/camera_info",
+                CameraInfo, secondary_camera_info_topic,
                 lambda msg, c=cam: self._secondary_camera_info_cb(msg, c), 10
             )
         if self._secondary_cameras:
-            self.get_logger().info(f"Secondary cameras for reprojection: {self._secondary_cameras}")
+            self.get_logger().info(
+                f"Secondary cameras for reprojection: {self._secondary_cameras}, camera_info_pattern={secondary_camera_info_topic_pattern}"
+            )
 
         self.get_logger().info(
             f"TF projection ready. tracking_3d={tracking_point_topic}, "
             f"tracking_state={tracking_state_topic}, "
-            f"target={self.target_parent_frame}->{self.target_frame_name}"
+            f"target={self.target_parent_frame}->{self.target_frame_name}, "
+            f"camera_info={camera_info_topic}"
         )
 
     def _tracking_state_cb(self, msg: String):
@@ -268,7 +294,7 @@ class TFProjectionNode(Node):
             f"[TF] seed_3d received: cam_pt=({x:.3f},{y:.3f},{z:.3f}) stamp={t0_stamp_sec:.3f} frame={source_frame}"
         )
 
-        # 1) hand_cam→odom @T0
+        # 1) hand_cam→target_parent @T0
         try:
             t0 = self._lookup_transform_at_stamp(source_frame, msg.header.stamp)
         except Exception as exc:
@@ -280,10 +306,10 @@ class TFProjectionNode(Node):
         px, py, pz = self._rotate_point_by_quaternion(x, y, z, qx, qy, qz, qw)
         odom_x, odom_y, odom_z = px + tx, py + ty, pz + tz
         self.get_logger().info(
-            f"[TF] step1 cam→odom: odom_pt=({odom_x:.3f},{odom_y:.3f},{odom_z:.3f}) tf_t=({tx:.3f},{ty:.3f},{tz:.3f})"
+            f"[TF] step1 cam→{self.target_parent_frame}: pt=({odom_x:.3f},{odom_y:.3f},{odom_z:.3f}) tf_t=({tx:.3f},{ty:.3f},{tz:.3f})"
         )
 
-        # 2) odom→hand_cam @T_now (latest available)
+        # 2) target_parent→hand_cam @T_now (latest available)
         timeout = Duration(seconds=self.tf_lookup_timeout_sec)
         try:
             t_now = self.tf_buffer.lookup_transform(
@@ -302,7 +328,7 @@ class TFProjectionNode(Node):
         cx, cy, cz = self._rotate_point_by_quaternion(odom_x, odom_y, odom_z, qx2, qy2, qz2, qw2)
         cam_x, cam_y, cam_z = cx + tx2, cy + ty2, cz + tz2
         self.get_logger().info(
-            f"[TF] step2 odom→cam: cam_pt=({cam_x:.3f},{cam_y:.3f},{cam_z:.3f}) tf_t=({tx2:.3f},{ty2:.3f},{tz2:.3f}) t_now={t_now_stamp_sec:.3f}"
+            f"[TF] step2 {self.target_parent_frame}→cam: cam_pt=({cam_x:.3f},{cam_y:.3f},{cam_z:.3f}) tf_t=({tx2:.3f},{ty2:.3f},{tz2:.3f}) t_now={t_now_stamp_sec:.3f}"
         )
 
         if cam_z <= 0.0:
@@ -375,6 +401,35 @@ class TFProjectionNode(Node):
         if self._secondary_cameras:
             timeout = Duration(seconds=self.tf_lookup_timeout_sec)
             self._reproject_to_secondary(float(target_x), float(target_y), float(target_z), timeout)
+
+    def _publish_cam_speed(self):
+        """Compute linear speed of hand camera in 'vision' frame and publish to /hand/camera_speed."""
+        try:
+            t = self.tf_buffer.lookup_transform(
+                self._cam_speed_ref_frame,
+                self._hand_camera_frame,
+                rclpy.time.Time(),
+                timeout=Duration(seconds=0.0),
+            )
+        except Exception:
+            return
+        now = time.monotonic()
+        x = t.transform.translation.x
+        y = t.transform.translation.y
+        z = t.transform.translation.z
+        speed = 0.0
+        if self._prev_cam_pos is not None and self._prev_cam_pos_time is not None:
+            dt = now - self._prev_cam_pos_time
+            if dt > 1e-4:
+                dx = x - self._prev_cam_pos[0]
+                dy = y - self._prev_cam_pos[1]
+                dz = z - self._prev_cam_pos[2]
+                speed = math.sqrt(dx * dx + dy * dy + dz * dz) / dt
+        self._prev_cam_pos = (x, y, z)
+        self._prev_cam_pos_time = now
+        msg = Float64()
+        msg.data = float(speed)
+        self._cam_speed_pub.publish(msg)
 
 
 def main(args=None):

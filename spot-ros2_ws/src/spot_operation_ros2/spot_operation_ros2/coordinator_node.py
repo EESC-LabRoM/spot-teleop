@@ -20,14 +20,15 @@ class CoordinatorNode(Node):
         super().__init__("coordinator_node")
         self.declare_parameter("tracking_state_topic", "/tracking_state")
         self.declare_parameter("seed_command_topic", "/perception/seed_command")
-        self.declare_parameter("vlm_service_name", "/roll/trigger_relocalize")
+        self.declare_parameter("vlm_service_name", "/vlm/trigger_relocalize")
         self.declare_parameter("loop_hz", 2.0)
         self.declare_parameter("relocalize_cooldown_sec", 1.5)
         self.declare_parameter("seed_apply_grace_sec", 2.0)
 
         tracking_state_topic = self.get_parameter("tracking_state_topic").value
         seed_command_topic = self.get_parameter("seed_command_topic").value
-        service_name = self.get_parameter("vlm_service_name").value
+        service_name = str(self.get_parameter("vlm_service_name").value)
+        self._service_name = service_name
         loop_hz = float(max(0.5, self.get_parameter("loop_hz").value))
         self.relocalize_cooldown_sec = float(
             max(0.0, self.get_parameter("relocalize_cooldown_sec").value)
@@ -39,6 +40,7 @@ class CoordinatorNode(Node):
 
         self.state = "IDLE"
         self.tracking_state = "UNKNOWN"
+        self._last_tracking_state = "UNKNOWN"
         self._vlm_inflight = False
         self._last_relocalize_attempt = 0.0
         self._seed_apply_deadline = 0.0
@@ -82,6 +84,7 @@ class CoordinatorNode(Node):
 
     def _tracking_state_cb(self, msg: String):
         self.tracking_state = msg.data.strip().upper()
+        self._last_tracking_state = self.tracking_state
         if self.tracking_state == "TRACKING":
             # Tracker locked on target: clear grace window.
             self._seed_apply_deadline = 0.0
@@ -185,12 +188,16 @@ class CoordinatorNode(Node):
             return
         if not self._vlm_client.wait_for_service(timeout_sec=0.0):
             self.state = "DEGRADED"
+            self.get_logger().warn("[COORD] servico /roll/trigger_relocalize indisponivel")
             self._publish_state()
             return
         self._last_relocalize_attempt = now
         self._vlm_inflight = True
         self.state = "RELOCALIZING"
         self._publish_state()
+        self.get_logger().info(
+            f"[COORD] disparando request para {self._service_name}  tracking_state={self.tracking_state}"
+        )
         self._dbg_log(
             "H16",
             "coordinator_node.py:_tick",
@@ -209,6 +216,18 @@ class CoordinatorNode(Node):
             self.get_logger().warn(f"Relocalize call failed: {exc}")
             return
         if result is None or not result.success:
+            msg_str = result.message if result is not None else ""
+            is_stability_gate = msg_str.startswith("camera_moving:")
+            if is_stability_gate:
+                self.get_logger().info(
+                    f"[COORD] VLM gate: {msg_str} — retentando"
+                )
+                self.state = "IDLE"
+            else:
+                self.get_logger().warn(
+                    f"[COORD] relocalize retornou sem sucesso. result_none={result is None} msg={msg_str}"
+                )
+                self.state = "DEGRADED"
             # #region agent log
             self._dbg_log(
                 "H10",
@@ -217,11 +236,11 @@ class CoordinatorNode(Node):
                 {
                     "result_is_none": result is None,
                     "result_success": bool(result.success) if result is not None else False,
-                    "result_message": (result.message[:240] if result is not None else ""),
+                    "result_message": msg_str[:240],
+                    "is_stability_gate": is_stability_gate,
                 },
             )
             # #endregion
-            self.state = "DEGRADED"
             return
         try:
             seed = json.loads(result.message)
@@ -237,10 +256,6 @@ class CoordinatorNode(Node):
                     "payload_len": len(msg.data),
                     "seed_subscriber_count": int(self._seed_pub.get_subscription_count()),
                 },
-            )
-            self.get_logger().info(
-                f"[COORD] seed published (subs={int(self._seed_pub.get_subscription_count())})",
-                throttle_duration_sec=1.0,
             )
             self.state = "IDLE"
         except Exception as exc:

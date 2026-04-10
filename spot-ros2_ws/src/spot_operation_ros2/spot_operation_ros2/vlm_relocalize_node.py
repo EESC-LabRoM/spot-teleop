@@ -1,17 +1,47 @@
 import base64
 import io
 import json
+import os
 import re
 import time
 import uuid
+import shutil
 from pathlib import Path
 
+import cv2
+import numpy as np
 import rclpy
 import requests
 from PIL import Image
 from rclpy.node import Node
 from sensor_msgs.msg import Image as RosImage
+from std_msgs.msg import Float64, String
 from std_srvs.srv import Trigger
+
+
+def _find_workspace_root() -> Path:
+    for parent in Path(__file__).resolve().parents:
+        if parent.name == "spot-ros2_ws":
+            return parent
+    return Path(__file__).resolve().parents[3]
+
+
+_WORKSPACE_ROOT = _find_workspace_root()
+_VLM_INPUT_DIR = _WORKSPACE_ROOT / "tmp" / "vlm_relocalize_requests"
+
+
+def _prepare_vlm_input_dir() -> Path:
+    input_dir = _VLM_INPUT_DIR
+    input_dir.mkdir(parents=True, exist_ok=True)
+    for child in input_dir.iterdir():
+        try:
+            if child.is_dir():
+                shutil.rmtree(child)
+            else:
+                child.unlink()
+        except Exception:
+            pass
+    return input_dir
 
 
 def parse_qwen_response(response_text: str, image_size: tuple = None) -> list:
@@ -137,6 +167,59 @@ def parse_qwen_response(response_text: str, image_size: tuple = None) -> list:
     return boxes
 
 
+def _build_rotation_matrix(orig_w, orig_h, angle_deg):
+    """Reconstruct the forward rotation matrix (same logic as rotate_image_upright)."""
+    center = (orig_w / 2.0, orig_h / 2.0)
+    M = cv2.getRotationMatrix2D(center, angle_deg, 1.0)
+    cos_a = abs(M[0, 0])
+    sin_a = abs(M[0, 1])
+    rot_w = int(orig_h * sin_a + orig_w * cos_a)
+    rot_h = int(orig_h * cos_a + orig_w * sin_a)
+    M[0, 2] += (rot_w - orig_w) / 2.0
+    M[1, 2] += (rot_h - orig_h) / 2.0
+    return M, (rot_w, rot_h)
+
+
+def _inverse_rotate_coords_1000(bbox_1000, grasps_1000, M_forward, rotated_size, original_size):
+    """Map bbox and grasp points from rotated [0-1000] space back to original [0-1000] space."""
+    rot_w, rot_h = rotated_size
+    orig_w, orig_h = original_size
+    M_inv = cv2.invertAffineTransform(M_forward)
+
+    xmin = bbox_1000[0] / 1000.0 * rot_w
+    ymin = bbox_1000[1] / 1000.0 * rot_h
+    xmax = bbox_1000[2] / 1000.0 * rot_w
+    ymax = bbox_1000[3] / 1000.0 * rot_h
+
+    corners = np.array([[xmin, ymin], [xmax, ymin], [xmax, ymax], [xmin, ymax]], dtype=np.float64)
+    corners_h = np.hstack([corners, np.ones((4, 1), dtype=np.float64)])
+    orig_corners = (M_inv @ corners_h.T).T
+
+    ox_min = max(0.0, np.min(orig_corners[:, 0]))
+    oy_min = max(0.0, np.min(orig_corners[:, 1]))
+    ox_max = min(float(orig_w), np.max(orig_corners[:, 0]))
+    oy_max = min(float(orig_h), np.max(orig_corners[:, 1]))
+
+    corrected_bbox = [
+        int(ox_min / orig_w * 1000),
+        int(oy_min / orig_h * 1000),
+        int(ox_max / orig_w * 1000),
+        int(oy_max / orig_h * 1000),
+    ]
+
+    corrected_grasps = []
+    for g in (grasps_1000 or []):
+        gx_px = g[0] / 1000.0 * rot_w
+        gy_px = g[1] / 1000.0 * rot_h
+        pt_h = np.array([gx_px, gy_px, 1.0])
+        orig_pt = M_inv @ pt_h
+        ox = max(0.0, min(float(orig_w), orig_pt[0]))
+        oy = max(0.0, min(float(orig_h), orig_pt[1]))
+        corrected_grasps.append([int(ox / orig_w * 1000), int(oy / orig_h * 1000)])
+
+    return corrected_bbox, corrected_grasps
+
+
 def _encode_image_to_base64(image_input) -> str:
     if isinstance(image_input, (str, Path)):
         with open(image_input, "rb") as f:
@@ -153,12 +236,17 @@ class VlmRelocalizeNode(Node):
     def __init__(self):
         super().__init__("vlm_relocalize_node")
         self.declare_parameter("rgb_topic", "/hand/rgb_upright")
+        self.declare_parameter("roll_metadata_topic", "/hand/roll_metadata")
         self.declare_parameter("object_prompt", "wheel valve")
-        self.declare_parameter("vlm_url", "http://localhost:8000")
+        self.declare_parameter("vlm_url", "http://100.111.174.61:8000")
         self.declare_parameter("request_timeout_sec", 5.0)
         self.declare_parameter("request_max_retries", 1)
         self.declare_parameter("service_name", "/vlm/trigger_relocalize")
+        self.declare_parameter("camera_speed_topic", "/hand/camera_speed")
+        self.declare_parameter("stability_speed_threshold", 0.1)
+        self.declare_parameter("stability_check_enabled", True)
         rgb_topic = self.get_parameter("rgb_topic").value
+        roll_metadata_topic = self.get_parameter("roll_metadata_topic").value
         self.object_prompt = self.get_parameter("object_prompt").value
         self.vlm_url = self.get_parameter("vlm_url").value
         self.request_timeout_sec = float(
@@ -172,12 +260,24 @@ class VlmRelocalizeNode(Node):
         self._latest_rgb_pil = None
         self._latest_stamp_sec = None
         self._latest_stamp_nanosec = None
+        self._latest_roll_angle_deg = 0.0
+        self._latest_orig_size = None
         self._rgb_cb_count = 0
         self._srv_req_seq = 0
+        self._camera_speed = None
+        self._vlm_input_dir = _prepare_vlm_input_dir()
         self._rgb_sub = self.create_subscription(RosImage, rgb_topic, self._rgb_cb, 10)
+        self._roll_meta_sub = self.create_subscription(String, roll_metadata_topic, self._roll_meta_cb, 10)
+        self._cam_speed_sub = self.create_subscription(
+            Float64,
+            str(self.get_parameter("camera_speed_topic").value),
+            self._cam_speed_cb,
+            10,
+        )
         self._srv = self.create_service(Trigger, service_name, self._handle_relocalize)
         self.get_logger().info(
-            f"VLM relocalize service ready at {service_name}, rgb_topic={rgb_topic}"
+            f"VLM relocalize service ready at {service_name}, rgb_topic={rgb_topic}, "
+            f"roll_metadata={roll_metadata_topic}, input_dir={self._vlm_input_dir}"
         )
 
     def _dbg_log(self, hypothesis_id: str, location: str, message: str, data: dict):
@@ -199,10 +299,19 @@ class VlmRelocalizeNode(Node):
             pass
         # #endregion
 
+    def _roll_meta_cb(self, msg: String):
+        try:
+            meta = json.loads(msg.data)
+            self._latest_roll_angle_deg = float(meta.get("angle_deg", 0.0))
+            self._latest_orig_size = (int(meta["orig_w"]), int(meta["orig_h"]))
+        except Exception:
+            pass
+
+    def _cam_speed_cb(self, msg: Float64):
+        self._camera_speed = float(msg.data)
+
     def _rgb_cb(self, msg: RosImage):
         try:
-            cv2 = __import__("cv2")
-            np = __import__("numpy")
             frame = np.frombuffer(msg.data, dtype=np.uint8)
             channels = 3
             if msg.encoding == "rgb8":
@@ -229,13 +338,17 @@ class VlmRelocalizeNode(Node):
                         "stamp_nanosec": int(msg.header.stamp.nanosec),
                     },
                 )
-        except Exception:
+        except Exception as exc:
             self._latest_rgb_pil = None
             self._dbg_log(
                 "H3",
                 "vlm_relocalize_node.py:_rgb_cb",
                 "rgb_frame_decode_failed",
-                {"has_data": bool(getattr(msg, "data", None)), "encoding": str(msg.encoding)},
+                {
+                    "has_data": bool(getattr(msg, "data", None)),
+                    "encoding": str(msg.encoding),
+                    "error": str(exc)[:220],
+                },
             )
 
     def _run_vlm(self, image: Image.Image):
@@ -249,7 +362,7 @@ Output STRICTLY in JSON format as a list of dictionaries:
 If the object is NOT present or mostly occluded, return an empty list: []
 Ensure bounding box and grasp point coordinates are normalized to [0-1000] scale."""
         payload = {
-            "model": "Qwen/Qwen3-VL-4B-Instruct",
+            "model": "Qwen/Qwen3-VL-8B-Instruct",
             "messages": [
                 {
                     "role": "user",
@@ -270,6 +383,18 @@ Ensure bounding box and grasp point coordinates are normalized to [0-1000] scale
         for attempt in range(attempts):
             try:
                 start = time.time()
+                self._dbg_log(
+                    "H4",
+                    "vlm_relocalize_node.py:_run_vlm",
+                    "vlm_http_request_start",
+                    {
+                        "attempt": attempt + 1,
+                        "attempts": attempts,
+                        "timeout_sec": float(self.request_timeout_sec),
+                        "vlm_url": self.vlm_url,
+                        "payload_image_bytes_est": len(base64_img),
+                    },
+                )
                 resp = requests.post(
                     f"{self.vlm_url}/v1/chat/completions",
                     json=payload,
@@ -282,33 +407,100 @@ Ensure bounding box and grasp point coordinates are normalized to [0-1000] scale
                     "H4",
                     "vlm_relocalize_node.py:_run_vlm",
                     "vlm_response_received",
-                    {"attempt": attempt + 1, "latency_ms": latency_ms, "content_preview": content[:120]},
+                    {
+                        "attempt": attempt + 1,
+                        "latency_ms": latency_ms,
+                        "content_preview": content[:120],
+                        "content_len": len(content),
+                    },
                 )
                 return content, latency_ms
             except Exception as exc:
                 last_exc = exc
+                self._dbg_log(
+                    "H4",
+                    "vlm_relocalize_node.py:_run_vlm",
+                    "vlm_http_request_failed",
+                    {
+                        "attempt": attempt + 1,
+                        "attempts": attempts,
+                        "error": str(exc)[:240],
+                    },
+                )
                 if attempt + 1 < attempts:
                     time.sleep(0.1)
         raise RuntimeError(f"VLM request failed: {last_exc}")
 
+    def _save_vlm_input_image(self, image: Image.Image, req_id: int, stamp_sec: int, stamp_ns: int):
+        """Persist the exact image sent to the VLM for debugging and replay."""
+        try:
+            filename = f"vlm_input_{req_id:04d}_{stamp_sec}_{stamp_ns:09d}.png"
+            image_path = self._vlm_input_dir / filename
+            image.save(image_path)
+            return image_path
+        except Exception as exc:
+            self.get_logger().warn(f"[VLM] failed to save input image: {exc}")
+            return None
+
     def _handle_relocalize(self, _request, response):
+        self.get_logger().info("[VLM] request recebido em /vlm/trigger_relocalize")
         if self._latest_rgb_pil is None:
             response.success = False
             response.message = "No RGB frame available yet"
+            self.get_logger().warn("[VLM] falha: sem frame RGB para processar")
+            self._dbg_log(
+                "H15",
+                "vlm_relocalize_node.py:_handle_relocalize",
+                "relocalize_exit",
+                {"success": False, "reason": "no_rgb_frame"},
+            )
             return response
+        if self.get_parameter("stability_check_enabled").value:
+            threshold = float(self.get_parameter("stability_speed_threshold").value)
+            if self._camera_speed is not None and self._camera_speed > threshold:
+                response.success = False
+                response.message = f"camera_moving: speed={self._camera_speed:.3f} m/s > threshold={threshold}"
+                self.get_logger().info(
+                    f"[VLM] request rejeitado: câmera em movimento ({self._camera_speed:.3f} m/s) — coordinator vai retentar"
+                )
+                return response
         try:
             self._srv_req_seq += 1
             req_id = int(self._srv_req_seq)
             stamp_sec = int(self._latest_stamp_sec or 0)
             stamp_ns = int(self._latest_stamp_nanosec or 0)
+            frame_size = list(self._latest_rgb_pil.size) if self._latest_rgb_pil is not None else None
+            self.get_logger().info(
+                f"[VLM] req_id={req_id} iniciando com frame stamp={stamp_sec}.{stamp_ns:09d}"
+            )
             self._dbg_log(
                 "H15",
                 "vlm_relocalize_node.py:_handle_relocalize",
                 "relocalize_start",
-                {"req_id": req_id, "latest_stamp_sec": stamp_sec, "latest_stamp_nanosec": stamp_ns},
+                {
+                    "req_id": req_id,
+                    "latest_stamp_sec": stamp_sec,
+                    "latest_stamp_nanosec": stamp_ns,
+                    "frame_size": frame_size,
+                    "rgb_cb_count": int(self._rgb_cb_count),
+                },
             )
             img = self._latest_rgb_pil.copy()
             w, h = img.size
+            saved_path = self._save_vlm_input_image(img, req_id, stamp_sec, stamp_ns)
+            if saved_path is not None:
+                self.get_logger().info(f"[VLM] input image saved at {saved_path}")
+            self._dbg_log(
+                "H15",
+                "vlm_relocalize_node.py:_handle_relocalize",
+                "relocalize_image_ready",
+                {
+                    "req_id": req_id,
+                    "width": int(w),
+                    "height": int(h),
+                    "saved_path": str(saved_path) if saved_path is not None else None,
+                },
+            )
             text, latency_ms = self._run_vlm(img)
             # #region agent log
             schema_hint = {}
@@ -342,7 +534,22 @@ Ensure bounding box and grasp point coordinates are normalized to [0-1000] scale
                 schema_hint,
             )
             # #endregion
+            self.get_logger().info(f"[VLM] raw response (req_id={req_id}): {text[:300]}")
             boxes = parse_qwen_response(text, image_size=(w, h))
+            if boxes and self._latest_roll_angle_deg != 0.0 and self._latest_orig_size is not None:
+                M_fwd, rot_size = _build_rotation_matrix(
+                    self._latest_orig_size[0], self._latest_orig_size[1],
+                    self._latest_roll_angle_deg,
+                )
+                for box in boxes:
+                    if "bbox_1000" in box:
+                        box["bbox_1000"], box["grasps_1000"] = _inverse_rotate_coords_1000(
+                            box["bbox_1000"],
+                            box.get("grasps_1000", []),
+                            M_fwd,
+                            rot_size,
+                            self._latest_orig_size,
+                        )
             self._dbg_log(
                 "H15",
                 "vlm_relocalize_node.py:_handle_relocalize",
@@ -355,13 +562,15 @@ Ensure bounding box and grasp point coordinates are normalized to [0-1000] scale
                     "latest_stamp_nanosec": stamp_ns,
                 },
             )
-            self.get_logger().info(
-                f"[VLM] latency={latency_ms}ms boxes={len(boxes)}",
-                throttle_duration_sec=1.0,
-            )
             if not boxes:
                 response.success = False
                 response.message = "[]"
+                self._dbg_log(
+                    "H15",
+                    "vlm_relocalize_node.py:_handle_relocalize",
+                    "relocalize_no_boxes",
+                    {"req_id": req_id, "latency_ms": latency_ms, "text_preview": text[:180]},
+                )
                 self._dbg_log(
                     "H15",
                     "vlm_relocalize_node.py:_handle_relocalize",
@@ -370,7 +579,7 @@ Ensure bounding box and grasp point coordinates are normalized to [0-1000] scale
                 )
                 return response
             seed = boxes[0]
-            seed["frame_stamp_sec"] = stamp_sec
+            seed["frame_stamp_sec"] = stamp_sec + stamp_ns * 1e-9
             seed["frame_stamp_nanosec"] = stamp_ns
             seed["vlm_latency_ms"] = latency_ms
             response.success = True
@@ -379,12 +588,18 @@ Ensure bounding box and grasp point coordinates are normalized to [0-1000] scale
                 "H15",
                 "vlm_relocalize_node.py:_handle_relocalize",
                 "relocalize_exit",
-                {"req_id": req_id, "success": True, "message_len": len(response.message)},
+                {
+                    "req_id": req_id,
+                    "success": True,
+                    "message_len": len(response.message),
+                    "latency_ms": latency_ms,
+                },
             )
             return response
         except Exception as exc:
             response.success = False
             response.message = str(exc)
+            self.get_logger().warn(f"[VLM] req falhou: {str(exc)[:220]}")
             self._dbg_log(
                 "H15",
                 "vlm_relocalize_node.py:_handle_relocalize",
