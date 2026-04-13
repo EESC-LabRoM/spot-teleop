@@ -8,6 +8,8 @@ services:
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
     working_dir: /home/spot-teleop/spot-ros2_ws
     runtime: nvidia
+    gpus: all
+    privileged: true
     environment:
       - SPOT_NAME=${SPOT_NAME:-Spot}
       - DISPLAY=${DISPLAY}
@@ -16,8 +18,6 @@ services:
       - HOME=/home/spot-teleop
       - USER=root
       - RMW_IMPLEMENTATION=rmw_fastrtps_cpp
-      - NVIDIA_VISIBLE_DEVICES=1
-      - CUDA_VISIBLE_DEVICES=0
       - NVIDIA_DRIVER_CAPABILITIES=all
     command: >
       bash -c "
@@ -43,25 +43,17 @@ services:
     tty: true
     network_mode: host
     ipc: host
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              device_ids: [ '1' ]
-              capabilities: [ gpu ]
 
   zed:
     build:
       context: .
       dockerfile: Dockerfile.zed
     container_name: zed-container
+    gpus: all
     environment:
       - DISPLAY=${DISPLAY}
       - QT_X11_NO_MITSHM=1
       - ROS_DOMAIN_ID=8
-      - NVIDIA_VISIBLE_DEVICES=0
-      - CUDA_VISIBLE_DEVICES=0
       - NVIDIA_DRIVER_CAPABILITIES=all
       - RMW_IMPLEMENTATION=rmw_fastrtps_cpp
     volumes:
@@ -75,13 +67,6 @@ services:
     privileged: true
     tty: true
     stdin_open: true
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              device_ids: [ '0' ]
-              capabilities: [ gpu ]
     command: >
       bash -c "
         source /opt/ros/humble/setup.bash &&
@@ -109,6 +94,7 @@ services:
       context: .
       dockerfile: Dockerfile.isaac
     runtime: nvidia
+    gpus: all
     network_mode: host
     ipc: host
     privileged: true
@@ -120,8 +106,6 @@ services:
       # GUI (comente se for headless)
       - DISPLAY=${DISPLAY}
       - QT_X11_NO_MITSHM=1
-      - NVIDIA_VISIBLE_DEVICES=0
-      - CUDA_VISIBLE_DEVICES=0
       - NVIDIA_DRIVER_CAPABILITIES=all
       - __NGX_CONF_FILE=/usr/share/nvidia/nvidia-ngx-conf.json
     volumes:
@@ -145,13 +129,6 @@ services:
     stdin_open: true
     tty: true
     entrypoint: [ "/bin/bash", "-lc", "sleep infinity" ] # Não iniciar Isaac automaticamente
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              device_ids: [ '0' ]
-              capabilities: [ gpu, compute, graphics, utility, video ]
 
   isaac-ros:
     build:
@@ -159,14 +136,13 @@ services:
       dockerfile: Dockerfile.isaac-ros
     container_name: isaac-ros-container
     runtime: nvidia
-    # privileged: true # Removido para permitir isolamento de GPU (NVIDIA_VISIBLE_DEVICES)
+    gpus: all
+    privileged: true
     network_mode: host
     ipc: host
     environment:
       - DISPLAY=${DISPLAY}
       - QT_X11_NO_MITSHM=1
-      - NVIDIA_VISIBLE_DEVICES=1
-      - CUDA_VISIBLE_DEVICES=0
       - NVIDIA_DRIVER_CAPABILITIES=all
       - ROS_DOMAIN_ID=8
       - RMW_IMPLEMENTATION=rmw_fastrtps_cpp
@@ -194,18 +170,13 @@ services:
     tty: true
     entrypoint: /usr/local/bin/scripts/workspace-entrypoint.sh
     command: /bin/bash
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              device_ids: [ '1' ]
-              capabilities: [ gpu, compute, graphics, utility ]
 
   vllm-server:
     image: docker.io/qwenllm/qwenvl:qwen3vl-cu128
     container_name: qwen_server
     runtime: nvidia
+    gpus: all
+    privileged: true
     ipc: host
     environment:
       - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN}
@@ -216,10 +187,3 @@ services:
       - "8000:8000"
     command: >
       python3 -m vllm.entrypoints.openai.api_server --model Qwen/Qwen3-VL-8B-Instruct --gpu-memory-utilization 0.6 --max-model-len 8192 --trust-remote-code --limit-mm-per-prompt '{"image": 1}'
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [ gpu ]

@@ -11,7 +11,7 @@ robot_cfg:
     asset_root_path: ""
     external_asset_path: "/workspace/spot_description/urdf"
     base_link: "body"
-    ee_link: "arm0_link_fngr"
+    ee_link: "arm0_link_wr1" #"arm0_link_fngr"
     collision_link_names:
       [
         "arm0_link_sh0",
@@ -51,7 +51,7 @@ robot_cfg:
     lock_joints: {"arm0_f1x": 0.0}
     cspace:
       joint_names: ["arm0_sh0", "arm0_sh1", "arm0_el0", "arm0_el1", "arm0_wr0", "arm0_wr1"]
-      retract_config: [0.0, -1.0, 2.0, 0.0, -1.5, 0.0]
+      retract_config: [0.0, -0.9, 1.8, 0.0, -0.9, 0.0]
       null_space_weight: [1, 1, 1, 1, 1, 1]
       cspace_distance_weight: [1, 1, 1, 1, 1, 1]
       max_acceleration: 10.0

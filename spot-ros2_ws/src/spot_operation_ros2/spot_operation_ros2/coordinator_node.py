@@ -27,8 +27,7 @@ class CoordinatorNode(Node):
 
         tracking_state_topic = self.get_parameter("tracking_state_topic").value
         seed_command_topic = self.get_parameter("seed_command_topic").value
-        service_name = str(self.get_parameter("vlm_service_name").value)
-        self._service_name = service_name
+        service_name = self.get_parameter("vlm_service_name").value
         loop_hz = float(max(0.5, self.get_parameter("loop_hz").value))
         self.relocalize_cooldown_sec = float(
             max(0.0, self.get_parameter("relocalize_cooldown_sec").value)
@@ -196,7 +195,7 @@ class CoordinatorNode(Node):
         self.state = "RELOCALIZING"
         self._publish_state()
         self.get_logger().info(
-            f"[COORD] disparando request para {self._service_name}  tracking_state={self.tracking_state}"
+            f"[COORD] disparando request para /roll/trigger_relocalize  tracking_state={self.tracking_state}"
         )
         self._dbg_log(
             "H16",

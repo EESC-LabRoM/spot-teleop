@@ -13,4 +13,4 @@
 	email = murilo.mv4321@usp.br
 	name = murilo-vinicius04
 [credential]
-	helper = "!f() { /home/spot-teleop/.vscode-server/bin/072586267e68ece9a47aa43f8c108e0dcbf44622/node /tmp/vscode-remote-containers-cd1dd88a-9ce9-44c5-9f42-98a2453d06b4.js git-credential-helper $*; }; f"
+	helper = "!f() { /home/spot-teleop/.vscode-server/bin/cfbea10c5ffb233ea9177d34726e6056e89913dc/node /tmp/vscode-remote-containers-b1d6880e-443a-4052-9024-58a8b98996c8.js git-credential-helper $*; }; f"

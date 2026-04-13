@@ -264,11 +264,11 @@ class TFProjectionNode(Node):
             fx, fy, cx_i, cy_i = intrinsics
             u = fx * (cam_x / cam_z) + cx_i
             v = fy * (cam_y / cam_z) + cy_i
-            margin = 10
+            margin = 60
             if not (margin <= u < w - margin and margin <= v < h - margin):
                 continue  # outside FOV (with margin) — do not publish; SAM2 stops tracking
             pixel_msg = PointStamped()
-            pixel_msg.header.stamp = self.get_clock().now().to_msg()
+            pixel_msg.header.stamp = t.header.stamp
             pixel_msg.header.frame_id = tf_frame
             pixel_msg.point.x = float(u)
             pixel_msg.point.y = float(v)
@@ -323,6 +323,12 @@ class TFProjectionNode(Node):
             return
 
         t_now_stamp_sec = t_now.header.stamp.sec + t_now.header.stamp.nanosec * 1e-9
+        dt = t_now_stamp_sec - t0_stamp_sec
+        if abs(dt) > 8.0:
+            self.get_logger().warn(
+                f"[TF] T0→T_now interval too large ({dt:.1f}s, |dt| > 8.0s), discarding stale reprojection"
+            )
+            return
         tx2, ty2, tz2 = t_now.transform.translation.x, t_now.transform.translation.y, t_now.transform.translation.z
         qx2, qy2, qz2, qw2 = t_now.transform.rotation.x, t_now.transform.rotation.y, t_now.transform.rotation.z, t_now.transform.rotation.w
         cx, cy, cz = self._rotate_point_by_quaternion(odom_x, odom_y, odom_z, qx2, qy2, qz2, qw2)
@@ -345,7 +351,7 @@ class TFProjectionNode(Node):
 
         # 4) Publish reprojected pixel
         pixel_msg = PointStamped()
-        pixel_msg.header.stamp = self.get_clock().now().to_msg()
+        pixel_msg.header.stamp = t_now.header.stamp
         pixel_msg.header.frame_id = source_frame
         pixel_msg.point.x = float(u)
         pixel_msg.point.y = float(v)

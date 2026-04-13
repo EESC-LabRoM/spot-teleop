@@ -11,7 +11,7 @@ import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
 from control_msgs.msg import JointTrajectoryControllerState
-from spot_msgs.msg import JointCommand
+from std_msgs.msg import Float64
 
 
 class JointStateRelay(Node):
@@ -54,13 +54,13 @@ class JointStateRelay(Node):
         
         # Subscriber para comandos do gripper (ambos os modos)
         self.gripper_sub = self.create_subscription(
-            JointCommand,
-            "/spot_joint_controller/joint_commands",
+            Float64,
+            "/gripper/command",
             self.gripper_command_callback,
             10,
         )
 
-        self.get_logger().info("Subscrevendo em: /spot_joint_controller/joint_commands")
+        self.get_logger().info("Subscrevendo em: /gripper/command")
         self.get_logger().info("Publicando em: joint_command_isaac")
 
     def curobo_callback(self, msg: JointState):
@@ -139,14 +139,11 @@ class JointStateRelay(Node):
 
         self.pub.publish(new_msg)
 
-    def gripper_command_callback(self, msg):
-        """Callback para comandos do gripper via spot_joint_controller"""
+    def gripper_command_callback(self, msg: Float64):
+        """Callback para comandos do gripper via /gripper/command"""
         try:
-            if "arm_f1x" in msg.name:
-                idx = msg.name.index("arm_f1x")
-                if idx < len(msg.position):
-                    self.gripper_position = msg.position[idx]
-                    self.get_logger().debug(f"Gripper command: {self.gripper_position}")
+            self.gripper_position = msg.data
+            self.get_logger().debug(f"Gripper command: {self.gripper_position}")
         except Exception as e:
             self.get_logger().warn(f"Erro ao processar comando do gripper: {e}")
 

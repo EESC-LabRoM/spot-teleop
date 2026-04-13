@@ -307,21 +307,6 @@ class CuroboMpcNode(Node):
         self._joint_state_age = 0.0  # how old is the joint state data
         self._last_joint_stamp = None
 
-        # CSV auto-save
-        import csv as _csv, datetime as _dt
-        _ts = _dt.datetime.now().strftime('%Y%m%d_%H%M%S')
-        self._csv_path = os.path.join(
-            os.path.expanduser('~'), f'curobo_run_{_ts}.csv')
-        self._csv_file = open(self._csv_path, 'w', newline='')
-        self._csv_writer = _csv.writer(self._csv_file)
-        self._csv_writer.writerow([
-            'step', 'status', 'loop_time_ms', 'mpc_step_ms',
-            'gpu_util', 'js_age_ms', 'min_dist',
-            'mpc_error', 'mpc_constraint', 'coll_cost', 'evasion_dev',
-            'joint_tracking_err',
-        ])
-        self.get_logger().info(f'CSV logging -> {self._csv_path}')
-
         # GPU monitoring via pynvml - use same device as torch
         self._gpu_monitor_available = False
         try:
@@ -1051,15 +1036,7 @@ class CuroboMpcNode(Node):
                 joint_cmd.effort = []
 
             self.cmd_pub.publish(joint_cmd)
-
-            # Joint tracking error (mean |cmd - curr| over arm joints)
-            try:
-                curr_ordered = cu_js.get_ordered_joint_state(ordered_names)
-                curr_arr = curr_ordered.position.view(-1).cpu().numpy()
-                _jtrack = float(np.mean(np.abs(np.array(pos_list) - curr_arr)))
-            except Exception:
-                _jtrack = 0.0
-
+            
             t_loop_end = time.time()
             total_loop_dt = t_loop_end - t_loop_start
             mesh_dt = t_mesh_end - t_mesh_start
@@ -1075,27 +1052,6 @@ class CuroboMpcNode(Node):
                 self._loop_times = self._loop_times[-50:]
             if len(self._step_times) > 50:
                 self._step_times = self._step_times[-50:]
-
-            # CSV row every step
-            if hasattr(self, '_csv_writer'):
-                _gpu_u, _, _, _, _, _ = self._get_gpu_stats() if self.step_count % 10 == 0 else (-1, 0, 0, 0, 0, 0)
-                _sd = self._get_sphere_distances() if self.step_count % 10 == 0 else []
-                _min_d = max(_sd) if _sd else -1.0
-                self._csv_writer.writerow([
-                    self.step_count,
-                    'OK' if is_feasible else 'BLOCKED',
-                    int(total_loop_dt * 1000),
-                    int(step_dt * 1000),
-                    _gpu_u, int(js_age * 1000) if js_age >= 0 else -1,
-                    round(_min_d, 4),
-                    round(mpc_result.metrics.pose_error.item(), 4),
-                    round(coll_constraint, 4),
-                    round(coll_cost, 4),
-                    round(evasion_dev, 4),
-                    round(_jtrack, 4),
-                ])
-                if self.step_count % 100 == 0:
-                    self._csv_file.flush()
 
             # DETAILED LOGGING every 10 steps
             if self.step_count % 10 == 0:
@@ -1150,10 +1106,6 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
-        if hasattr(node, '_csv_file'):
-            node._csv_file.flush()
-            node._csv_file.close()
-            print(f"CSV salvo: {node._csv_path}")
         node.destroy_node()
         try:
             rclpy.shutdown()

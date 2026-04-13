@@ -2,84 +2,121 @@
 
 """
 Gripper Controller Node for Boston Dynamics Spot Robot
-Subscribes to gripper position commands and smoothly actuates the gripper.
-Other nodes can publish to /gripper/command to control gripper position.
+Subscribes to gripper goal commands and smoothly actuates the gripper.
+Other nodes can publish to /gripper/goal to request a gripper position.
+Publishes smoothed position to /gripper/command for the driver.
 """
 
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Float64
 from sensor_msgs.msg import JointState
-from spot_msgs.msg import JointCommand
 import time
 import threading
+
+try:
+    from spot_msgs.msg import JointCommand
+except ImportError:
+    JointCommand = None
 
 
 class GripperControllerNode(Node):
     """
     ROS2 Node for continuous gripper control.
     
-    Subscribes to /gripper/command (Float64) and smoothly moves gripper to commanded position.
-    Publishes commands to spot_joint_controller.
+    Subscribes to /gripper/goal (Float64) and smoothly moves gripper to commanded position.
+    Publishes smoothed commands to /gripper/command for the driver.
     """
     
     # Gripper constants
     GRIPPER_JOINT_NAME = "arm_f1x"
     
-    # Gripper gains (from set_gripper_gains.py example)
-    K_Q_P = 16.0
-    K_QD_P = 0.32
-    
     # Motion parameters
-    DEFAULT_DURATION = 1.5  # seconds
+    DEFAULT_DURATION = 0.7  # seconds
     CONTROL_FREQUENCY = 50.0  # Hz
     
     def __init__(self):
         super().__init__('gripper_controller_node')
-        
+
+        self.declare_parameter('use_ros2_control', False)
+        self.use_ros2_control = self.get_parameter('use_ros2_control').value
+
         # Current state
         self.current_goal = None
         self.is_moving = False
         self.motion_lock = threading.Lock()
         self.latest_joint_state = None
-        
-        # Publisher for gripper commands
-        self.gripper_pub = self.create_publisher(
-            JointCommand,
-            'spot_joint_controller/joint_commands',
-            10
-        )
-        
-        # Joint state subscription for feedback (standard ROS2 subscriber)
+        self.last_state_log_time = 0
+        self.state_msg_count = 0
+
+        # Publisher
+        if self.use_ros2_control:
+            if JointCommand is None:
+                self.get_logger().fatal('use_ros2_control=True but spot_msgs.msg.JointCommand not found!')
+                raise ImportError('spot_msgs.msg.JointCommand not available')
+            self.gripper_pub = self.create_publisher(
+                JointCommand,
+                '/spot_joint_controller/joint_commands',
+                10
+            )
+            cmd_topic = '/spot_joint_controller/joint_commands'
+        else:
+            self.gripper_pub = self.create_publisher(
+                Float64,
+                'gripper/command',
+                10
+            )
+            cmd_topic = 'gripper/command'
+
+        joint_topic = '/low_level/joint_states' if self.use_ros2_control else '/joint_states'
         self.joint_state_sub = self.create_subscription(
             JointState,
-            'joint_states_mapped',
+            joint_topic,
             self.joint_state_callback,
             10
         )
-        
-        # Subscribe to gripper command topic
+
         self.command_sub = self.create_subscription(
             Float64,
-            'gripper/command',
+            'gripper/goal',
             self.command_callback,
             10
         )
-        
+
+        mode = "ros2_control (JointCommand)" if self.use_ros2_control else "spot_driver (Float64)"
         self.get_logger().info("=" * 60)
-        self.get_logger().info("Gripper Controller Node initialized!")
+        self.get_logger().info(f"Gripper Controller Node initialized! Mode: {mode}")
         self.get_logger().info("=" * 60)
-        self.get_logger().info("Subscribing to: /gripper/command (std_msgs/Float64)")
-        self.get_logger().info("Publishing to: /spot_joint_controller/joint_commands")
+        self.get_logger().info(f"Subscribing to: /gripper/goal (std_msgs/Float64)")
+        self.get_logger().info(f"Publishing to:  {cmd_topic}")
+        self.get_logger().info(f"Joint states:   {joint_topic}")
         self.get_logger().info("")
         self.get_logger().info("Usage examples:")
-        self.get_logger().info("  Open:  ros2 topic pub --once /gripper/command std_msgs/Float64 'data: -1.57'")
-        self.get_logger().info("  Close: ros2 topic pub --once /gripper/command std_msgs/Float64 'data: 0.0'")
+        self.get_logger().info("  Open:  ros2 topic pub --once /gripper/goal std_msgs/Float64 'data: -1.57'")
+        self.get_logger().info("  Close: ros2 topic pub --once /gripper/goal std_msgs/Float64 'data: 0.0'")
         self.get_logger().info("=" * 60)
     
+    def _publish_gripper(self, angle: float):
+        """Publish gripper command in the appropriate format."""
+        if self.use_ros2_control:
+            msg = JointCommand()
+            msg.name = [self.GRIPPER_JOINT_NAME]
+            msg.position = [angle]
+        else:
+            msg = Float64()
+            msg.data = angle
+        self.gripper_pub.publish(msg)
+
     def joint_state_callback(self, msg: JointState):
         """Store latest joint state message."""
+        self.state_msg_count += 1
         self.latest_joint_state = msg
+        
+        # Log every 2 seconds or every 100 messages to avoid spam but confirm receipts
+        now = time.time()
+        if now - self.last_state_log_time > 2.0:
+            self.get_logger().info(f"Received joint state update #{self.state_msg_count} (joints: {len(msg.name)})")
+            self.last_state_log_time = now
     
     def get_gripper_joint_angle(self):
         """Get current gripper joint angle from joint states"""
@@ -87,11 +124,12 @@ class GripperControllerNode(Node):
             # Use cached joint state instead of synchros2 unwrap_future
             joint_state = self.latest_joint_state
             if joint_state is None:
-                self.get_logger().warn("No joint state received yet")
+                self.get_logger().warn(f"No joint state received yet. Subscriber to: {self.joint_state_sub.topic_name}")
                 return None
             
             if self.GRIPPER_JOINT_NAME not in joint_state.name:
-                self.get_logger().error(f"Gripper joint {self.GRIPPER_JOINT_NAME} not found!")
+                self.get_logger().error(f"Gripper joint {self.GRIPPER_JOINT_NAME} not found in joint state!")
+                self.get_logger().debug(f"Available joints: {joint_state.name}")
                 return None
             
             gripper_index = joint_state.name.index(self.GRIPPER_JOINT_NAME)
@@ -148,26 +186,33 @@ class GripperControllerNode(Node):
             dt = 1.0 / self.CONTROL_FREQUENCY
             step_size = (goal_angle - current_angle) / npoints if npoints > 0 else 0
             
-            # Create JointCommand message
-            joint_cmd = JointCommand()
-            joint_cmd.name = [self.GRIPPER_JOINT_NAME]
-            joint_cmd.k_q_p = [self.K_Q_P]
-            joint_cmd.k_qd_p = [self.K_QD_P]
-            
             self.get_logger().info(f"Moving gripper: {current_angle:.3f} -> {goal_angle:.3f} rad")
             
             # Smooth motion with linear interpolation
             for i in range(npoints):
                 target_angle = current_angle + i * step_size
-                joint_cmd.position = [target_angle]
-                self.gripper_pub.publish(joint_cmd)
+                self._publish_gripper(target_angle)
                 time.sleep(dt)
-            
+
             # Final position - ensure we reach exact goal
-            joint_cmd.position = [goal_angle]
-            self.gripper_pub.publish(joint_cmd)
+            self._publish_gripper(goal_angle)
             
-            self.get_logger().info(f"Gripper reached: {goal_angle:.3f} rad")
+            # Short wait for the robot to respond and joint states to update
+            time.sleep(0.2)
+            
+            # Check actual position to verify
+            final_angle = self.get_gripper_joint_angle()
+            if final_angle is not None:
+                error = abs(final_angle - goal_angle)
+                if error < 0.05:
+                    self.get_logger().info(f"Gripper reached goal: {final_angle:.3f} rad")
+                else:
+                    self.get_logger().warn(
+                        f"Gripper motion ended at {final_angle:.3f} rad (Goal: {goal_angle:.3f}, Error: {error:.3f})"
+                    )
+            else:
+                self.get_logger().info(f"Gripper command {goal_angle:.3f} rad sent, but feedback is unavailable")
+                
             self.is_moving = False
 
 
