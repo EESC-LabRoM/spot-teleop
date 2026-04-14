@@ -64,9 +64,17 @@ class TFProjectionNode(Node):
         self.tf_broadcaster = TransformBroadcaster(self)
 
         self._tracking_state = "UNKNOWN"
-        self._last_valid_target = None  # (x, y, z)
+        self._last_valid_target = None  # (x, y, z) in target_parent_frame (vision/odom)
+        self._last_vision_pt = None     # (x, y, z) in target_parent_frame — set on seed, used as depth fallback
 
         self._pose_pub = self.create_publisher(PoseStamped, target_pose_topic, 10)
+        # Geometry depth fallback: continuously republish the known vision-frame object position
+        # reprojected into the hand camera frame.  The tracker uses this as depth fallback when
+        # the depth sensor doesn't cover the edge of the RGB image.
+        self._geometry_cam_pub = self.create_publisher(
+            PointStamped, "/tracking/geometry_3d_in_cam", 10
+        )
+        self._geometry_cam_timer = self.create_timer(0.1, self._publish_geometry_cam_pt)
         self._track_sub = self.create_subscription(
             PointStamped, tracking_point_topic, self._tracking_3d_cb, 10
         )
@@ -116,6 +124,12 @@ class TFProjectionNode(Node):
                 lambda msg, c=cam: self._secondary_camera_info_cb(msg, c), 10
             )
         if self._secondary_cameras:
+            # Continuous secondary reprojection at 10Hz from the stable vision-frame
+            # position (_last_vision_pt).  This decouples secondary FOV detection from
+            # the hand tracking cycle rate (~1.3s) and centroid jitter.
+            self._secondary_reproject_timer = self.create_timer(
+                0.1, self._continuous_secondary_reproject
+            )
             self.get_logger().info(
                 f"Secondary cameras for reprojection: {self._secondary_cameras}, camera_info_pattern={secondary_camera_info_topic_pattern}"
             )
@@ -168,6 +182,19 @@ class TFProjectionNode(Node):
             self.get_logger().debug(
                 f"[HOLD] Seeding secondary cameras from last known odom ({x:.3f},{y:.3f},{z:.3f})",
             )
+
+    def _continuous_secondary_reproject(self):
+        """Reproject the stable vision-frame object position to secondary cameras at 10Hz.
+
+        Unlike _tracking_3d_cb (which uses the jittery hand-tracking centroid at ~1.3s rate),
+        this uses _last_vision_pt — the original VLM detection, which is fixed in the world.
+        Runs regardless of tracking state so secondary cameras detect FOV entry promptly.
+        """
+        if self._last_vision_pt is None:
+            return
+        x, y, z = self._last_vision_pt
+        timeout = Duration(seconds=0.0)  # non-blocking TF lookup
+        self._reproject_to_secondary(x, y, z, timeout, force_reinit=False)
 
     def _lookup_transform_at_stamp(self, source_frame: str, stamp_msg) -> TransformStamped:
         st = rclpy.time.Time.from_msg(stamp_msg)
@@ -264,7 +291,7 @@ class TFProjectionNode(Node):
             fx, fy, cx_i, cy_i = intrinsics
             u = fx * (cam_x / cam_z) + cx_i
             v = fy * (cam_y / cam_z) + cy_i
-            margin = 60
+            margin = 40
             if not (margin <= u < w - margin and margin <= v < h - margin):
                 continue  # outside FOV (with margin) — do not publish; SAM2 stops tracking
             pixel_msg = PointStamped()
@@ -308,6 +335,8 @@ class TFProjectionNode(Node):
         self.get_logger().info(
             f"[TF] step1 cam→{self.target_parent_frame}: pt=({odom_x:.3f},{odom_y:.3f},{odom_z:.3f}) tf_t=({tx:.3f},{ty:.3f},{tz:.3f})"
         )
+        # Store vision-frame position for geometry depth fallback (object is stationary in world)
+        self._last_vision_pt = (odom_x, odom_y, odom_z)
 
         # 2) target_parent→hand_cam @T_now (latest available)
         timeout = Duration(seconds=self.tf_lookup_timeout_sec)
@@ -407,6 +436,43 @@ class TFProjectionNode(Node):
         if self._secondary_cameras:
             timeout = Duration(seconds=self.tf_lookup_timeout_sec)
             self._reproject_to_secondary(float(target_x), float(target_y), float(target_z), timeout)
+
+    def _publish_geometry_cam_pt(self):
+        """Reproject last known vision-frame object position into hand camera frame and publish.
+
+        Used by the tracker as a depth fallback when the depth sensor doesn't cover the
+        edge of the RGB image (depth resolution mismatch near FOV boundary).
+        """
+        if self._last_vision_pt is None:
+            return
+        ox, oy, oz = self._last_vision_pt
+        try:
+            t_now = self.tf_buffer.lookup_transform(
+                self._hand_camera_frame,
+                self.target_parent_frame,
+                rclpy.time.Time(),
+                timeout=Duration(seconds=0.0),
+            )
+        except Exception:
+            return
+        tx2 = t_now.transform.translation.x
+        ty2 = t_now.transform.translation.y
+        tz2 = t_now.transform.translation.z
+        qx2 = t_now.transform.rotation.x
+        qy2 = t_now.transform.rotation.y
+        qz2 = t_now.transform.rotation.z
+        qw2 = t_now.transform.rotation.w
+        cx, cy, cz = self._rotate_point_by_quaternion(ox, oy, oz, qx2, qy2, qz2, qw2)
+        cam_x, cam_y, cam_z = cx + tx2, cy + ty2, cz + tz2
+        if cam_z <= 0.0:
+            return
+        msg = PointStamped()
+        msg.header.stamp = t_now.header.stamp
+        msg.header.frame_id = self._hand_camera_frame
+        msg.point.x = float(cam_x)
+        msg.point.y = float(cam_y)
+        msg.point.z = float(cam_z)
+        self._geometry_cam_pub.publish(msg)
 
     def _publish_cam_speed(self):
         """Compute linear speed of hand camera in 'vision' frame and publish to /hand/camera_speed."""

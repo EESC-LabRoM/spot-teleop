@@ -9,6 +9,7 @@ def generate_launch_description():
     executor_threads = LaunchConfiguration("executor_threads")
     secondary_cameras = LaunchConfiguration("secondary_cameras")
     
+    object_prompt = LaunchConfiguration("object_prompt")
     sim = LaunchConfiguration("sim")
     rgb_topic = LaunchConfiguration("rgb_topic")
     camera_info_topic = LaunchConfiguration("camera_info_topic")
@@ -19,6 +20,11 @@ def generate_launch_description():
     
     return LaunchDescription(
         [
+            DeclareLaunchArgument(
+                "object_prompt",
+                default_value="wheel valve",
+                description="Object to detect with the VLM.",
+            ),
             DeclareLaunchArgument(
                 "sim",
                 default_value="true",
@@ -111,7 +117,10 @@ def generate_launch_description():
                 package="spot_operation_ros2",
                 executable="vlm_relocalize_node",
                 name="vlm_relocalize_node",
-                parameters=[{"use_sim_time": use_sim_time}],
+                parameters=[{
+                    "use_sim_time": use_sim_time,
+                    "object_prompt": object_prompt,
+                }],
                 output="screen",
             ),
             Node(

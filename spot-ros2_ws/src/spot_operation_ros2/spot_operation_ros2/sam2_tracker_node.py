@@ -393,6 +393,7 @@ class Sam2TrackerNode(Node):
         self._pending_seed_pixel_uv = None    # (u, v) reprojected pixel
         self._pending_seed_pixel_tnow = None  # sim_time (float) when TF was computed
         self._pending_seed_pixel_clock_t = 0.0  # node clock time (sec) when seed_pixel was queued
+        self._pending_seed_pixel_frame_count = 0  # frames received since seed_pixel was queued
 
         # Tracking state
         self.video_predictor = None
@@ -470,6 +471,11 @@ class Sam2TrackerNode(Node):
         )
         self._seed_pixel_sub = self.create_subscription(
             PointStamped, "/tracking/seed_pixel", self._seed_pixel_cb, 10
+        )
+        # Geometry depth fallback: vision-frame object position reprojected to hand cam by tf_projection
+        self._geometry_cam_pt: tuple = None  # (x, y, z) in hand_cam frame, TF-derived (no depth sensor)
+        self.create_subscription(
+            PointStamped, "/tracking/geometry_3d_in_cam", self._geometry_cam_pt_cb, 10
         )
 
         # Register secondary cameras
@@ -703,6 +709,10 @@ class Sam2TrackerNode(Node):
             pass
         # #endregion
 
+    def _geometry_cam_pt_cb(self, msg: PointStamped):
+        """Store the latest TF-derived object position in hand camera frame (no depth sensor needed)."""
+        self._geometry_cam_pt = (float(msg.point.x), float(msg.point.y), float(msg.point.z))
+
     def _synced_image_cb(self, rgb_msg: RosImage, depth_msg: RosImage):
         """Recebe par RGB+depth sincronizado e armazena para o tracking loop."""
         try:
@@ -719,23 +729,23 @@ class Sam2TrackerNode(Node):
         except Exception as e:
             self.get_logger().error(f"Image conversion error: {e}")
             return
-        # Check if this frame matches a pending seed_pixel T_now
+        # Check if there's a pending seed_pixel waiting for a fresh frame.
+        # Initialize SAM2 on the FIRST new frame that arrives after the seed
+        # was queued.  We skip frame_count==0 (the frame that was already in
+        # the pipeline when _seed_pixel_cb fired — may still be stale from
+        # the single-thread block).  Frame #1+ is guaranteed fresh.
         if self._pending_seed_pixel_uv is not None:
-            dt = abs(stamp_sec - self._pending_seed_pixel_tnow)
-            if dt < 0.1:
+            self._pending_seed_pixel_frame_count += 1
+            if self._pending_seed_pixel_frame_count >= 2:
                 u_sp, v_sp = self._pending_seed_pixel_uv
+                dt_tf = abs(stamp_sec - self._pending_seed_pixel_tnow)
                 self._pending_seed_pixel_uv = None
                 self._pending_seed_pixel_tnow = None
                 self.get_logger().info(
-                    f"[TRACKER] frame matched seed_pixel T_now (dt={dt*1000:.1f}ms), initializing SAM2"
+                    f"[TRACKER] fresh frame #{self._pending_seed_pixel_frame_count} after seed_pixel "
+                    f"(dt_tf={dt_tf*1000:.0f}ms), initializing SAM2 at ({u_sp},{v_sp})"
                 )
                 self._do_video_predictor_init(u_sp, v_sp, self.latest_rgb, self.latest_depth, depth_msg.header)
-            elif stamp_sec - self._pending_seed_pixel_clock_t > 3.0:
-                self.get_logger().warn(
-                    "[TRACKER] seed_pixel wait timed out (3s) — frame buffer never caught up"
-                )
-                self._pending_seed_pixel_uv = None
-                self._pending_seed_pixel_tnow = None
         # Publish last known mask (or zeros) with this frame's exact timestamp so
         # nvblox ExactTimeSynchronizer (color+mask) always fires on every frame.
         self._publish_mask_for_header(rgb_msg.header)
@@ -1076,8 +1086,9 @@ class Sam2TrackerNode(Node):
         self._pending_seed_pixel_uv = (u, v)
         self._pending_seed_pixel_tnow = t_now
         self._pending_seed_pixel_clock_t = self.get_clock().now().nanoseconds * 1e-9
+        self._pending_seed_pixel_frame_count = 0
         self.get_logger().info(
-            f"[TRACKER] seed_pixel queued: ({u},{v}) tnow={t_now:.3f} — will init when matching frame arrives"
+            f"[TRACKER] seed_pixel queued: ({u},{v}) tnow={t_now:.3f} — will init on next fresh frame"
         )
 
     def _do_video_predictor_init(self, u: int, v: int, img_pil, depth_np, header):
@@ -1230,10 +1241,31 @@ class Sam2TrackerNode(Node):
                 x = (float(mask_centroid_u) - cx) * z / fx
                 y = (float(mask_centroid_v) - cy) * z / fy
                 point_cam = (x, y, z)
+        # Last-resort fallback: use TF-derived geometry depth (no depth sensor required).
+        # The tf_projection_node reprojects the known vision-frame object position into the
+        # hand cam frame at ~10 Hz.  Z is accurate; we pair it with the mask centroid pixel.
+        if point_cam is None and self._geometry_cam_pt is not None:
+            gz = self._geometry_cam_pt[2]
+            if gz > 0.0 and self.camera_intrinsics is not None:
+                fx, fy, cx, cy = self.camera_intrinsics
+                x_g = (float(mask_centroid_u) - cx) * gz / fx
+                y_g = (float(mask_centroid_v) - cy) * gz / fy
+                point_cam = (x_g, y_g, gz)
+                self.get_logger().info(
+                    f"Using geometry depth fallback: z={gz:.3f}m centroid=({mask_centroid_u},{mask_centroid_v})",
+                    throttle_duration_sec=1.0,
+                )
+
         if point_cam is not None:
             self._publish_tracking_3d(point_cam[0], point_cam[1], point_cam[2], h)
         else:
-            self.get_logger().warn("No valid depth for tracking point", throttle_duration_sec=1.0)
+            self.get_logger().warn(
+                f"No valid depth for tracking point — "
+                f"centroid=({mask_centroid_u},{mask_centroid_v}) "
+                f"adjusted_pixel=({u},{v}) "
+                f"geometry_cam_pt={self._geometry_cam_pt}",
+                throttle_duration_sec=1.0,
+            )
         self._hand_disp_state = 'TRACKING'
         self._hand_disp_mask = mask_np
         self._hand_disp_score = float(score)
@@ -1399,18 +1431,19 @@ class Sam2TrackerNode(Node):
         img_pil = st['latest_rgb']
         now = time.time()
 
-        # ── FOV timeout: if no seed received recently, object left FOV ──────────
-        if st['tracking_initialized'] and st['last_seed_time'] > 0.0:
+        # ── FOV timeout: only applies while NOT actively tracking ────────────────
+        # When tracking_initialized=True, SAM2 itself determines when the object
+        # is lost (via lost_streak).  The seed timeout only gates the ARMING phase —
+        # it prevents re-arming after the object has left the FOV.
+        if not st['tracking_initialized'] and st['last_seed_time'] > 0.0:
             if (now - st['last_seed_time']) > self._secondary_fov_timeout_sec:
-                st['tracking_initialized'] = False
-                st['needs_reinit'] = False
                 st['consecutive_seed_count'] = 0  # must accumulate again to re-arm
                 st['_disp_state'] = 'OUT_OF_FOV'
                 st['_disp_mask'] = None
                 st['_disp_score'] = 0.0
                 st['_disp_centroid'] = None
                 self.get_logger().info(
-                    f"[{cam}] Object left FOV (no seed for >{self._secondary_fov_timeout_sec:.1f}s)",
+                    f"[{cam}] Out of FOV (no seed for >{self._secondary_fov_timeout_sec:.1f}s while not tracking)",
                     throttle_duration_sec=3.0,
                 )
 
@@ -1510,6 +1543,23 @@ class Sam2TrackerNode(Node):
                 self.get_logger().info(
                     f"[{cam}] SAM2 initialized at ({u},{v}), score={score:.3f}",
                 )
+                # ── Debug: save init frame with mask + seed point ──────────────
+                try:
+                    dbg_arr = np.array(img_pil.convert("RGB"))
+                    green_overlay = np.zeros_like(dbg_arr)
+                    green_overlay[mask_u8 > 0] = [0, 200, 0]
+                    dbg_arr = cv2.addWeighted(dbg_arr, 1.0, green_overlay, 0.45, 0)
+                    cv2.drawMarker(dbg_arr, (u, v), (255, 0, 0), cv2.MARKER_CROSS, 20, 2)
+                    m_dbg = cv2.moments(mask_u8)
+                    if m_dbg["m00"] != 0:
+                        mc_u = int(m_dbg["m10"] / m_dbg["m00"])
+                        mc_v = int(m_dbg["m01"] / m_dbg["m00"])
+                        cv2.circle(dbg_arr, (mc_u, mc_v), 5, (0, 0, 255), -1)
+                    dbg_path = self._snapshot_temp_dir / f"sam2_secondary_init_{cam}_{self._snapshot_run_idx:04d}.png"
+                    cv2.imwrite(str(dbg_path), cv2.cvtColor(dbg_arr, cv2.COLOR_RGB2BGR))
+                    self.get_logger().info(f"[{cam}] SAM2 secondary init debug saved: {dbg_path}")
+                except Exception as _exc:
+                    self.get_logger().warn(f"[{cam}] SAM2 secondary init debug save failed: {_exc}")
             else:
                 st['_disp_state'] = 'LOST'
                 st['_disp_mask'] = None
