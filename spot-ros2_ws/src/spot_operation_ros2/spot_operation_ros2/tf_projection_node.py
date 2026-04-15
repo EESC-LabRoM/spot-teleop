@@ -19,7 +19,7 @@ class TFProjectionNode(Node):
         self.declare_parameter("tracking_state_topic", "/tracking_state")
         self.declare_parameter("target_pose_topic", "/target_pose")
         self.declare_parameter("target_frame_name", "target_object")
-        self.declare_parameter("target_parent_frame", "odom")
+        self.declare_parameter("target_parent_frame", "vision")
         self.declare_parameter("hold_last_target_on_lost", True)
         self.declare_parameter("lost_hold_publish_hz", 10.0)
         self.declare_parameter("max_target_abs_m", 50.0)
@@ -28,6 +28,7 @@ class TFProjectionNode(Node):
         self.declare_parameter("tf_lookup_timeout_sec", 1.0)
         self.declare_parameter("tf_buffer_cache_time_sec", 120.0)
         self.declare_parameter("secondary_cameras", "")
+        self.declare_parameter("reloc_reference_tolerance_m", 0.4)  # max dist from first detection to accept re-seed
         self.declare_parameter("camera_info_topic", "/hand/camera_info")
         self.declare_parameter("secondary_camera_info_topic_pattern", "/{cam}/camera_info")
         self.declare_parameter("hand_camera_frame", "hand_color_image_sensor")
@@ -66,6 +67,7 @@ class TFProjectionNode(Node):
         self._tracking_state = "UNKNOWN"
         self._last_valid_target = None  # (x, y, z) in target_parent_frame (vision/odom)
         self._last_vision_pt = None     # (x, y, z) in target_parent_frame — set on seed, used as depth fallback
+        self._reference_vision_pt = None  # vision-frame position from FIRST successful detection — immutable reference
 
         self._pose_pub = self.create_publisher(PoseStamped, target_pose_topic, 10)
         # Geometry depth fallback: continuously republish the known vision-frame object position
@@ -291,9 +293,9 @@ class TFProjectionNode(Node):
             fx, fy, cx_i, cy_i = intrinsics
             u = fx * (cam_x / cam_z) + cx_i
             v = fy * (cam_y / cam_z) + cy_i
-            margin = 40
+            margin = 10  # just exclude absolute border pixels; IoU validation in tracker does the real filtering
             if not (margin <= u < w - margin and margin <= v < h - margin):
-                continue  # outside FOV (with margin) — do not publish; SAM2 stops tracking
+                continue
             pixel_msg = PointStamped()
             pixel_msg.header.stamp = t.header.stamp
             pixel_msg.header.frame_id = tf_frame
@@ -335,6 +337,27 @@ class TFProjectionNode(Node):
         self.get_logger().info(
             f"[TF] step1 cam→{self.target_parent_frame}: pt=({odom_x:.3f},{odom_y:.3f},{odom_z:.3f}) tf_t=({tx:.3f},{ty:.3f},{tz:.3f})"
         )
+        # Validate against first-detection reference (object is stationary — large deviations = bad TF or wrong object)
+        tol = float(self.get_parameter("reloc_reference_tolerance_m").value)
+        if self._reference_vision_pt is None:
+            self._reference_vision_pt = (odom_x, odom_y, odom_z)
+            self.get_logger().info(
+                f"[TF] Reference vision-frame point stored: ({odom_x:.3f},{odom_y:.3f},{odom_z:.3f})"
+            )
+            allow_secondary_reinit = True
+        else:
+            rx, ry, rz = self._reference_vision_pt
+            dist = ((odom_x - rx) ** 2 + (odom_y - ry) ** 2 + (odom_z - rz) ** 2) ** 0.5
+            if dist > tol:
+                self.get_logger().warn(
+                    f"[TF] Re-detection too far from reference ({dist:.2f}m > {tol:.2f}m) — "
+                    f"likely bad TF or wrong object. Skipping secondary force_reinit. "
+                    f"new=({odom_x:.3f},{odom_y:.3f},{odom_z:.3f}) ref=({rx:.3f},{ry:.3f},{rz:.3f})"
+                )
+                allow_secondary_reinit = False
+            else:
+                allow_secondary_reinit = True
+
         # Store vision-frame position for geometry depth fallback (object is stationary in world)
         self._last_vision_pt = (odom_x, odom_y, odom_z)
 
@@ -390,7 +413,7 @@ class TFProjectionNode(Node):
 
         # Also reproject the odom-frame seed to secondary cameras (1-shot on re-seed, force reinit)
         if self._secondary_cameras:
-            self._reproject_to_secondary(odom_x, odom_y, odom_z, timeout, force_reinit=True)
+            self._reproject_to_secondary(odom_x, odom_y, odom_z, timeout, force_reinit=allow_secondary_reinit)
 
     def _tracking_3d_cb(self, msg: PointStamped):
         if not msg.header.frame_id:

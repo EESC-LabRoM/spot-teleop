@@ -351,6 +351,8 @@ class Sam2TrackerNode(Node):
         self.declare_parameter('secondary_fov_timeout_sec', 3.0)
         self.declare_parameter('secondary_max_centroid_dist_px', 120.0)
         self.declare_parameter('secondary_fov_enter_count', 5)  # consecutive seeds to arm init
+        self.declare_parameter('secondary_iou_radius_px', 80.0)   # expected object radius for IoU check
+        self.declare_parameter('secondary_iou_min_overlap', 0.30)  # min fraction of mask inside circle
         self.declare_parameter('sam2_memory_reset_interval', 200)  # frames between memory resets
         self.declare_parameter('camera_speed_topic', '/hand/camera_speed')
 
@@ -438,6 +440,8 @@ class Sam2TrackerNode(Node):
         self._secondary_max_centroid_dist_px = float(self.get_parameter('secondary_max_centroid_dist_px').value)
         self._secondary_fov_enter_count = int(max(1, self.get_parameter('secondary_fov_enter_count').value))
         self._sam2_memory_reset_interval = int(max(1, self.get_parameter('sam2_memory_reset_interval').value))
+        self._secondary_iou_radius_px = float(self.get_parameter('secondary_iou_radius_px').value)
+        self._secondary_iou_min_overlap = float(self.get_parameter('secondary_iou_min_overlap').value)
 
         # Callback groups
         self.img_cb_group = ReentrantCallbackGroup()
@@ -557,12 +561,15 @@ class Sam2TrackerNode(Node):
                 self.get_logger().info(
                     f"[TRACKER] Snapshot taken for relocalization stamp={snap_sec:.3f} frame={self._snapshot_header.frame_id}"
                 )
-            # Pause secondary cameras: clear stale SAM2 state so they wait for a fresh
-            # force_reinit seed from tf_projection_node (published only after VLM succeeds).
+            # Pause secondary cameras that are NOT actively tracking.
+            # Cameras already tracking are left alone — they'll be reseeded when VLM
+            # succeeds and publishes force_reinit=True.  Resetting an active tracker
+            # on every failed VLM attempt causes an infinite pause→reinit loop.
             for cam, st in self._secondary_cam_state.items():
-                if st['tracking_initialized'] or st['needs_reinit']:
+                if st['tracking_initialized']:
+                    continue  # already tracking — don't disrupt
+                if st['needs_reinit']:
                     self.get_logger().info(f"[TRACKER] Pausing secondary cam {cam} during relocalization")
-                st['tracking_initialized'] = False
                 st['needs_reinit'] = False
                 st['consecutive_seed_count'] = 0
                 st['last_seed_time'] = 0.0
@@ -1197,11 +1204,16 @@ class Sam2TrackerNode(Node):
         best_tracked_mask, score = _best_mask_from_results(tracked_results)
         if best_tracked_mask is None:
             self._tracking_lost_streak += 1
+            self.get_logger().warn(
+                f"[HAND] No mask from SAM2 (lost_streak={self._tracking_lost_streak}/{self.tracking_lost_confirm_frames})",
+                throttle_duration_sec=1.0,
+            )
             if self._tracking_lost_streak >= self.tracking_lost_confirm_frames:
                 self.tracking_active = False
                 self._hand_disp_state = 'LOST'
                 self._hand_disp_mask = None
                 self._hand_disp_centroid = None
+                self.get_logger().warn("[HAND] Tracking lost — no mask for too long")
             return
 
         mask_np = best_tracked_mask.astype(np.uint8)
@@ -1523,27 +1535,48 @@ class Sam2TrackerNode(Node):
                 results = st['video_predictor'](img_np, points=[[u, v]], labels=[1])
             mask, score = _best_mask_from_results(results)
             if mask is not None:
-                st['tracking_initialized'] = True
-                st['needs_reinit'] = False
-                st['tracking_frame_count'] = 1
-                st['last_score'] = score
-                st['lost_streak'] = 0
                 mask_u8 = mask.astype(np.uint8)
-                self._publish_secondary_mask(cam, mask_u8)
-                st['_disp_state'] = 'TRACKING'
-                st['_disp_mask'] = mask_u8
-                st['_disp_score'] = score
-                st['_disp_centroid'] = (u, v)
+                # ── IoU validation: fraction of mask inside expected circle ──────
+                # Rejects background grabs (large mask outside expected region).
+                # Uses a circle of radius secondary_iou_radius_px centred at seed pixel.
+                h_img, w_img = mask_u8.shape[:2]
+                circle_mask = np.zeros((h_img, w_img), dtype=np.uint8)
+                cv2.circle(circle_mask, (u, v), int(self._secondary_iou_radius_px), 1, -1)
+                mask_area = float(mask_u8.sum())
+                overlap = float((mask_u8 & circle_mask).sum()) / max(mask_area, 1.0)
+                if overlap < self._secondary_iou_min_overlap:
+                    self.get_logger().warn(
+                        f"[{cam}] SAM2 init rejected by IoU: overlap={overlap:.2f} < {self._secondary_iou_min_overlap:.2f}"
+                        f" seed=({u},{v}) mask_area={int(mask_area)}px²"
+                    )
+                    st['needs_reinit'] = False  # don't retry immediately, wait for next arming cycle
+                    st['consecutive_seed_count'] = 0
+                else:
+                    st['tracking_initialized'] = True
+                    st['needs_reinit'] = False
+                    st['tracking_frame_count'] = 1
+                    st['last_score'] = score
+                    st['lost_streak'] = 0
+                    self._publish_secondary_mask(cam, mask_u8)
+                    st['_disp_state'] = 'TRACKING'
+                    st['_disp_mask'] = mask_u8
+                    st['_disp_score'] = score
+                    st['_disp_centroid'] = (u, v)
                 if self.visualize:
                     self._update_secondary_display(
-                        cam, img_pil, 'TRACKING',
-                        mask_np=mask_u8, score=score,
+                        cam, img_pil, st['_disp_state'],
+                        mask_np=st['_disp_mask'], score=score,
                         centroid_uv=(u, v), expected_uv=st['init_uv'],
                     )
-                self.get_logger().info(
-                    f"[{cam}] SAM2 initialized at ({u},{v}), score={score:.3f}",
-                )
-                # ── Debug: save init frame with mask + seed point ──────────────
+                if not st['tracking_initialized']:
+                    pass  # IoU rejected — skip log and debug image
+                else:
+                    self.get_logger().info(
+                        f"[{cam}] SAM2 initialized at ({u},{v}), score={score:.3f} overlap={overlap:.2f}",
+                    )
+                # ── Debug: save init frame with mask + seed point (only on accepted init) ──
+                if not st['tracking_initialized']:
+                    return
                 try:
                     dbg_arr = np.array(img_pil.convert("RGB"))
                     green_overlay = np.zeros_like(dbg_arr)
@@ -1596,7 +1629,7 @@ class Sam2TrackerNode(Node):
                         )
                         if st['lost_streak'] >= self.tracking_lost_confirm_frames:
                             st['tracking_initialized'] = False
-                            st['needs_reinit'] = True
+                            st['consecutive_seed_count'] = 0  # re-arm from scratch
 
                 if consistent:
                     st['tracking_frame_count'] += 1
@@ -1632,9 +1665,14 @@ class Sam2TrackerNode(Node):
                         )
             else:
                 st['lost_streak'] += 1
+                self.get_logger().warn(
+                    f"[{cam}] No mask from SAM2 (lost_streak={st['lost_streak']}/{self.tracking_lost_confirm_frames})",
+                    throttle_duration_sec=1.0,
+                )
                 if st['lost_streak'] >= self.tracking_lost_confirm_frames:
                     st['tracking_initialized'] = False
-                    st['needs_reinit'] = True
+                    st['consecutive_seed_count'] = 0  # re-arm from scratch
+                    self.get_logger().warn(f"[{cam}] Tracking lost — no mask for too long")
                 st['_disp_state'] = 'LOST'
                 st['_disp_mask'] = None
                 if self.visualize:
