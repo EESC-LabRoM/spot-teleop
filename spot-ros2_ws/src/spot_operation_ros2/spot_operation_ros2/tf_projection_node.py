@@ -35,6 +35,7 @@ class TFProjectionNode(Node):
         self.declare_parameter("camera_speed_reference_frame", "vision")
         self.declare_parameter("camera_speed_topic", "/hand/camera_speed")
         self.declare_parameter("camera_speed_hz", 15.0)
+        self.declare_parameter("secondary_reinit_speed_gate_m_s", 0.1)
 
         tracking_3d_topic = str(self.get_parameter("tracking_3d_topic").value)
         tracking_state_topic = str(self.get_parameter("tracking_state_topic").value)
@@ -68,6 +69,8 @@ class TFProjectionNode(Node):
         self._last_valid_target = None  # (x, y, z) in target_parent_frame (vision/odom)
         self._last_vision_pt = None     # (x, y, z) in target_parent_frame — set on seed, used as depth fallback
         self._reference_vision_pt = None  # vision-frame position from FIRST successful detection — immutable reference
+        self._latest_cam_speed = 0.0
+        self._pending_force_reinit_pt = None  # (odom_x, odom_y, odom_z) deferred until camera stable
 
         self._pose_pub = self.create_publisher(PoseStamped, target_pose_topic, 10)
         # Geometry depth fallback: continuously republish the known vision-frame object position
@@ -95,6 +98,7 @@ class TFProjectionNode(Node):
         self._prev_cam_pos_time = None
         cam_speed_hz = float(max(1.0, self.get_parameter("camera_speed_hz").value))
         self._cam_speed_timer = self.create_timer(1.0 / cam_speed_hz, self._publish_cam_speed)
+        self._secondary_reinit_speed_gate_m_s = float(self.get_parameter("secondary_reinit_speed_gate_m_s").value)
 
         # Seed reprojection: 3D@T0 → pixel@T_now
         self._seed_3d_sub = self.create_subscription(
@@ -191,12 +195,24 @@ class TFProjectionNode(Node):
         Unlike _tracking_3d_cb (which uses the jittery hand-tracking centroid at ~1.3s rate),
         this uses _last_vision_pt — the original VLM detection, which is fixed in the world.
         Runs regardless of tracking state so secondary cameras detect FOV entry promptly.
+        Also fires any deferred force_reinit once the camera has stabilised.
         """
+        # Fire deferred force_reinit once camera has stabilised
+        if self._pending_force_reinit_pt is not None:
+            if self._latest_cam_speed <= self._secondary_reinit_speed_gate_m_s:
+                x, y, z = self._pending_force_reinit_pt
+                self._pending_force_reinit_pt = None
+                self.get_logger().info(
+                    f"[TF] Firing deferred secondary force_reinit (speed={self._latest_cam_speed:.3f} m/s)"
+                )
+                self._reproject_to_secondary(x, y, z, Duration(seconds=0.0), force_reinit=True)
+            # else: still moving — keep pending
+
+        # Normal 10Hz update-only seeds from stable vision-frame position
         if self._last_vision_pt is None:
             return
         x, y, z = self._last_vision_pt
-        timeout = Duration(seconds=0.0)  # non-blocking TF lookup
-        self._reproject_to_secondary(x, y, z, timeout, force_reinit=False)
+        self._reproject_to_secondary(x, y, z, Duration(seconds=0.0), force_reinit=False)
 
     def _lookup_transform_at_stamp(self, source_frame: str, stamp_msg) -> TransformStamped:
         st = rclpy.time.Time.from_msg(stamp_msg)
@@ -411,9 +427,15 @@ class TFProjectionNode(Node):
         self._seed_pixel_pub.publish(pixel_msg)
         self.get_logger().info(f"[TF] Reprojected seed pixel: ({u:.0f}, {v:.0f})")
 
-        # Also reproject the odom-frame seed to secondary cameras (1-shot on re-seed, force reinit)
-        if self._secondary_cameras:
-            self._reproject_to_secondary(odom_x, odom_y, odom_z, timeout, force_reinit=allow_secondary_reinit)
+        # Defer secondary force_reinit until camera is stable — robot may have moved during VLM processing
+        if self._secondary_cameras and allow_secondary_reinit:
+            self._pending_force_reinit_pt = (odom_x, odom_y, odom_z)
+            self.get_logger().info(
+                f"[TF] Secondary force_reinit pending until camera stable "
+                f"(current speed={self._latest_cam_speed:.3f} m/s)"
+            )
+        # If allow_secondary_reinit=False: reference check failed; skip reinit.
+        # _continuous_secondary_reproject handles 10Hz update-only seeds via _last_vision_pt.
 
     def _tracking_3d_cb(self, msg: PointStamped):
         if not msg.header.frame_id:
@@ -522,6 +544,7 @@ class TFProjectionNode(Node):
                 speed = math.sqrt(dx * dx + dy * dy + dz * dz) / dt
         self._prev_cam_pos = (x, y, z)
         self._prev_cam_pos_time = now
+        self._latest_cam_speed = speed
         msg = Float64()
         msg.data = float(speed)
         self._cam_speed_pub.publish(msg)

@@ -355,6 +355,10 @@ class Sam2TrackerNode(Node):
         self.declare_parameter('secondary_iou_min_overlap', 0.30)  # min fraction of mask inside circle
         self.declare_parameter('sam2_memory_reset_interval', 200)  # frames between memory resets
         self.declare_parameter('camera_speed_topic', '/hand/camera_speed')
+        self.declare_parameter('hand_reinit_speed_gate_m_s', 0.08)
+        self.declare_parameter('hand_reinit_speed_gate_timeout_s', 5.0)
+        self.declare_parameter('hand_iou_radius_px', 100.0)
+        self.declare_parameter('hand_iou_min_overlap', 0.25)
 
         self.visualize = self.get_parameter('visualize').value
         self.tracking_window_name = self.get_parameter('tracking_window_name').value
@@ -395,7 +399,6 @@ class Sam2TrackerNode(Node):
         self._pending_seed_pixel_uv = None    # (u, v) reprojected pixel
         self._pending_seed_pixel_tnow = None  # sim_time (float) when TF was computed
         self._pending_seed_pixel_clock_t = 0.0  # node clock time (sec) when seed_pixel was queued
-        self._pending_seed_pixel_frame_count = 0  # frames received since seed_pixel was queued
 
         # Tracking state
         self.video_predictor = None
@@ -442,6 +445,10 @@ class Sam2TrackerNode(Node):
         self._sam2_memory_reset_interval = int(max(1, self.get_parameter('sam2_memory_reset_interval').value))
         self._secondary_iou_radius_px = float(self.get_parameter('secondary_iou_radius_px').value)
         self._secondary_iou_min_overlap = float(self.get_parameter('secondary_iou_min_overlap').value)
+        self._hand_reinit_speed_gate_m_s = float(self.get_parameter('hand_reinit_speed_gate_m_s').value)
+        self._hand_reinit_speed_gate_timeout_s = float(self.get_parameter('hand_reinit_speed_gate_timeout_s').value)
+        self._hand_iou_radius_px = float(self.get_parameter('hand_iou_radius_px').value)
+        self._hand_iou_min_overlap = float(self.get_parameter('hand_iou_min_overlap').value)
 
         # Callback groups
         self.img_cb_group = ReentrantCallbackGroup()
@@ -736,23 +743,36 @@ class Sam2TrackerNode(Node):
         except Exception as e:
             self.get_logger().error(f"Image conversion error: {e}")
             return
-        # Check if there's a pending seed_pixel waiting for a fresh frame.
-        # Initialize SAM2 on the FIRST new frame that arrives after the seed
-        # was queued.  We skip frame_count==0 (the frame that was already in
-        # the pipeline when _seed_pixel_cb fired — may still be stale from
-        # the single-thread block).  Frame #1+ is guaranteed fresh.
+        # Check if there's a pending seed_pixel waiting for a stamp-matched frame.
+        # Wait until a frame at or after T_now arrives (stamp gate), then apply velocity
+        # gate before initializing SAM2.  This ensures latest_rgb corresponds to the
+        # camera pose for which the seed pixel was computed.
         if self._pending_seed_pixel_uv is not None:
-            self._pending_seed_pixel_frame_count += 1
-            if self._pending_seed_pixel_frame_count >= 2:
-                u_sp, v_sp = self._pending_seed_pixel_uv
-                dt_tf = abs(stamp_sec - self._pending_seed_pixel_tnow)
-                self._pending_seed_pixel_uv = None
-                self._pending_seed_pixel_tnow = None
-                self.get_logger().info(
-                    f"[TRACKER] fresh frame #{self._pending_seed_pixel_frame_count} after seed_pixel "
-                    f"(dt_tf={dt_tf*1000:.0f}ms), initializing SAM2 at ({u_sp},{v_sp})"
-                )
-                self._do_video_predictor_init(u_sp, v_sp, self.latest_rgb, self.latest_depth, depth_msg.header)
+            if stamp_sec >= self._pending_seed_pixel_tnow:
+                clock_now = self.get_clock().now().nanoseconds * 1e-9
+                age = clock_now - self._pending_seed_pixel_clock_t
+                if age > self._hand_reinit_speed_gate_timeout_s:
+                    self.get_logger().warn(
+                        f"[TRACKER] seed_pixel expired after {age:.1f}s — discarding"
+                    )
+                    self._pending_seed_pixel_uv = None
+                    self._pending_seed_pixel_tnow = None
+                elif (self._hand_cam_speed is not None
+                      and self._hand_cam_speed > self._hand_reinit_speed_gate_m_s):
+                    self.get_logger().info(
+                        f"[TRACKER] seed_pixel init deferred: cam_speed={self._hand_cam_speed:.3f} m/s "
+                        f"> gate={self._hand_reinit_speed_gate_m_s:.3f} (age={age:.2f}s)",
+                        throttle_duration_sec=0.5,
+                    )
+                else:
+                    u_sp, v_sp = self._pending_seed_pixel_uv
+                    self._pending_seed_pixel_uv = None
+                    self._pending_seed_pixel_tnow = None
+                    self.get_logger().info(
+                        f"[TRACKER] stamp-gate passed (cam_speed={self._hand_cam_speed or 0.0:.3f}), "
+                        f"initializing SAM2 at ({u_sp},{v_sp})"
+                    )
+                    self._do_video_predictor_init(u_sp, v_sp, self.latest_rgb, self.latest_depth, depth_msg.header)
         # Publish last known mask (or zeros) with this frame's exact timestamp so
         # nvblox ExactTimeSynchronizer (color+mask) always fires on every frame.
         self._publish_mask_for_header(rgb_msg.header)
@@ -1122,6 +1142,18 @@ class Sam2TrackerNode(Node):
             return
 
         mask_np = best_tracked_mask.astype(np.uint8)
+        # IoU validation: reject if mask is not concentrated around seed pixel
+        h_img, w_img = mask_np.shape[:2]
+        circle_mask = np.zeros((h_img, w_img), dtype=np.uint8)
+        cv2.circle(circle_mask, (u, v), int(self._hand_iou_radius_px), 1, -1)
+        mask_area = float(mask_np.sum())
+        overlap = float((mask_np & circle_mask).sum()) / max(mask_area, 1.0)
+        if overlap < self._hand_iou_min_overlap:
+            self.get_logger().warn(
+                f"[HAND] SAM2 init rejected by IoU: overlap={overlap:.2f} < {self._hand_iou_min_overlap:.2f}"
+                f" seed=({u},{v}) mask_area={int(mask_area)}px²"
+            )
+            return
         self.tracking_active = True
         self.tracking_frame_count = 1
         self.last_tracking_score = score

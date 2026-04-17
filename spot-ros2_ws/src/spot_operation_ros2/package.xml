@@ -20,6 +20,8 @@
   <depend>moveit_msgs</depend>
   <depend>spot_msgs</depend>
   <depend>synchros2</depend>
+  <depend>message_filters</depend>
+  <depend>std_msgs</depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

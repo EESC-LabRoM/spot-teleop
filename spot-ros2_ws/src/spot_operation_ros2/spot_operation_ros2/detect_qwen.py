@@ -103,26 +103,6 @@ def _sync_debug_ndjson(hypothesis_id: str, location: str, message: str, data: di
         pass
 
 
-def _ui_debug_ndjson(hypothesis_id: str, location: str, message: str, data: dict):
-    # #region agent log
-    payload = {
-        "sessionId": "eb5d37",
-        "id": f"log_{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}",
-        "timestamp": int(time.time() * 1000),
-        "runId": "repro-ui",
-        "hypothesisId": hypothesis_id,
-        "location": location,
-        "message": message,
-        "data": data,
-    }
-    try:
-        with open("/home/spot-teleop/spot-ros2_ws/.cursor/debug-eb5d37.log", "a", encoding="utf-8") as f:
-            f.write(json.dumps(payload, ensure_ascii=True) + "\n")
-    except Exception:
-        pass
-    # #endregion
-
-
 # Ultralytics SAM2 tiny (auto-download)
 SAM2_MODEL_NAME = "sam2.1_t.pt"
 
@@ -510,18 +490,9 @@ def parse_qwen_response(response_text: str, image_size: tuple[int, int] = None) 
                 if not isinstance(item, dict):
                     continue
                 if 'bbox_2d' in item:
-                    # JSON bbox_2d may come either as one box [x1,y1,x2,y2]
-                    # or as list of boxes [[...], [...]]; keep first valid.
+                    # JSON bbox_2d is typically [xmin, ymin, xmax, ymax] in PIXELS
                     b = item['bbox_2d']
-                    bbox_candidate = None
-                    if isinstance(b, (list, tuple)) and len(b) >= 4 and not isinstance(b[0], (list, tuple)):
-                        bbox_candidate = b
-                    elif isinstance(b, (list, tuple)) and len(b) > 0 and isinstance(b[0], (list, tuple)):
-                        for cand in b:
-                            if isinstance(cand, (list, tuple)) and len(cand) >= 4:
-                                bbox_candidate = cand
-                                break
-                    if bbox_candidate is None:
+                    if not isinstance(b, (list, tuple)) or len(b) < 4:
                         print(f"DEBUG: bbox_2d inválido em item JSON: {item}")
                         continue
                     label = item.get('label', 'object')
@@ -535,12 +506,7 @@ def parse_qwen_response(response_text: str, image_size: tuple[int, int] = None) 
                     
                     # O prompt já pede no formato [0-1000], portanto os valores já vêm normalizados!
                     # Não devemos dividir pelo tamanho da imagem novamente.
-                    xmin, ymin, xmax, ymax = (
-                        bbox_candidate[0],
-                        bbox_candidate[1],
-                        bbox_candidate[2],
-                        bbox_candidate[3],
-                    )
+                    xmin, ymin, xmax, ymax = b[0], b[1], b[2], b[3]
                     
                     grasps_1000 = []
                     if grasp_points:
@@ -964,7 +930,7 @@ class DetectQwenNode(Node):
         self.declare_parameter('camera_info_topic', '/hand/camera_info')
         self.declare_parameter('depth_info_topic', '/hand/camera_info')
         self.declare_parameter('sync_queue_size', 20)
-        self.declare_parameter('sync_slop_sec', 0.25)
+        self.declare_parameter('sync_slop_sec', 2.0)
         self.declare_parameter('visualize', True)
         self.declare_parameter('tracking_window_name', 'SAM2 Live Tracking')
         
@@ -974,7 +940,6 @@ class DetectQwenNode(Node):
         self.robot_base_frame = self.get_parameter('robot_base_frame').value
         self.visualize = self.get_parameter('visualize').value
         self.tracking_window_name = self.get_parameter('tracking_window_name').value
-        self._ui_debug_calls = 0
         rgb_topic = self.get_parameter('rgb_topic').value
         depth_topic = self.get_parameter('depth_topic').value
         self._param_rgb_topic = rgb_topic
@@ -988,18 +953,6 @@ class DetectQwenNode(Node):
         self.get_logger().info(f"Confidence threshold: {self.confidence_threshold}")
         self.get_logger().info(f"Target frame: {self.target_frame_name}")
         self.get_logger().info(f"Robot base frame (TF): {self.robot_base_frame}")
-        _ui_debug_ndjson(
-            "H17",
-            "detect_qwen.py:__init__",
-            "ui_debug_config",
-            {
-                "visualize": bool(self.visualize),
-                "tracking_window_name": str(self.tracking_window_name),
-                "DISPLAY": str(os.environ.get("DISPLAY", "")),
-                "WAYLAND_DISPLAY": str(os.environ.get("WAYLAND_DISPLAY", "")),
-                "XDG_SESSION_TYPE": str(os.environ.get("XDG_SESSION_TYPE", "")),
-            },
-        )
         
         # State
         self.bridge = CvBridge()
@@ -1232,11 +1185,11 @@ class DetectQwenNode(Node):
         self.tf_buffer = Buffer(
             cache_time=Duration(seconds=self.tf_buffer_cache_time_sec)
         )
-        self.tf_listener = TransformListener(self.tf_buffer, self, spin_thread=True)
+        self.tf_listener = TransformListener(self.tf_buffer, self)
         self.get_logger().info(
             f"TF buffer cache_time={self.tf_buffer_cache_time_sec:.1f}s "
             f"(param tf_buffer_cache_time_sec); hand lookup timeout={self.hand_tf_lookup_timeout_sec:.2f}s; "
-            f"tf_listener_spin_thread=True"
+            f"tf_listener_spin_thread=False"
         )
         self.tf_broadcaster = TransformBroadcaster(self)
         
@@ -1245,7 +1198,7 @@ class DetectQwenNode(Node):
             CameraInfo,
             depth_info_topic,
             self._camera_info_cb,
-            1
+            QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT, history=HistoryPolicy.KEEP_LAST, depth=1)
         )
 
         self._secondary_info_subs = []
@@ -1259,7 +1212,7 @@ class DetectQwenNode(Node):
                     CameraInfo,
                     ctopic,
                     lambda msg, name=cam_name: self._secondary_camera_info_cb(msg, name),
-                    1,
+                    QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT, history=HistoryPolicy.KEEP_LAST, depth=1),
                 )
                 self._secondary_info_subs.append(sub)
                 _need_rgb = self.enable_secondary_video_tracking or (
@@ -1275,7 +1228,7 @@ class DetectQwenNode(Node):
                         RosImage,
                         rtopic,
                         lambda msg, name=cam_name: self._secondary_rgb_cb(msg, name),
-                        1,
+                        QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT, history=HistoryPolicy.KEEP_LAST, depth=1),
                     )
                     self._secondary_rgb_subs.append(rgb_sub)
             self.get_logger().info(
@@ -1287,9 +1240,11 @@ class DetectQwenNode(Node):
         
         # Per-topic QoS (2ec7e8 logs): default RELIABLE→rgb worked, depth 0 taps; ALL BEST_EFFORT→
         # depth worked, rgb 0 taps — /hand/rgb and /hand/depth publishers offer different profiles.
-        d_hand = max(10, int(self.sync_queue_size))
+        # 1. TRAVANDO A FILA EM 2 PRA SALVAR O FASTRTPS
+        d_hand = 2
+
         self._hand_rgb_qos = QoSProfile(
-            reliability=ReliabilityPolicy.RELIABLE,
+            reliability=ReliabilityPolicy.BEST_EFFORT,
             history=HistoryPolicy.KEEP_LAST,
             depth=d_hand,
         )
@@ -1298,15 +1253,23 @@ class DetectQwenNode(Node):
             history=HistoryPolicy.KEEP_LAST,
             depth=d_hand,
         )
+
+        from rclpy.callback_groups import ReentrantCallbackGroup
+        
+        # 2. CRIANDO O GRUPO VIP (REENTRANT) PRAS IMAGENS
+        # Isso impede que o Qwen de 10 segundos trave a recepção do TF!
+        self.img_cb_group = ReentrantCallbackGroup()
+
         self.rgb_tap_sub = self.create_subscription(
-            RosImage, rgb_topic, self._rgb_tap_cb, self._hand_rgb_qos
+            RosImage, rgb_topic, self._rgb_tap_cb, self._hand_rgb_qos, callback_group=self.img_cb_group
         )
         self.depth_tap_sub = self.create_subscription(
-            RosImage, depth_topic, self._depth_tap_cb, self._hand_depth_qos
+            RosImage, depth_topic, self._depth_tap_cb, self._hand_depth_qos, callback_group=self.img_cb_group
         )
+
         self.get_logger().info(
             f"RGB/Depth pairing: tap subs, slop={self.sync_slop_sec:.3f}s, queue={d_hand}, "
-            f"QoS rgb=RELIABLE depth=BEST_EFFORT"
+            f"QoS rgb=BEST_EFFORT depth=BEST_EFFORT (VIP Group)"
         )
         # #region agent log
         try:
@@ -1353,16 +1316,14 @@ class DetectQwenNode(Node):
             0.1, self._tracking_timer_cb, callback_group=self.inference_cb_group
         )
         
-        # TF publish timer (10 Hz)
-        self.tf_timer = self.create_timer(0.1, self._tf_publish_cb)
+        # TF publish timer (10 Hz) - Isolated to prevent blocking image callbacks
+        self.tf_cb_group = MutuallyExclusiveCallbackGroup()
+        self.tf_timer = self.create_timer(0.1, self._tf_publish_cb, callback_group=self.tf_cb_group)
         
         # Pre-load SAM2 VideoPredictor
-        self.get_logger().info("Pre-loading SAM2 VideoPredictor...")
-        self.video_predictor = load_sam_video_model()
-        if self.video_predictor is None:
-            self.get_logger().error("Failed to load SAM2 VideoPredictor!")
-        else:
-            self.get_logger().info("SAM2 VideoPredictor loaded.")
+        # Lazy-load SAM2 VideoPredictor to avoid PyTorch CUDA thread-context driver deadlocks
+        self.get_logger().info("SAM2 VideoPredictor will be lazy-loaded on the ROS Executor thread.")
+        self.video_predictor = None
         
         self.get_logger().info(
             f"Segmentation mask topic: {mask_topic} (publish={self.publish_segmentation_mask})"
@@ -1371,6 +1332,9 @@ class DetectQwenNode(Node):
             f"Roll correction TF: {self.roll_correction_reference_frame!r} "
             f"(param roll_correction_reference_frame; vazio => target_parent_frame)"
         )
+
+        # Startup watchdog timer — provides user feedback and retries detection
+        self._startup_watchdog = self.create_timer(5.0, self._startup_watchdog_cb)
 
         self.get_logger().info("DetectQwenNode ready. Waiting for camera data...")
     
@@ -1405,6 +1369,30 @@ class DetectQwenNode(Node):
         )
         # #endregion
 
+    def _startup_watchdog_cb(self):
+        """Periodic watchdog: logs status and retries detection until initial detection passes."""
+        if self.initial_detection_done:
+            # Detection succeeded — cancel the watchdog
+            self._startup_watchdog.cancel()
+            return
+        elapsed = time.time() - self._node_start_wall
+        self.get_logger().warn(
+            f"⏳ Waiting for initial detection... "
+            f"(elapsed={elapsed:.0f}s, rgb_taps={self._rgb_tap_count}, "
+            f"depth_taps={self._depth_tap_count}, synced_pairs={self._synced_pair_count}, "
+            f"intrinsics={'OK' if self.camera_intrinsics is not None else 'MISSING'}, "
+            f"rgb={'OK' if self.latest_rgb is not None else 'NONE'}, "
+            f"depth={'OK' if self.latest_depth is not None else 'NONE'})"
+        )
+        if self._rgb_tap_count == 0 and elapsed > 10.0:
+            self.get_logger().error(
+                "⚠ No RGB images received! FastRTPS cannot reassemble large fragments. "
+                "YOU MUST RUN: export FASTRTPS_DEFAULT_PROFILES_FILE=/home/spot-teleop/spot-ros2_ws/fastrtps_profile.xml"
+            )
+        # Attempt detection in case data is available
+        self._run_initial_detection()
+
+
     def _camera_info_cb(self, msg: CameraInfo):
         """Extract camera intrinsics once."""
         if self.camera_intrinsics is None:
@@ -1418,6 +1406,8 @@ class DetectQwenNode(Node):
                 f"Camera intrinsics: fx={fx:.1f} fy={fy:.1f} cx={cx:.1f} cy={cy:.1f}"
             )
             self.get_logger().info(f"Camera frame_id: '{self.camera_frame_id}'")
+            # Proativamente tenta disparar a detecção assim que os intrinsics chegarem
+            self._run_initial_detection()
 
     def _explain_hand_tf_stamp_failure(
         self,
@@ -1601,55 +1591,36 @@ class DetectQwenNode(Node):
             except Exception:
                 pass
             # #endregion
-            # Bounded fallback: if TF is only slightly behind sensor stamp, use latest available TF.
+            # Bounded fallback: se o TF estiver ligeiramente fora (passado ou futuro), usa a borda mais próxima.
+            fallback_t = None
+            delta_sec = 0.0
+
             if latest_t is not None and req_t is not None:
-                future_delta = req_t - latest_t
-                if 0.0 <= future_delta <= self.tf_future_tolerance_sec:
-                    try:
-                        latest_sec = int(latest_t)
-                        latest_nsec = int((latest_t - latest_sec) * 1e9)
-                        t_latest = self.tf_buffer.lookup_transform(
-                            target_frame,
-                            source_frame,
-                            rclpy.time.Time(seconds=latest_sec, nanoseconds=latest_nsec),
-                            timeout=timeout,
-                        )
-                        # #region agent log
-                        try:
-                            _append_debug_log(
-                                "H8",
-                                "detect_qwen.py:_lookup_transform_with_sensor_stamp:bounded_fallback_success",
-                                "used bounded fallback to latest tf time",
-                                {
-                                    "target_frame": str(target_frame),
-                                    "source_frame": str(source_frame),
-                                    "future_delta_sec": float(future_delta),
-                                    "tolerance_sec": float(self.tf_future_tolerance_sec),
-                                    "latest_time_sec": float(latest_t),
-                                },
-                            )
-                        except Exception:
-                            pass
-                        # #endregion
-                        return t_latest
-                    except Exception as e_fb:
-                        # #region agent log
-                        try:
-                            _append_debug_log(
-                                "H8",
-                                "detect_qwen.py:_lookup_transform_with_sensor_stamp:bounded_fallback_failed",
-                                "bounded fallback to latest tf time failed",
-                                {
-                                    "target_frame": str(target_frame),
-                                    "source_frame": str(source_frame),
-                                    "future_delta_sec": float(future_delta),
-                                    "tolerance_sec": float(self.tf_future_tolerance_sec),
-                                    "fallback_exception": str(e_fb)[:300],
-                                },
-                            )
-                        except Exception:
-                            pass
-                        # #endregion
+                delta_sec = req_t - latest_t
+                if 0 <= delta_sec:
+                    fallback_t = latest_t - 0.001  # Margem de segurança pro float não bater na borda de trás
+            if fallback_t is None and earliest_t is not None and req_t is not None:
+                delta_sec = earliest_t - req_t
+                if 0 <= delta_sec:
+                    fallback_t = earliest_t + 0.001  # Margem de segurança para garantir entrada na borda da frente
+
+            tolerance = self.tf_future_tolerance_sec
+            if not getattr(self, "initial_detection_done", True):
+                tolerance = 5.0  # Tolera gaps maiores no startup para evitar panic logs (ex: Gazebo gap 0.5s)
+
+            if fallback_t is not None and 0.0 <= delta_sec <= tolerance:
+                try:
+                    f_sec = int(fallback_t)
+                    f_nsec = int((fallback_t - f_sec) * 1e9)
+                    return self.tf_buffer.lookup_transform(
+                        target_frame,
+                        source_frame,
+                        rclpy.time.Time(seconds=f_sec, nanoseconds=f_nsec),
+                        timeout=timeout,
+                    )
+                except Exception as e_fb:
+                    self.get_logger().debug(f"Inner fallback lookup falhou: {e_fb}")
+
             self._explain_hand_tf_stamp_failure(
                 target_frame, source_frame, sensor_header, e
             )
@@ -1741,10 +1712,8 @@ class DetectQwenNode(Node):
             self._synced_pair_count += 1
 
             
-            # Trigger initial detection on first image
+            # Trigger initial detection (will retry until conditions met)
             if not self.initial_detection_done:
-                self.initial_detection_done = True
-                self.get_logger().info("First image received, triggering initial detection...")
                 self._run_initial_detection()
                 
         except Exception as e:
@@ -1789,10 +1758,22 @@ class DetectQwenNode(Node):
         rmsg = self._latest_rgb_msg
         dmsg = self._latest_depth_msg
         if rmsg is None or dmsg is None:
+            if not self.initial_detection_done:
+                self.get_logger().info(
+                    "Waiting for cleanly synchronized RGB and Depth image pair... "
+                    "(This can take >60s due to DDS fragmentation 'sequence size' errors)",
+                    throttle_duration_sec=10.0
+                )
             return
         rs = self._stamp_sec(rmsg)
         ds = self._stamp_sec(dmsg)
         if abs(rs - ds) > self.sync_slop_sec:
+            if not self.initial_detection_done:
+                self.get_logger().info(
+                    "Waiting for cleanly synchronized RGB and Depth image pair... "
+                    "(This can take >60s due to DDS fragmentation 'sequence size' errors)",
+                    throttle_duration_sec=10.0
+                )
             return
         key = (
             int(rmsg.header.stamp.sec),
@@ -1826,12 +1807,18 @@ class DetectQwenNode(Node):
     # -----------------------------------------------------------------
     def _run_initial_detection(self):
         """Run Qwen to detect, select best mask via Mosaic, then init SAM2 VideoPredictor."""
-        if self.detection_running or self.video_predictor is None:
+        if self.detection_running or self.initial_detection_done:
             return
+            
+        if self.video_predictor is None:
+            self.video_predictor = load_sam_video_model()
+            if self.video_predictor is None:
+                self.get_logger().error("FALHA CRÍTICA: Não foi possível instanciar o SAM2 Tracker.")
+                return
         if self.latest_rgb is None or self.latest_depth is None:
             return
         if self.camera_intrinsics is None:
-            self.get_logger().warn("Waiting for camera_info...")
+            self.get_logger().warn("Waiting for camera_info (intrinsics)...", throttle_duration_sec=2.0)
             return
         
         self.detection_running = True
@@ -1986,6 +1973,7 @@ class DetectQwenNode(Node):
                 init_pt = [[grasp_u, grasp_v]]
             else:
                 init_pt = [[(x1 + x2) // 2, (y1 + y2) // 2]]
+            self.get_logger().info("⏳ Initializing SAM2 VideoPredictor on GPU (this takes ~5s to 8s, please wait...)")
             with self._gpu_lock:
                 init_results = self.video_predictor(
                     img_np,
@@ -2025,6 +2013,7 @@ class DetectQwenNode(Node):
                 self._update_display(self.latest_rgb, mask_np, score, centroid_uv)
             
             total_ms = (time.time() - t_start) * 1000
+            self.initial_detection_done = True
             self.get_logger().info(
                 f"✅ Initial detection complete (score={score:.3f})\n"
                 f"    [Timing] Qwen: {qwen_ms:.0f}ms | Selection: {selection_ms:.0f}ms | Total: {total_ms:.0f}ms"
@@ -2367,21 +2356,6 @@ class DetectQwenNode(Node):
     def _update_display(self, img_pil, mask_np, score, centroid_uv=None):
         """Update OpenCV debug window with tracking overlay."""
         try:
-            self._ui_debug_calls += 1
-            if self._ui_debug_calls <= 8:
-                _ui_debug_ndjson(
-                    "H17",
-                    "detect_qwen.py:_update_display",
-                    "imshow_attempt",
-                    {
-                        "call_idx": int(self._ui_debug_calls),
-                        "window": str(self.tracking_window_name),
-                        "has_image": img_pil is not None,
-                        "mask_present": mask_np is not None,
-                        "DISPLAY": str(os.environ.get("DISPLAY", "")),
-                        "WAYLAND_DISPLAY": str(os.environ.get("WAYLAND_DISPLAY", "")),
-                    },
-                )
             # Convert PIL → BGR for OpenCV
             img_bgr = cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR)
             
@@ -2411,12 +2385,6 @@ class DetectQwenNode(Node):
             cv2.waitKey(1)
             
         except Exception as e:
-            _ui_debug_ndjson(
-                "H17",
-                "detect_qwen.py:_update_display",
-                "imshow_exception",
-                {"error": str(e)[:240]},
-            )
             self.get_logger().warn(f"Visualization error: {e}")
 
     def _publish_segmentation_mask(self, mask_np):

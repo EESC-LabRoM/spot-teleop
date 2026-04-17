@@ -123,16 +123,20 @@ class CuroboMpcNode(Node):
         robot_cfg_raw["kinematics"]["external_asset_path"] = os.path.dirname(urdf_path)
         spheres_path = os.path.join(os.environ['CUROBO_CONFIG_PATH'], 'spheres', 'spot_arm.yml')
 
-        # Config and spheres use arm0_ (sim naming). URDF always uses arm_.
-        # Remap config arm0_ -> arm_ to match URDF, and create temp spheres file.
-        robot_cfg_raw = self._remap_config_prefix(robot_cfg_raw, 'arm0_', 'arm_')
-        spheres_data = load_yaml(spheres_path)
-        spheres_data = self._remap_config_prefix(spheres_data, 'arm0_', 'arm_')
-        tmp_spheres = tempfile.NamedTemporaryFile(mode='w', suffix='.yml', delete=False)
-        yaml.dump(spheres_data, tmp_spheres)
-        tmp_spheres.close()
-        robot_cfg_raw["kinematics"]["collision_spheres"] = tmp_spheres.name
-        self.get_logger().info(f'Remapped config arm0_ -> arm_ (URDF match). Temp spheres: {tmp_spheres.name}')
+        if self.use_sim:
+            # Sim: prefix arm0_. Config and URDF (standalone_arm_fixed.urdf) both use arm0_ — no remap.
+            robot_cfg_raw["kinematics"]["collision_spheres"] = spheres_path
+            self.get_logger().info('Sim: using config/URDF as-is (arm0_ prefix).')
+        else:
+            # Real: prefix arm_. Remap config arm0_ -> arm_ and temp spheres.
+            robot_cfg_raw = self._remap_config_prefix(robot_cfg_raw, 'arm0_', 'arm_')
+            spheres_data = load_yaml(spheres_path)
+            spheres_data = self._remap_config_prefix(spheres_data, 'arm0_', 'arm_')
+            tmp_spheres = tempfile.NamedTemporaryFile(mode='w', suffix='.yml', delete=False)
+            yaml.dump(spheres_data, tmp_spheres)
+            tmp_spheres.close()
+            robot_cfg_raw["kinematics"]["collision_spheres"] = tmp_spheres.name
+            self.get_logger().info(f'Real: remapped config arm0_ -> arm_. Temp spheres: {tmp_spheres.name}')
         
         self.robot_cfg = robot_cfg_raw
         self.j_names = self.robot_cfg["kinematics"]["cspace"]["joint_names"]
@@ -429,9 +433,8 @@ class CuroboMpcNode(Node):
 
     def joint_state_callback(self, msg: JointState):
         """Handle incoming joint state."""
-        # In sim, joints arrive as arm0_* -> remap to arm_ to match URDF/cuRobo
-        if self.use_sim:
-            msg.name = [n.replace('arm0_', 'arm_') for n in msg.name]
+        # Sim: joints arrive as arm0_* and MPC uses arm0_* — no remap needed.
+        # Real: joints arrive as arm_* and MPC uses arm_* — no remap needed.
         self.current_joint_state = msg
         self._last_joint_stamp = time.time()
         self.joints_received = True
