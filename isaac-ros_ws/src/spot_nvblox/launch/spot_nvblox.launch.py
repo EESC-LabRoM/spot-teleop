@@ -34,7 +34,7 @@ def generate_launch_description():
     )
 
     global_frame_arg = DeclareLaunchArgument(
-        "global_frame", default_value="odom", description="Global frame for nvblox"
+        "global_frame", default_value="vision", description="Global frame for nvblox"
     )
 
     sim_arg = DeclareLaunchArgument(
@@ -164,7 +164,7 @@ def generate_launch_description():
         "input_qos": "SENSOR_DATA",
         # Limpeza
         "map_clearing_radius_m": 5.0,  # Limpa o que ficar muito longe pra liberar RAM
-        "map_clearing_frame_id": "base",
+        "map_clearing_frame_id": "body",
         # Visualização
         "layer_visualization_exclusion_height_m": 100.0,
         "layer_visualization_exclusion_radius_m": 0.0,
