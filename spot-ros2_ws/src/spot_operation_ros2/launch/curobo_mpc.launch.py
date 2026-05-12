@@ -34,7 +34,7 @@ def launch_setup(context: LaunchContext):
     # Build command list - add joint_states remapping when using ros2_control
     # (spot_ros2_control publishes to /low_level/joint_states)
     curobo_cmd = [
-        "/home/spot-teleop/spot-ros2_ws/src/curobo/env_curobo/bin/python",
+        "/home/spot-teleop/spot-ros2_ws/curobo_venv/bin/python",
         "/home/spot-teleop/spot-ros2_ws/src/spot_operation_ros2/spot_operation_ros2/curobo_mpc_node.py",
         "--ros-args",
         "-r",
@@ -42,15 +42,21 @@ def launch_setup(context: LaunchContext):
         "-p",
         ["control_rate:=", LaunchConfiguration("control_rate")],
         "-p",
-        ["use_effort:=", LaunchConfiguration("use_effort")],
-        "-p",
         ["debug_mode:=", LaunchConfiguration("debug_mode")],
         "-p",
         ["debug_pose_duration:=", LaunchConfiguration("debug_pose_duration")],
         "-p",
-        ["esdf_topic:=", LaunchConfiguration("esdf_topic")],
+        ["use_esdf:=", LaunchConfiguration("use_esdf")],
+        "-p",
+        ["esdf_service_name:=", LaunchConfiguration("esdf_service_name")],
         "-p",
         ["esdf_update_rate:=", LaunchConfiguration("esdf_update_rate")],
+        "-p",
+        ["voxel_size:=", LaunchConfiguration("voxel_size")],
+        "-p",
+        ["esdf_frame_id:=", LaunchConfiguration("esdf_frame_id")],
+        "-p",
+        ["esdf_global_frame:=", LaunchConfiguration("esdf_global_frame")],
         "-p",
         f"robot_config:={robot_config_path}",
         "-p",
@@ -59,12 +65,6 @@ def launch_setup(context: LaunchContext):
         ["use_sim_time:=", LaunchConfiguration("use_sim_time")],
         "-p",
         ["use_sim:=", use_sim],
-        "-p",
-        ["use_nvblox:=", LaunchConfiguration("use_nvblox")],
-        "-p",
-        ["static_mesh:=", LaunchConfiguration("static_mesh")],
-        "-p",
-        ["mesh_topic:=", LaunchConfiguration("mesh_topic")],
         "-p",
         ["use_ros2_control:=", LaunchConfiguration("use_ros2_control")],
     ]
@@ -156,16 +156,16 @@ def launch_setup(context: LaunchContext):
         condition=IfCondition(use_sim),
     )
 
-    # Static TF: base -> body (simulation uses 'base', cuRobo expects 'body')
-    # Identity transform - they are the same frame with different names
-    base_to_body_tf = Node(
-        package="tf2_ros",
-        executable="static_transform_publisher",
-        name="base_to_body_tf",
-        arguments=["0", "0", "0", "0", "0", "0", "base", "body"],
-        output="screen",
-        parameters=[{"use_sim_time": LaunchConfiguration("use_sim_time")}],
-    )
+    # Static TF: base -> body — only in sim (real robot already has body frame from Spot driver)
+    # base_to_body_tf = Node(
+    #     package="tf2_ros",
+    #     executable="static_transform_publisher",
+    #     name="base_to_body_tf",
+    #     arguments=["0", "0", "0", "0", "0", "0", "base", "body"],
+    #     output="screen",
+    #     parameters=[{"use_sim_time": LaunchConfiguration("use_sim_time")}],
+    #     condition=IfCondition(use_sim),
+    # )
 
     gripper_remappings = []
     if use_ros2_control_val.lower() in ("true", "1", "yes"):
@@ -185,7 +185,7 @@ def launch_setup(context: LaunchContext):
     )
 
     return [
-        base_to_body_tf,
+        # base_to_body_tf,
         curobo_mpc_process,
         gripper_controller_node,
         isaac_publisher_node,
@@ -200,13 +200,8 @@ def generate_launch_description():
         [
             DeclareLaunchArgument(
                 "control_rate",
-                default_value="30.0",
+                default_value="50.0",
                 description="MPC control rate in Hz",
-            ),
-            DeclareLaunchArgument(
-                "use_effort",
-                default_value="false",
-                description="Use Pinocchio for effort computation",
             ),
             DeclareLaunchArgument(
                 "debug_mode",
@@ -219,14 +214,34 @@ def generate_launch_description():
                 description="Seconds between pose changes in debug mode",
             ),
             DeclareLaunchArgument(
-                "esdf_topic",
-                default_value="/nvblox_node/pessimistic_static_esdf_pointcloud",
-                description="nvblox ESDF pointcloud topic",
+                "use_esdf",
+                default_value="true",
+                description="Enable nvblox ESDF service for obstacle avoidance",
+            ),
+            DeclareLaunchArgument(
+                "esdf_service_name",
+                default_value="/nvblox_node/get_esdf_and_gradient",
+                description="nvblox ESDF service name",
             ),
             DeclareLaunchArgument(
                 "esdf_update_rate",
-                default_value="2.0",
-                description="Obstacle update rate from ESDF in Hz",
+                default_value="1.0",
+                description="ESDF update rate in Hz",
+            ),
+            DeclareLaunchArgument(
+                "voxel_size",
+                default_value="0.05",
+                description="Voxel size in meters for cuRobo collision world",
+            ),
+            DeclareLaunchArgument(
+                "esdf_frame_id",
+                default_value="body",
+                description="Robot base frame for cuRobo collision world pose (sim: 'base', real: 'body')",
+            ),
+            DeclareLaunchArgument(
+                "esdf_global_frame",
+                default_value="vision",
+                description="nvblox global frame used for ESDF service queries (sim: 'odom', real: 'vision')",
             ),
             DeclareLaunchArgument(
                 "use_sim_time",
@@ -236,22 +251,7 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 "use_sim",
                 default_value="true",
-                description="True for sim (arm0_ joint prefix), False for real robot (arm_ joint prefix)",
-            ),
-            DeclareLaunchArgument(
-                "use_nvblox",
-                default_value="true",
-                description="Enable nvblox mesh subscription for obstacle avoidance",
-            ),
-            DeclareLaunchArgument(
-                "static_mesh",
-                default_value="false",
-                description="If true, freeze mesh after first update. If false, update continuously.",
-            ),
-            DeclareLaunchArgument(
-                "mesh_topic",
-                default_value="/nvblox_node/mesh",
-                description="nvblox mesh topic",
+                description="True for sim (arm0_ joint prefix), False for real robot (arm_ prefix)",
             ),
             DeclareLaunchArgument(
                 "use_ros2_control",
