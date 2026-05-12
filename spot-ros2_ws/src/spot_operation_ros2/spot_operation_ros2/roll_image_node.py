@@ -67,7 +67,7 @@ class RollImageNode(Node):
         self._last_correction_angle = 0.0
 
         self.tf_buffer = Buffer(cache_time=Duration(seconds=120.0))
-        self.tf_listener = TransformListener(self.tf_buffer, self, spin_thread=True)
+        self.tf_listener = TransformListener(self.tf_buffer, self, spin_thread=False)
 
         self._rgb_sub = self.create_subscription(
             RosImage, rgb_topic, self._rgb_cb, 10, callback_group=self._cb_group

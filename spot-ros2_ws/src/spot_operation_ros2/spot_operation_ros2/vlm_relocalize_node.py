@@ -245,6 +245,7 @@ class VlmRelocalizeNode(Node):
         self.declare_parameter("camera_speed_topic", "/hand/camera_speed")
         self.declare_parameter("stability_speed_threshold", 0.1)
         self.declare_parameter("stability_check_enabled", True)
+        self.declare_parameter("max_frame_age_sec", 1.5)
         rgb_topic = self.get_parameter("rgb_topic").value
         roll_metadata_topic = self.get_parameter("roll_metadata_topic").value
         self.object_prompt = self.get_parameter("object_prompt").value
@@ -260,6 +261,7 @@ class VlmRelocalizeNode(Node):
         self._latest_rgb_pil = None
         self._latest_stamp_sec = None
         self._latest_stamp_nanosec = None
+        self._last_served_stamp = None  # (sec, ns) of last frame the VLM actually scored
         self._latest_roll_angle_deg = 0.0
         self._latest_orig_size = None
         self._rgb_cb_count = 0
@@ -455,6 +457,28 @@ Ensure bounding box and grasp point coordinates are normalized to [0-1000] scale
                 {"success": False, "reason": "no_rgb_frame"},
             )
             return response
+        max_age = float(self.get_parameter("max_frame_age_sec").value)
+        if max_age > 0.0 and self._latest_stamp_sec is not None:
+            last_stamp = float(self._latest_stamp_sec) + float(self._latest_stamp_nanosec or 0) * 1e-9
+            now = self.get_clock().now().nanoseconds * 1e-9
+            age = now - last_stamp
+            if age > max_age:
+                response.success = False
+                response.message = f"frame_stale: age={age:.2f}s > {max_age:.2f}s"
+                self.get_logger().info(
+                    f"[VLM] request rejeitado: frame stale (age={age:.2f}s) — coordinator vai retentar",
+                    throttle_duration_sec=2.0,
+                )
+                return response
+        cur_stamp = (int(self._latest_stamp_sec or 0), int(self._latest_stamp_nanosec or 0))
+        if self._last_served_stamp == cur_stamp:
+            response.success = False
+            response.message = "frame_unchanged"
+            self.get_logger().info(
+                "[VLM] request rejeitado: mesmo frame da última tentativa — coordinator vai retentar",
+                throttle_duration_sec=2.0,
+            )
+            return response
         if self.get_parameter("stability_check_enabled").value:
             threshold = float(self.get_parameter("stability_speed_threshold").value)
             if self._camera_speed is not None and self._camera_speed > threshold:
@@ -487,6 +511,7 @@ Ensure bounding box and grasp point coordinates are normalized to [0-1000] scale
             )
             img = self._latest_rgb_pil.copy()
             w, h = img.size
+            self._last_served_stamp = (stamp_sec, stamp_ns)
             saved_path = self._save_vlm_input_image(img, req_id, stamp_sec, stamp_ns)
             if saved_path is not None:
                 self.get_logger().info(f"[VLM] input image saved at {saved_path}")

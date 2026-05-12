@@ -6,6 +6,7 @@ import time
 import rclpy
 from geometry_msgs.msg import PointStamped, PoseStamped, TransformStamped
 from rclpy.duration import Duration
+from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from sensor_msgs.msg import CameraInfo
 from std_msgs.msg import Float64, String
@@ -21,7 +22,8 @@ class TFProjectionNode(Node):
         self.declare_parameter("target_frame_name", "target_object")
         self.declare_parameter("target_parent_frame", "vision")
         self.declare_parameter("hold_last_target_on_lost", True)
-        self.declare_parameter("lost_hold_publish_hz", 10.0)
+        self.declare_parameter("target_publish_hz", 30.0)
+        self.declare_parameter("target_ema_alpha", 0.1)
         self.declare_parameter("max_target_abs_m", 50.0)
         self.declare_parameter("tf_future_tolerance_sec", 0.35)
         self.declare_parameter("tf_past_tolerance_sec", 0.2)
@@ -36,6 +38,8 @@ class TFProjectionNode(Node):
         self.declare_parameter("camera_speed_topic", "/hand/camera_speed")
         self.declare_parameter("camera_speed_hz", 15.0)
         self.declare_parameter("secondary_reinit_speed_gate_m_s", 0.1)
+        self.declare_parameter("seed_pixel_publish_hz", 10.0)
+        self.declare_parameter("seed_pixel_active_ttl_sec", 10.0)
 
         tracking_3d_topic = str(self.get_parameter("tracking_3d_topic").value)
         tracking_state_topic = str(self.get_parameter("tracking_state_topic").value)
@@ -44,7 +48,8 @@ class TFProjectionNode(Node):
         self.target_frame_name = str(self.get_parameter("target_frame_name").value)
         self.target_parent_frame = str(self.get_parameter("target_parent_frame").value)
         self.hold_last_target_on_lost = bool(self.get_parameter("hold_last_target_on_lost").value)
-        hold_hz = float(max(0.5, self.get_parameter("lost_hold_publish_hz").value))
+        self.target_publish_hz = float(max(0.5, self.get_parameter("target_publish_hz").value))
+        self.target_ema_alpha = float(self.get_parameter("target_ema_alpha").value)
         self.max_target_abs_m = float(max(1.0, self.get_parameter("max_target_abs_m").value))
         self.tf_future_tolerance_sec = float(
             max(0.0, self.get_parameter("tf_future_tolerance_sec").value)
@@ -62,11 +67,12 @@ class TFProjectionNode(Node):
         )
 
         self.tf_buffer = Buffer(cache_time=Duration(seconds=tf_cache))
-        self.tf_listener = TransformListener(self.tf_buffer, self, spin_thread=True)
+        self.tf_listener = TransformListener(self.tf_buffer, self, spin_thread=False)
         self.tf_broadcaster = TransformBroadcaster(self)
 
         self._tracking_state = "UNKNOWN"
         self._last_valid_target = None  # (x, y, z) in target_parent_frame (vision/odom)
+        self._ema_target = None
         self._last_vision_pt = None     # (x, y, z) in target_parent_frame — set on seed, used as depth fallback
         self._reference_vision_pt = None  # vision-frame position from FIRST successful detection — immutable reference
         self._latest_cam_speed = 0.0
@@ -86,7 +92,7 @@ class TFProjectionNode(Node):
         self._state_sub = self.create_subscription(
             String, tracking_state_topic, self._tracking_state_cb, 10
         )
-        self._hold_timer = self.create_timer(1.0 / hold_hz, self._hold_last_target_cb)
+        self._target_publish_timer = self.create_timer(1.0 / self.target_publish_hz, self._target_publish_cb)
 
         # Camera speed publisher (for VLM stability gate)
         self._hand_camera_frame = str(self.get_parameter("hand_camera_frame").value)
@@ -107,10 +113,24 @@ class TFProjectionNode(Node):
         self._seed_pixel_pub = self.create_publisher(
             PointStamped, "/tracking/seed_pixel", 10
         )
+        # Continuous pixel re-seed: while active, reproject _reference_vision_pt through
+        # current TF and republish so the tracker always has a fresh pixel (the velocity
+        # gate can hold init for several seconds while the camera moves, so a one-shot
+        # pixel captured at _seed_3d_cb time ends up paralax-stale).
+        self._seed_pixel_active_until = 0.0  # monotonic clock seconds
+        self._seed_pixel_ttl_sec = float(
+            max(0.5, self.get_parameter("seed_pixel_active_ttl_sec").value)
+        )
+        seed_pixel_hz = float(max(1.0, self.get_parameter("seed_pixel_publish_hz").value))
+        self._seed_pixel_hand_frame = None  # hand camera frame_id (set on first _seed_3d_cb)
+        self._seed_pixel_timer = self.create_timer(
+            1.0 / seed_pixel_hz, self._publish_seed_pixel_continuous
+        )
         self._cam_info_sub = self.create_subscription(
             CameraInfo, camera_info_topic, self._camera_info_cb, 10
         )
         self.camera_intrinsics = None
+        self._hand_image_size = None  # (w, h) from CameraInfo
 
         # Secondary cameras: reprojection of tracking point for FOV-gated seeding
         secondary_cameras_str = str(self.get_parameter("secondary_cameras").value)
@@ -169,25 +189,14 @@ class TFProjectionNode(Node):
         pose.pose.orientation.w = 1.0
         self._pose_pub.publish(pose)
 
-    def _hold_last_target_cb(self):
-        if not self.hold_last_target_on_lost:
-            return
-        if self._tracking_state != "LOST":
-            return
-        if self._last_valid_target is None:
+    def _target_publish_cb(self):
+        if self._ema_target is None:
             return
         now_stamp = self.get_clock().now().to_msg()
-        x, y, z = self._last_valid_target
+        x, y, z = self._ema_target
         self._publish_target(x, y, z, now_stamp)
-        # Fallback: seed secondary cameras from last known odom position while hand is LOST.
-        # force_reinit=False — keep existing SAM2 state, just refresh the FOV hint.
-        # Reset on new VLM detection is handled by _seed_3d_cb (force_reinit=True).
-        if self._secondary_cameras:
-            timeout = Duration(seconds=self.tf_lookup_timeout_sec)
-            self._reproject_to_secondary(x, y, z, timeout, force_reinit=False)
-            self.get_logger().debug(
-                f"[HOLD] Seeding secondary cameras from last known odom ({x:.3f},{y:.3f},{z:.3f})",
-            )
+        # Note: secondary camera seeding is handled entirely by
+        # _continuous_secondary_reproject at 10Hz using the stable _last_vision_pt.
 
     def _continuous_secondary_reproject(self):
         """Reproject the stable vision-frame object position to secondary cameras at 10Hz.
@@ -309,8 +318,10 @@ class TFProjectionNode(Node):
             fx, fy, cx_i, cy_i = intrinsics
             u = fx * (cam_x / cam_z) + cx_i
             v = fy * (cam_y / cam_z) + cy_i
-            margin = 10  # just exclude absolute border pixels; IoU validation in tracker does the real filtering
-            if not (margin <= u < w - margin and margin <= v < h - margin):
+            # Basic bounds check only (no margin) — prevent sending negative or
+            # out-of-image coords that would crash SAM2. Borderline/edge cases
+            # are left to the video predictor's IoU/area validation.
+            if not (0 <= u < w and 0 <= v < h):
                 continue
             pixel_msg = PointStamped()
             pixel_msg.header.stamp = t.header.stamp
@@ -324,7 +335,8 @@ class TFProjectionNode(Node):
         if self.camera_intrinsics is not None:
             return
         self.camera_intrinsics = (float(msg.k[0]), float(msg.k[4]), float(msg.k[2]), float(msg.k[5]))
-        self.get_logger().info(f"Camera intrinsics set: {self.camera_intrinsics}")
+        self._hand_image_size = (int(msg.width), int(msg.height))
+        self.get_logger().info(f"Camera intrinsics set: {self.camera_intrinsics} size={self._hand_image_size}")
 
     def _seed_3d_cb(self, msg: PointStamped):
         """Receive 3D point@T0, reproject to pixel in current camera frame, publish."""
@@ -367,15 +379,19 @@ class TFProjectionNode(Node):
             if dist > tol:
                 self.get_logger().warn(
                     f"[TF] Re-detection too far from reference ({dist:.2f}m > {tol:.2f}m) — "
-                    f"likely bad TF or wrong object. Skipping secondary force_reinit. "
+                    f"likely bad TF or wrong object. Discarding seed entirely. "
                     f"new=({odom_x:.3f},{odom_y:.3f},{odom_z:.3f}) ref=({rx:.3f},{ry:.3f},{rz:.3f})"
                 )
-                allow_secondary_reinit = False
+                return  # Don't update _last_vision_pt or publish seed pixel
             else:
                 allow_secondary_reinit = True
 
         # Store vision-frame position for geometry depth fallback (object is stationary in world)
         self._last_vision_pt = (odom_x, odom_y, odom_z)
+        # Store hand frame for continuous republisher (TTL activated only after
+        # successful in-bounds reproject below — prevents the republisher from
+        # producing edge-of-FOV garbage when the object has left the camera view).
+        self._seed_pixel_hand_frame = source_frame
 
         # 2) target_parent→hand_cam @T_now (latest available)
         timeout = Duration(seconds=self.tf_lookup_timeout_sec)
@@ -417,7 +433,14 @@ class TFProjectionNode(Node):
             f"[TF] step3 projection: pixel=({u:.1f},{v:.1f}) depth={cam_z:.3f}"
         )
 
-        # 4) Publish reprojected pixel
+        # 4) Publish reprojected pixel (only if within image bounds)
+        margin = 20
+        img_w, img_h = self._hand_image_size if self._hand_image_size else (640, 480)
+        if not (margin <= u < img_w - margin and margin <= v < img_h - margin):
+            self.get_logger().warn(
+                f"[TF] Reprojected seed pixel ({u:.0f},{v:.0f}) out of bounds ({img_w}x{img_h}) — object left FOV"
+            )
+            return
         pixel_msg = PointStamped()
         pixel_msg.header.stamp = t_now.header.stamp
         pixel_msg.header.frame_id = source_frame
@@ -425,6 +448,10 @@ class TFProjectionNode(Node):
         pixel_msg.point.y = float(v)
         pixel_msg.point.z = 0.0
         self._seed_pixel_pub.publish(pixel_msg)
+        # Activate continuous republisher TTL only after a successful in-bounds publish.
+        # If the initial reproject was out of bounds, the continuous republisher stays
+        # deactivated — it would produce marginally-in-bounds but wrong pixels.
+        self._seed_pixel_active_until = time.monotonic() + self._seed_pixel_ttl_sec
         self.get_logger().info(f"[TF] Reprojected seed pixel: ({u:.0f}, {v:.0f})")
 
         # Defer secondary force_reinit until camera is stable — robot may have moved during VLM processing
@@ -475,12 +502,22 @@ class TFProjectionNode(Node):
             return
 
         self._last_valid_target = (float(target_x), float(target_y), float(target_z))
-        self._publish_target(float(target_x), float(target_y), float(target_z), msg.header.stamp)
+        
+        if self._ema_target is None:
+            self._ema_target = (float(target_x), float(target_y), float(target_z))
+        else:
+            alpha = self.target_ema_alpha
+            ex, ey, ez = self._ema_target
+            self._ema_target = (
+                ex + alpha * (float(target_x) - ex),
+                ey + alpha * (float(target_y) - ey),
+                ez + alpha * (float(target_z) - ez)
+            )
 
-        # Continuously reproject to secondary cameras (FOV-gated; no publish = SAM2 stops)
-        if self._secondary_cameras:
-            timeout = Duration(seconds=self.tf_lookup_timeout_sec)
-            self._reproject_to_secondary(float(target_x), float(target_y), float(target_z), timeout)
+        # Note: _publish_target is now handled continuously by _target_publish_cb.
+
+        # Note: Secondary camera seeding is handled by _continuous_secondary_reproject
+        # at 10Hz using the stable _last_vision_pt, not the jittery hand-tracking centroid.
 
     def _publish_geometry_cam_pt(self):
         """Reproject last known vision-frame object position into hand camera frame and publish.
@@ -519,6 +556,59 @@ class TFProjectionNode(Node):
         msg.point.z = float(cam_z)
         self._geometry_cam_pub.publish(msg)
 
+    def _publish_seed_pixel_continuous(self):
+        """Re-reproject the stable reference position to a pixel with current TF and republish.
+
+        Active for TTL seconds after each successful _seed_3d_cb. This way when the
+        tracker's velocity gate finally releases (which can take several seconds while
+        the camera is moving), the pending seed pixel it uses was computed with the
+        latest TF — not the one captured back in _seed_3d_cb.
+        """
+        if self._reference_vision_pt is None or self._seed_pixel_hand_frame is None:
+            return
+        if self.camera_intrinsics is None:
+            return
+        if time.monotonic() > self._seed_pixel_active_until:
+            return
+        ox, oy, oz = self._reference_vision_pt
+        try:
+            t_now = self.tf_buffer.lookup_transform(
+                self._seed_pixel_hand_frame,
+                self.target_parent_frame,
+                rclpy.time.Time(),
+                timeout=Duration(seconds=0.0),
+            )
+        except Exception:
+            return
+        tx = t_now.transform.translation.x
+        ty = t_now.transform.translation.y
+        tz = t_now.transform.translation.z
+        qx = t_now.transform.rotation.x
+        qy = t_now.transform.rotation.y
+        qz = t_now.transform.rotation.z
+        qw = t_now.transform.rotation.w
+        cx, cy, cz = self._rotate_point_by_quaternion(ox, oy, oz, qx, qy, qz, qw)
+        cam_x, cam_y, cam_z = cx + tx, cy + ty, cz + tz
+        if cam_z <= 0.0:
+            return
+        fx, fy, cx_i, cy_i = self.camera_intrinsics
+        u = fx * (cam_x / cam_z) + cx_i
+        v = fy * (cam_y / cam_z) + cy_i
+        if not (math.isfinite(u) and math.isfinite(v)):
+            return
+        # Reject out-of-bounds — object left the camera FOV
+        img_w, img_h = self._hand_image_size if self._hand_image_size else (640, 480)
+        margin = 20
+        if not (margin <= u < img_w - margin and margin <= v < img_h - margin):
+            return
+        msg = PointStamped()
+        msg.header.stamp = t_now.header.stamp
+        msg.header.frame_id = self._seed_pixel_hand_frame
+        msg.point.x = float(u)
+        msg.point.y = float(v)
+        msg.point.z = 0.0
+        self._seed_pixel_pub.publish(msg)
+
     def _publish_cam_speed(self):
         """Compute linear speed of hand camera in 'vision' frame and publish to /hand/camera_speed."""
         try:
@@ -553,11 +643,14 @@ class TFProjectionNode(Node):
 def main(args=None):
     rclpy.init(args=args)
     node = TFProjectionNode()
+    executor = MultiThreadedExecutor(num_threads=3)
+    executor.add_node(node)
     try:
-        rclpy.spin(node)
+        executor.spin()
     except KeyboardInterrupt:
         pass
     finally:
+        executor.shutdown()
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()

@@ -17,6 +17,7 @@ def generate_launch_description():
     depth_info_topic = LaunchConfiguration("depth_info_topic")
     secondary_rgb_topic_pattern = LaunchConfiguration("secondary_rgb_topic_pattern")
     secondary_camera_info_topic_pattern = LaunchConfiguration("secondary_camera_info_topic_pattern")
+    secondary_mask_topic_pattern = LaunchConfiguration("secondary_mask_topic_pattern")
     
     return LaunchDescription(
         [
@@ -75,6 +76,11 @@ def generate_launch_description():
                 default_value=PythonExpression(["'/{cam}/camera_info' if '", sim, "' == 'true' else '/camera/{cam}/camera_info'"]),
                 description="Pattern for secondary camera_info topics. Use {cam} placeholder.",
             ),
+            DeclareLaunchArgument(
+                "secondary_mask_topic_pattern",
+                default_value=PythonExpression(["'/{cam}/segmentation_mask' if '", sim, "' == 'true' else '/camera/{cam}/segmentation_mask'"]),
+                description="Pattern for secondary segmentation mask topics. Use {cam} placeholder.",
+            ),
             Node(
                 package="spot_operation_ros2",
                 executable="sam2_tracker_node",
@@ -86,6 +92,7 @@ def generate_launch_description():
                     "depth_topic": depth_topic,
                     "depth_info_topic": depth_info_topic,
                     "secondary_rgb_topic_pattern": secondary_rgb_topic_pattern,
+                    "secondary_mask_topic_pattern": secondary_mask_topic_pattern,
                 }],
                 output="screen",
             ),
