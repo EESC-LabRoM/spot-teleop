@@ -11,6 +11,7 @@ import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Float64
 from sensor_msgs.msg import JointState
+import math
 import time
 import threading
 
@@ -31,15 +32,19 @@ class GripperControllerNode(Node):
     # Gripper constants
     GRIPPER_JOINT_NAME = "arm_f1x"
     
-    # Motion parameters
-    DEFAULT_DURATION = 0.7  # seconds
     CONTROL_FREQUENCY = 50.0  # Hz
     
     def __init__(self):
         super().__init__('gripper_controller_node')
 
-        self.declare_parameter('use_ros2_control', False)
+        self.declare_parameter('duration', 0.8)
+        self.declare_parameter('use_ros2_control', True)
+        self.declare_parameter('k_q_p', 16.0)
+        self.declare_parameter('k_qd_p', 0.32)
+        self.default_duration = float(self.get_parameter('duration').value)
         self.use_ros2_control = self.get_parameter('use_ros2_control').value
+        self.k_q_p = float(self.get_parameter('k_q_p').value)
+        self.k_qd_p = float(self.get_parameter('k_qd_p').value)
 
         # Current state
         self.current_goal = None
@@ -102,6 +107,8 @@ class GripperControllerNode(Node):
             msg = JointCommand()
             msg.name = [self.GRIPPER_JOINT_NAME]
             msg.position = [angle]
+            msg.k_q_p = [self.k_q_p]
+            msg.k_qd_p = [self.k_qd_p]
         else:
             msg = Float64()
             msg.data = angle
@@ -171,7 +178,7 @@ class GripperControllerNode(Node):
         """
         with self.motion_lock:
             if duration_sec is None:
-                duration_sec = self.DEFAULT_DURATION
+                duration_sec = self.default_duration
             
             self.is_moving = True
             
@@ -188,9 +195,11 @@ class GripperControllerNode(Node):
             
             self.get_logger().info(f"Moving gripper: {current_angle:.3f} -> {goal_angle:.3f} rad")
             
-            # Smooth motion with linear interpolation
+            # Smooth motion with sinusoidal profile (ease in/out)
             for i in range(npoints):
-                target_angle = current_angle + i * step_size
+                t = i / npoints
+                s = 0.5 * (1 - math.cos(math.pi * t))
+                target_angle = current_angle + s * (goal_angle - current_angle)
                 self._publish_gripper(target_angle)
                 time.sleep(dt)
 

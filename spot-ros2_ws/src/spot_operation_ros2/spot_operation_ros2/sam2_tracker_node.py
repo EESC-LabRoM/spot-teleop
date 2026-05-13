@@ -429,6 +429,9 @@ class Sam2TrackerNode(Node):
         self._hand_disp_conf = 0.0           # detection confidence
         self._hand_disp_bbox = None          # [x1,y1,x2,y2] in pixels
 
+        # Prompt change tracking
+        self._hand_current_prompt_change_id = 0
+
         # Snapshot state for relocalization
         self._snapshot_rgb = None
         self._snapshot_depth = None
@@ -492,6 +495,9 @@ class Sam2TrackerNode(Node):
         )
         self._seed_pixel_sub = self.create_subscription(
             PointStamped, "/tracking/seed_pixel", self._seed_pixel_cb, 10
+        )
+        self._prompt_change_sub = self.create_subscription(
+            String, "/vlm/prompt_change_id", self._prompt_change_cb, 10
         )
         # Geometry depth fallback: vision-frame object position reprojected to hand cam by tf_projection
         self._geometry_cam_pt: tuple = None  # (x, y, z) in hand_cam frame, TF-derived (no depth sensor)
@@ -569,6 +575,16 @@ class Sam2TrackerNode(Node):
 
     def _cam_speed_cb(self, msg: Float64):
         self._hand_cam_speed = float(msg.data)
+
+    def _prompt_change_cb(self, msg: String):
+        """Handle prompt change notifications from VLM node."""
+        new_id = int(msg.data)
+        if new_id > self._hand_current_prompt_change_id:
+            self._hand_current_prompt_change_id = new_id
+            self.get_logger().info(
+                f"[TRACKER] Prompt change detected (id={new_id}), "
+                "will use new object on next VLM seed"
+            )
 
     def _coordinator_state_cb(self, msg: String):
         state = msg.data.strip().upper()

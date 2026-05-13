@@ -16,7 +16,7 @@ from PIL import Image
 from rclpy.node import Node
 from sensor_msgs.msg import Image as RosImage
 from std_msgs.msg import Float64, String
-from std_srvs.srv import Trigger
+from std_srvs.srv import Trigger, SetBool
 
 
 def _find_workspace_root() -> Path:
@@ -246,6 +246,7 @@ class VlmRelocalizeNode(Node):
         self.declare_parameter("stability_speed_threshold", 0.1)
         self.declare_parameter("stability_check_enabled", True)
         self.declare_parameter("max_frame_age_sec", 1.5)
+        self.declare_parameter("new_object_prompt", "")
         rgb_topic = self.get_parameter("rgb_topic").value
         roll_metadata_topic = self.get_parameter("roll_metadata_topic").value
         self.object_prompt = self.get_parameter("object_prompt").value
@@ -268,6 +269,8 @@ class VlmRelocalizeNode(Node):
         self._srv_req_seq = 0
         self._camera_speed = None
         self._vlm_input_dir = _prepare_vlm_input_dir()
+        self._current_prompt_change_id = 0
+        self._prompt_change_pub = self.create_publisher(String, "/vlm/prompt_change_id", 10)
         self._rgb_sub = self.create_subscription(RosImage, rgb_topic, self._rgb_cb, 10)
         self._roll_meta_sub = self.create_subscription(String, roll_metadata_topic, self._roll_meta_cb, 10)
         self._cam_speed_sub = self.create_subscription(
@@ -277,6 +280,7 @@ class VlmRelocalizeNode(Node):
             10,
         )
         self._srv = self.create_service(Trigger, service_name, self._handle_relocalize)
+        self._set_prompt_srv = self.create_service(SetBool, "/vlm/set_object_prompt", self._handle_set_prompt)
         self.get_logger().info(
             f"VLM relocalize service ready at {service_name}, rgb_topic={rgb_topic}, "
             f"roll_metadata={roll_metadata_topic}, input_dir={self._vlm_input_dir}"
@@ -443,6 +447,31 @@ Ensure bounding box and grasp point coordinates are normalized to [0-1000] scale
         except Exception as exc:
             self.get_logger().warn(f"[VLM] failed to save input image: {exc}")
             return None
+
+    def _handle_set_prompt(self, request, response):
+        """Handle object prompt change requests - data=True means use new prompt param."""
+        if request.data:
+            new_prompt = self.get_parameter("new_object_prompt", self.object_prompt).value
+            if new_prompt != self.object_prompt:
+                self.object_prompt = new_prompt
+                self._current_prompt_change_id += 1
+                self._prompt_change_pub.publish(
+                    String(data=str(self._current_prompt_change_id))
+                )
+                self.get_logger().info(
+                    f"[VLM] Object prompt changed to '{new_prompt}' (id={self._current_prompt_change_id})"
+                )
+                response.success = True
+                response.message = f"Prompt updated to: {new_prompt} (id={self._current_prompt_change_id})"
+            else:
+                response.success = False
+                response.message = "No new_object_prompt parameter set"
+                self.get_logger().warn("[VLM] Set prompt requested but new_object_prompt parameter not set")
+        else:
+            response.success = False
+            response.message = "Set data=False does nothing (use ros2 param set /vlm_relocalize_node new_object_prompt 'your prompt' first)"
+            self.get_logger().info("[VLM] Set prompt usage: ros2 param set /vlm_relocalize_node new_object_prompt '<prompt>' && ros2 service call /vlm/set_object_prompt std_srvs/srv/SetBool '{data: true}'")
+        return response
 
     def _handle_relocalize(self, _request, response):
         self.get_logger().info("[VLM] request recebido em /vlm/trigger_relocalize")
