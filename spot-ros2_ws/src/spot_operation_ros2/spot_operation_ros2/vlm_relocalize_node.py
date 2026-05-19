@@ -271,6 +271,7 @@ class VlmRelocalizeNode(Node):
         self._vlm_input_dir = _prepare_vlm_input_dir()
         self._current_prompt_change_id = 0
         self._prompt_change_pub = self.create_publisher(String, "/vlm/prompt_change_id", 10)
+        self._seed_pub = self.create_publisher(String, "/perception/seed_command", 10)
         self._rgb_sub = self.create_subscription(RosImage, rgb_topic, self._rgb_cb, 10)
         self._roll_meta_sub = self.create_subscription(String, roll_metadata_topic, self._roll_meta_cb, 10)
         self._cam_speed_sub = self.create_subscription(
@@ -451,7 +452,7 @@ Ensure bounding box and grasp point coordinates are normalized to [0-1000] scale
     def _handle_set_prompt(self, request, response):
         """Handle object prompt change requests - data=True means use new prompt param."""
         if request.data:
-            new_prompt = self.get_parameter("new_object_prompt", self.object_prompt).value
+            new_prompt = self.get_parameter("new_object_prompt").value or self.object_prompt
             if new_prompt != self.object_prompt:
                 self.object_prompt = new_prompt
                 self._current_prompt_change_id += 1
@@ -638,6 +639,10 @@ Ensure bounding box and grasp point coordinates are normalized to [0-1000] scale
             seed["vlm_latency_ms"] = latency_ms
             response.success = True
             response.message = json.dumps(seed, ensure_ascii=True)
+            self._seed_pub.publish(String(data=response.message))
+            self.get_logger().info(
+                f"[VLM] seed published on /perception/seed_command (req_id={req_id}, subs={self._seed_pub.get_subscription_count()})"
+            )
             self._dbg_log(
                 "H15",
                 "vlm_relocalize_node.py:_handle_relocalize",
