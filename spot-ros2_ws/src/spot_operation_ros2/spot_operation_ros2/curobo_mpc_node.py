@@ -1167,23 +1167,21 @@ class CuroboMpcNode(Node):
             self.goal_buffer.goal_pose.copy_(self.last_goal_pose)
             
             # --- Attractive Potential Field Logic ---
+            # Semi-autonomous: wrist_target (operator) is the primary goal; the PF
+            # biases that goal toward the detected object when the wrist is near it.
             try:
-                # 1. Get current EE position in robot frame (body)
-                # We use the kinematics from the current state (latest joint sensors)
-                fk_result = self.mpc.rollout_fn.compute_kinematics(self.current_state)
-                # fk_result.ee_pos_seq shape is (batch, horizon, 3) -> usually (1, 1, 3) here
-                current_ee_pos_tensor = fk_result.ee_pos_seq
-                current_ee_pos_np = current_ee_pos_tensor.cpu().numpy().flatten()[:3]
-                
+                # 1. Operator-commanded wrist target (in body frame), used as PF reference
+                wrist_target_tensor = self.goal_buffer.goal_pose.position
+                wrist_target_np = wrist_target_tensor.cpu().numpy().flatten()[:3]
+
                 # 2. Get Target Object in 'body' frame
-                # We need to transform from 'target_object' frame to 'body' frame
                 # 'target_object' is published by detect_qwen.py
                 target_tf = self.tf_buffer.lookup_transform(
                     self.target_frame, # 'body'
                     'target_object',
                     rclpy.time.Time()
                 )
-                
+
                 target_pos_np = np.array([
                     target_tf.transform.translation.x,
                     target_tf.transform.translation.y,
@@ -1194,16 +1192,17 @@ class CuroboMpcNode(Node):
                     float(target_pos_np[1]),
                     float(target_pos_np[2]),
                 )
-                
-                # 3. Compute Distance
-                dist = np.linalg.norm(target_pos_np - current_ee_pos_np)
+
+                # 3. Distance is measured from the operator's wrist target to the object,
+                #    so the assist engages based on where the operator is aiming.
+                dist = np.linalg.norm(target_pos_np - wrist_target_np)
                 self._last_target_dist = float(dist)
-                
-                # 4. Apply Attraction if close
+
+                # 4. Bias wrist target toward object when close
                 if dist < 0.40:
-                    delta = self.compute_attractive(current_ee_pos_np, target_pos_np, k_att=0.2)
-                    new_pos_np = current_ee_pos_np + delta
-                    
+                    delta = self.compute_attractive(wrist_target_np, target_pos_np, k_att=0.2)
+                    new_pos_np = wrist_target_np + delta
+
                     # Update the goal position (keep orientation from last_goal_pose)
                     new_pos_tensor = self.tensor_args.to_device(new_pos_np)
                     self.goal_buffer.goal_pose.position.copy_(new_pos_tensor)
