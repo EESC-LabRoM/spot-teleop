@@ -11,7 +11,7 @@ robot_cfg:
     asset_root_path: ""
     external_asset_path: "/workspace/spot_description/urdf"
     base_link: "body"
-    ee_link: "arm0_link_wr1" #"arm0_link_fngr"
+    ee_link: "arm0_link_fngr"
     collision_link_names:
       [
         "arm0_link_sh0",

@@ -17,3 +17,4 @@ isaac-ros_ws/install/
 isaac-ros_ws/log/
 .cache
 *.pyc
+.gitconfig

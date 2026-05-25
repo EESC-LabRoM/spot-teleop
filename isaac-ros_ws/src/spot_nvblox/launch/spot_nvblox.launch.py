@@ -15,137 +15,88 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Launch file para nvblox com Spot — 3 câmeras (frontleft, frontright, hand).
-Hand: sim usa /hand/depth_reprojected; real usa depth simples (/hand/depth).
+"""Launch file para nvblox com Spot.
+
+Câmeras disponíveis: frontleft, frontright, back, hand, left, right
+Exemplos:
+  cameras:=hand                              (apenas câmera do braço)
+  cameras:=frontleft                         (apenas uma câmera frontal)
+  cameras:=frontleft,frontright              (duas câmeras frontais — padrão)
+  cameras:=frontleft,frontright,hand         (frontais + braço)
 """
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.conditions import UnlessCondition
-from launch.substitutions import LaunchConfiguration, PythonExpression
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
+VALID_CAMERAS = {"frontleft", "frontright", "back", "hand", "left", "right"}
 
-def generate_launch_description():
 
-    # Argumentos
-    use_sim_time_arg = DeclareLaunchArgument(
-        "use_sim_time", default_value="false", description="Use simulation time"
-    )
+def launch_setup(context, *args, **kwargs):
+    cameras_str = LaunchConfiguration("cameras").perform(context)
+    camera_names = [c.strip() for c in cameras_str.split(",") if c.strip()]
 
-    global_frame_arg = DeclareLaunchArgument(
-        "global_frame", default_value="world", description="Global frame for nvblox"
-    )
+    invalid = [c for c in camera_names if c not in VALID_CAMERAS]
+    if invalid:
+        raise RuntimeError(
+            f"Câmera(s) inválida(s): {invalid}. Válidas: {sorted(VALID_CAMERAS)}"
+        )
+    if not camera_names:
+        raise RuntimeError("Parâmetro 'cameras' está vazio.")
 
-    sim_arg = DeclareLaunchArgument(
-        "sim", default_value="true", description="Whether to use simulation"
-    )
+    sim = LaunchConfiguration("sim").perform(context)
+    use_sim_time = LaunchConfiguration("use_sim_time").perform(context)
+    use_segmentation = LaunchConfiguration("use_segmentation").perform(context)
+    global_frame = LaunchConfiguration("global_frame").perform(context)
 
-    use_segmentation_arg = DeclareLaunchArgument(
-        "use_segmentation", default_value="true", description="Use segmentation masks"
-    )
-
-    # Launch Configurations
-    sim = LaunchConfiguration("sim")
-    use_sim_time = LaunchConfiguration("use_sim_time")
-    use_segmentation = LaunchConfiguration("use_segmentation")
-
-    # Remappings das câmeras do Spot para o formato do nvblox
-    # Sim: /camera/{camera}/image, /depth_registered/{camera}/image, /camera|depth_registered/{camera}/camera_info
-    # Real: /camera/{camera}/image_rgb (via republish), /depth_registered/{camera}/image, /camera/{camera}/camera_info
-    camera_names = ["frontleft", "frontright", "hand"]
     remappings = []
     for i, cam in enumerate(camera_names):
-        sim_depth = f"/depth_registered/{cam}/image"
-        sim_rgb = f"/camera/{cam}/image"
-        sim_rgb_info = f"/camera/{cam}/camera_info"
-        sim_depth_info = f"/depth_registered/{cam}/camera_info"
-
-        real_depth = f"/depth_registered/{cam}/image"
-        real_rgb = f"/camera/{cam}/image_rgb"
-        real_rgb_info = f"/camera/{cam}/camera_info"
-        real_depth_info = f"/depth_registered/{cam}/camera_info"
+        if sim == "true":
+            depth_topic = f"/{cam}/depth"
+            color_topic = f"/{cam}/rgb"
+            info_topic = f"/{cam}/camera_info"
+            depth_info_topic = f"/{cam}/camera_info"
+        else:
+            depth_topic = f"/depth_registered/{cam}/image"
+            color_topic = f"/camera/{cam}/image_rgb"
+            info_topic = f"/camera/{cam}/camera_info"
+            depth_info_topic = f"/depth_registered/{cam}/camera_info"
 
         remappings.extend(
             [
-                (
-                    f"camera_{i}/depth/image",
-                    PythonExpression(
-                        [
-                            f"'{sim_depth}' if '",
-                            sim,
-                            "' == 'true' else '",
-                            real_depth,
-                            "'",
-                        ]
-                    ),
-                ),
-                (
-                    f"camera_{i}/depth/camera_info",
-                    PythonExpression(
-                        [
-                            f"'{sim_depth_info}' if '",
-                            sim,
-                            "' == 'true' else '",
-                            real_depth_info,
-                            "'",
-                        ]
-                    ),
-                ),
-                (
-                    f"camera_{i}/color/image",
-                    PythonExpression(
-                        [f"'{sim_rgb}' if '", sim, "' == 'true' else '", real_rgb, "'"]
-                    ),
-                ),
-                (
-                    f"camera_{i}/color/camera_info",
-                    PythonExpression(
-                        [
-                            f"'{sim_rgb_info}' if '",
-                            sim,
-                            "' == 'true' else '",
-                            real_rgb_info,
-                            "'",
-                        ]
-                    ),
-                ),
+                (f"camera_{i}/depth/image", depth_topic),
+                (f"camera_{i}/depth/camera_info", depth_info_topic),
+                (f"camera_{i}/color/image", color_topic),
+                (f"camera_{i}/color/camera_info", info_topic),
             ]
         )
 
-    # Máscaras de segmentação → formato nvblox (camera_i/mask/image + camera_i/mask/camera_info)
-    for i, cam in enumerate(camera_names):
-        remappings.extend(
-            [
-                (f"camera_{i}/mask/image", f"/{cam}/segmentation_mask"),
-                (
-                    f"camera_{i}/mask/camera_info",
-                    PythonExpression(
-                        [
-                            f"'/camera/{cam}/camera_info' if '",
-                            sim,
-                            f"' == 'true' else '/camera/{cam}/camera_info'",
-                        ]
-                    ),
-                ),
-            ]
-        )
+        if use_segmentation == "true":
+            if sim == "true":
+                mask_topic = f"/{cam}/segmentation_mask"
+            else:
+                mask_topic = f"/camera/{cam}/segmentation_mask"
+
+            remappings.extend(
+                [
+                    (f"camera_{i}/mask/image", mask_topic),
+                    (f"camera_{i}/mask/camera_info", info_topic),
+                ]
+            )
 
     # Parâmetros do nvblox - MODO ALTA PRECISÃO (SAFE)
     nvblox_params = {
-        "num_cameras": 3,
-        "global_frame": LaunchConfiguration("global_frame"),
+        "num_cameras": len(camera_names),
+        "global_frame": global_frame,
         "use_tf_transforms": True,
         # --- O SEGREDO DA ALTA RESOLUÇÃO ---
-        "voxel_size": 0.05,  # Mantém os 2cm que a gente quer
-        "mapping_type": PythonExpression(
-            [
-                "'human_with_static_tsdf' if '",
-                use_segmentation,
-                "' == 'true' else 'static_tsdf'",
-            ]
+        "voxel_size": 0.02,  # Mantém os 2cm que a gente quer
+        "mapping_type": (
+            "human_with_static_tsdf" if use_segmentation == "true" else "static_tsdf"
         ),
-        "use_segmentation": use_segmentation,
+        "use_segmentation": use_segmentation == "true",
         # --- SEGURA A EMOÇÃO NOS HZ (Isso evita o crash) ---
         # 40Hz é insanidade pra voxel de 2cm.
         "integrate_depth_rate_hz": 5.0,  # 5 FPS é suficiente pra mapear
@@ -157,7 +108,7 @@ def generate_launch_description():
         "use_color": True,
         "use_lidar": False,
         # ESDF
-        "esdf_mode": "3d",
+        "esdf_mode": "2d",
         "publish_esdf_distance_slice": True,
         "static_mapper.esdf_slice_min_height": 0.1,  # Ajustado pra braço (não pegar chão)
         "static_mapper.esdf_slice_max_height": 1.5,
@@ -186,7 +137,7 @@ def generate_launch_description():
         "layer_streamer_bandwidth_limit_mbps": -1.0,
         "decay_tsdf_rate_hz": 0.0,
         "print_rates_to_console": True,
-        "use_sim_time": LaunchConfiguration("use_sim_time"),
+        "use_sim_time": use_sim_time == "true",
     }
 
     nvblox_node = Node(
@@ -198,31 +149,50 @@ def generate_launch_description():
         remappings=remappings,
     )
 
-    # RGB Conversion Nodes (BGR8 -> RGB8) for real cameras
+    # RGB Conversion Nodes (BGR8 -> RGB8) — only for real robot
     rgb_converters = []
-    for cam in camera_names:
-        rgb_converters.append(
-            Node(
-                package="spot_nvblox",
-                executable="republish_rgb.py",
-                name=f"rgb_converter_{cam}",
-                remappings=[
-                    ("image_in", f"/camera/{cam}/image"),
-                    ("image_out", f"/camera/{cam}/image_rgb"),
-                ],
-                parameters=[{"use_sim_time": use_sim_time}],
-                condition=UnlessCondition(sim),
-                output="screen",
+    if sim != "true":
+        for cam in camera_names:
+            rgb_converters.append(
+                Node(
+                    package="spot_nvblox",
+                    executable="republish_rgb.py",
+                    name=f"rgb_converter_{cam}",
+                    remappings=[
+                        ("image_in", f"/camera/{cam}/image"),
+                        ("image_out", f"/camera/{cam}/image_rgb"),
+                    ],
+                    parameters=[{"use_sim_time": use_sim_time == "true"}],
+                    output="screen",
+                )
             )
-        )
 
+    return [*rgb_converters, nvblox_node]
+
+
+def generate_launch_description():
     return LaunchDescription(
         [
-            use_sim_time_arg,
-            sim_arg,
-            global_frame_arg,
-            use_segmentation_arg,
-            *rgb_converters,
-            nvblox_node,
+            DeclareLaunchArgument(
+                "use_sim_time", default_value="false", description="Use simulation time"
+            ),
+            DeclareLaunchArgument(
+                "global_frame", default_value="vision", description="Global frame for nvblox"
+            ),
+            DeclareLaunchArgument(
+                "sim", default_value="true", description="Whether to use simulation"
+            ),
+            DeclareLaunchArgument(
+                "use_segmentation", default_value="true", description="Use segmentation masks"
+            ),
+            DeclareLaunchArgument(
+                "cameras",
+                default_value="frontleft,frontright",
+                description=(
+                    "Comma-separated list of cameras to use. "
+                    f"Valid: {sorted(VALID_CAMERAS)}"
+                ),
+            ),
+            OpaqueFunction(function=launch_setup),
         ]
     )

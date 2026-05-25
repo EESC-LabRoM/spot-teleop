@@ -15,7 +15,7 @@ cost:
   # Reduce collision weight slightly to avoid aggressive repulsion
   primitive_collision_cfg:
     weight: 50000.0    # Reduced from 100000.0
-    activation_distance: 0.04  # Increased from 0.025
+    activation_distance: 0.045  # Increased from 0.025
 
   # Increase smoothness weights
   bound_cfg:
@@ -25,5 +25,5 @@ mppi:
   step_size_mean: 0.7      # Reduced from 0.9 for smoother updates
   step_size_cov: 0.05      # Increased from 0.01 for more exploration
   gamma: 0.95              # Reduced from 0.98 for less aggressive
-  n_iters: 3               # Reduced iterations for less jitter
-  num_particles: 200       # Reduced from 400 to lower GPU load on RTX A2000
+  n_iters: 5               # Reduced iterations for less jitter
+  num_particles: 400       # Reduced from 400 to lower GPU load on RTX A2000

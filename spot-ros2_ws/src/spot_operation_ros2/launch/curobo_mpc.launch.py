@@ -80,23 +80,43 @@ def launch_setup(context: LaunchContext):
         output="screen",
         additional_env={
             "PYTHONPATH": ":".join(
-                [
-                    os.environ.get("PYTHONPATH", ""),
-                    # Add all ROS prefix paths (including local workspace install folders)
-                    *[
-                        os.path.join(p, "lib/python3.10/site-packages")
-                        for p in os.environ.get("AMENT_PREFIX_PATH", "").split(":")
+                filter(
+                    None,
+                    [
+                        os.environ.get("PYTHONPATH", ""),
+                        # Add all ROS prefix paths (including local workspace install folders)
+                        *[
+                            os.path.join(p, "lib/python3.10/site-packages")
+                            for p in os.environ.get("AMENT_PREFIX_PATH", "").split(":")
+                        ],
+                        *[
+                            os.path.join(p, "local/lib/python3.10/dist-packages")
+                            for p in os.environ.get("AMENT_PREFIX_PATH", "").split(":")
+                        ],
+                        "/opt/ros/humble/lib/python3.10/site-packages",
+                        "/opt/ros/humble/local/lib/python3.10/dist-packages",
                     ],
-                    *[
-                        os.path.join(p, "local/lib/python3.10/dist-packages")
-                        for p in os.environ.get("AMENT_PREFIX_PATH", "").split(":")
+                )
+            ),
+            "LD_LIBRARY_PATH": ":".join(
+                filter(
+                    None,
+                    [
+                        "/usr/local/cuda-12.8/lib64",
+                        os.environ.get("LD_LIBRARY_PATH", ""),
+                        # Add all ROS prefix lib paths (including local workspace install folders)
+                        *[
+                            os.path.join(p, "lib")
+                            for p in os.environ.get("AMENT_PREFIX_PATH", "").split(":")
+                        ],
+                        "/opt/ros/humble/lib",
                     ],
-                    "/opt/ros/humble/lib/python3.10/site-packages",
-                    "/opt/ros/humble/local/lib/python3.10/dist-packages",
-                ]
+                )
             ),
             "PATH": "/usr/local/cuda-12.8/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
             "CUDA_HOME": "/usr/local/cuda-12.8",
+            "CUDA_VISIBLE_DEVICES": "0",
+            "NVIDIA_VISIBLE_DEVICES": "all",
             "CUROBO_CONFIG_PATH": os.path.join(spot_config_dir, "config"),
         },
     )

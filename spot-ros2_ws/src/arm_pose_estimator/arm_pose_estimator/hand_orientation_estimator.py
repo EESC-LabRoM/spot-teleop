@@ -123,8 +123,8 @@ class HandOrientationEstimator(Node):
                 self._draw_debug(debug_frame, hand_detected=False, in_block=in_block)
                 return
             normal /= np.linalg.norm(normal)
+            normal = -normal  # flip to point from back-of-hand toward palm
 
-            # Negated to match gripper orientation (palm normal vs wrist rotation convention)
             roll_raw = -math.atan2(normal[1], normal[0])
 
             # Circular EMA to handle angle wrapping correctly
