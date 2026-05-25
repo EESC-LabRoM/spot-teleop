@@ -34,7 +34,7 @@ def generate_launch_description():
     )
 
     global_frame_arg = DeclareLaunchArgument(
-        "global_frame", default_value="vision", description="Global frame for nvblox"
+        "global_frame", default_value="world", description="Global frame for nvblox"
     )
 
     sim_arg = DeclareLaunchArgument(
@@ -51,14 +51,15 @@ def generate_launch_description():
     use_segmentation = LaunchConfiguration("use_segmentation")
 
     # Remappings das câmeras do Spot para o formato do nvblox
-    # Sim: /{camera}/rgb, /{camera}/depth, /{camera}/camera_info
-    # Real: /camera/{camera}/image_rgb, /depth_registered/{camera}/image, /camera/{camera}/camera_info
+    # Sim: /camera/{camera}/image, /depth_registered/{camera}/image, /camera|depth_registered/{camera}/camera_info
+    # Real: /camera/{camera}/image_rgb (via republish), /depth_registered/{camera}/image, /camera/{camera}/camera_info
     camera_names = ["frontleft", "frontright", "hand"]
     remappings = []
     for i, cam in enumerate(camera_names):
-        sim_depth = f"/{cam}/depth"
-        sim_rgb = f"/{cam}/rgb"
-        sim_info = f"/{cam}/camera_info"
+        sim_depth = f"/depth_registered/{cam}/image"
+        sim_rgb = f"/camera/{cam}/image"
+        sim_rgb_info = f"/camera/{cam}/camera_info"
+        sim_depth_info = f"/depth_registered/{cam}/camera_info"
 
         real_depth = f"/depth_registered/{cam}/image"
         real_rgb = f"/camera/{cam}/image_rgb"
@@ -83,7 +84,7 @@ def generate_launch_description():
                     f"camera_{i}/depth/camera_info",
                     PythonExpression(
                         [
-                            f"'{sim_info}' if '",
+                            f"'{sim_depth_info}' if '",
                             sim,
                             "' == 'true' else '",
                             real_depth_info,
@@ -101,7 +102,7 @@ def generate_launch_description():
                     f"camera_{i}/color/camera_info",
                     PythonExpression(
                         [
-                            f"'{sim_info}' if '",
+                            f"'{sim_rgb_info}' if '",
                             sim,
                             "' == 'true' else '",
                             real_rgb_info,
@@ -121,7 +122,7 @@ def generate_launch_description():
                     f"camera_{i}/mask/camera_info",
                     PythonExpression(
                         [
-                            f"'/{cam}/camera_info' if '",
+                            f"'/camera/{cam}/camera_info' if '",
                             sim,
                             f"' == 'true' else '/camera/{cam}/camera_info'",
                         ]
@@ -136,7 +137,7 @@ def generate_launch_description():
         "global_frame": LaunchConfiguration("global_frame"),
         "use_tf_transforms": True,
         # --- O SEGREDO DA ALTA RESOLUÇÃO ---
-        "voxel_size": 0.02,  # Mantém os 2cm que a gente quer
+        "voxel_size": 0.05,  # Mantém os 2cm que a gente quer
         "mapping_type": PythonExpression(
             [
                 "'human_with_static_tsdf' if '",
@@ -156,7 +157,7 @@ def generate_launch_description():
         "use_color": True,
         "use_lidar": False,
         # ESDF
-        "esdf_mode": "2d",
+        "esdf_mode": "3d",
         "publish_esdf_distance_slice": True,
         "static_mapper.esdf_slice_min_height": 0.1,  # Ajustado pra braço (não pegar chão)
         "static_mapper.esdf_slice_max_height": 1.5,

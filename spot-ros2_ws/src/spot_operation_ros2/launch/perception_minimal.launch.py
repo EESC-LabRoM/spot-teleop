@@ -105,7 +105,7 @@ def generate_launch_description():
                     "secondary_cameras": secondary_cameras,
                     "camera_info_topic": camera_info_topic,
                     "secondary_camera_info_topic_pattern": secondary_camera_info_topic_pattern,
-                    "target_parent_frame": "vision",
+                    "target_parent_frame": "odom",
                 }],
                 output="screen",
             ),

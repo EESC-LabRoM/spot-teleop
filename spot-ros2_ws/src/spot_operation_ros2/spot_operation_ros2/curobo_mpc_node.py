@@ -135,15 +135,25 @@ class CuroboMpcNode(Node):
             robot_cfg_raw["kinematics"]["collision_spheres"] = spheres_path
             self._log_info(f'Sim: generated arm0_-prefixed URDF at {tmp_urdf.name}', event='config')
         else:
-            # Real: prefix arm_. Remap config arm0_ -> arm_ and temp spheres.
+            # Real: prefix arm_. Remap config arm0_ -> arm_, generate temp URDF and spheres.
             robot_cfg_raw = self._remap_config_prefix(robot_cfg_raw, 'arm0_', 'arm_')
+            # Generate temp URDF with arm0_ -> arm_ so cuRobo's kinematic chain resolves correctly.
+            urdf_src = os.path.join(os.path.dirname(urdf_path), 'standalone_arm_fixed.urdf')
+            with open(urdf_src, 'r') as f:
+                urdf_text = f.read()
+            urdf_text = urdf_text.replace('arm0_', 'arm_')
+            tmp_urdf = tempfile.NamedTemporaryFile(mode='w', suffix='.urdf', delete=False)
+            tmp_urdf.write(urdf_text)
+            tmp_urdf.close()
+            robot_cfg_raw["kinematics"]["external_asset_path"] = os.path.dirname(tmp_urdf.name)
+            robot_cfg_raw["kinematics"]["urdf_path"] = os.path.basename(tmp_urdf.name)
             spheres_data = load_yaml(spheres_path)
             spheres_data = self._remap_config_prefix(spheres_data, 'arm0_', 'arm_')
             tmp_spheres = tempfile.NamedTemporaryFile(mode='w', suffix='.yml', delete=False)
             yaml.dump(spheres_data, tmp_spheres)
             tmp_spheres.close()
             robot_cfg_raw["kinematics"]["collision_spheres"] = tmp_spheres.name
-            self._log_info(f'Real: remapped config arm0_ -> arm_. Temp spheres: {tmp_spheres.name}', event='config')
+            self._log_info(f'Real: remapped config arm0_ -> arm_. Temp URDF: {tmp_urdf.name}, Temp spheres: {tmp_spheres.name}', event='config')
         
         self.robot_cfg = robot_cfg_raw
         self.j_names = self.robot_cfg["kinematics"]["cspace"]["joint_names"]
@@ -259,7 +269,7 @@ class CuroboMpcNode(Node):
             cmd_topic = '/spot_joint_controller/joint_commands'
             joint_topic = '/joint_states'
         else:
-            cmd_topic = '/arm_joint_trajectory_commands'
+            cmd_topic = '/arm/joint_command'
             joint_topic = '/joint_states'
 
         if self.use_ros2_control and not self.use_sim:
@@ -699,32 +709,83 @@ class CuroboMpcNode(Node):
             self._log_error(f'TF {self._esdf_global_frame}→{self._esdf_query_frame} failed: {e}')
             return None
 
-        origin_vec = np.array([origin_global.x, origin_global.y, origin_global.z])
-        # CORRECT transformation: p_base = R^T * (p_vision - robot_pos)
-        origin_relative_vision = origin_vec - self._robot_pos_global
-        origin_base = self._rotate_by_quat_inverse(origin_relative_vision, q_arr)
+        # Grid is world-axis-aligned, centered on robot (AABB was requested in world frame).
+        # cuRobo's VoxelGrid.pose is grid-local-frame -> planning-frame:
+        #   pose.position = grid CENTER in body frame
+        #   pose.quaternion = rotation taking grid-local axes (= world axes) into body axes = R_body_from_world
+        # The grid_size/2 offset is a world-axis vector and must be added BEFORE rotating to body.
+        origin_vec_world = np.array([origin_global.x, origin_global.y, origin_global.z])
+        grid_size = np.array(self.__grid_size_m)
+        origin_relative_world = origin_vec_world - self._robot_pos_global
+        grid_center_rel_world = origin_relative_world + grid_size / 2.0
+        grid_center_body = self._rotate_by_quat(grid_center_rel_world, q_arr)
 
-        self._log_info(
-            f'ESDF origin_m in {self._esdf_query_frame}: '
-            f'x={origin_base[0]:.3f} y={origin_base[1]:.3f} z={origin_base[2]:.3f}',
-            event='esdf'
-        )
+        # Roll/pitch/yaw of the world frame as seen from body (rad, for legibility)
+        qx, qy, qz, qw = q_arr
+        sinr_cosp = 2.0 * (qw * qx + qy * qz)
+        cosr_cosp = 1.0 - 2.0 * (qx * qx + qy * qy)
+        roll = math.atan2(sinr_cosp, cosr_cosp)
+        sinp = 2.0 * (qw * qy - qz * qx)
+        pitch = math.asin(max(-1.0, min(1.0, sinp)))
+        siny_cosp = 2.0 * (qw * qz + qx * qy)
+        cosy_cosp = 1.0 - 2.0 * (qy * qy + qz * qz)
+        yaw = math.atan2(siny_cosp, cosy_cosp)
 
-        grid_center = [
-            origin_base[0] + self.__grid_size_m[0] / 2.0,
-            origin_base[1] + self.__grid_size_m[1] / 2.0,
-            origin_base[2] + self.__grid_size_m[2] / 2.0,
-        ]
-        self._log_info(
+        # Grid is world-axis-aligned; under rotation, body-frame AABB is the bounding box
+        # of the 8 rotated corners.
+        corners_world = np.array([
+            [sx, sy, sz] for sx in (-grid_size[0] / 2, grid_size[0] / 2)
+            for sy in (-grid_size[1] / 2, grid_size[1] / 2)
+            for sz in (-grid_size[2] / 2, grid_size[2] / 2)
+        ])
+        corners_body = np.array([
+            self._rotate_by_quat(c, q_arr) + grid_center_body for c in corners_world
+        ])
+        bb_min = corners_body.min(axis=0)
+        bb_max = corners_body.max(axis=0)
+
+        arm_inside = bool((bb_min <= 0).all() and (bb_max >= 0).all())
+        center_msg = (
             f'ESDF grid_center (cuRobo pose in {self._esdf_query_frame}): '
-            f'x={grid_center[0]:.3f} y={grid_center[1]:.3f} z={grid_center[2]:.3f}',
-            event='esdf'
+            f'x={grid_center_body[0]:+.3f} y={grid_center_body[1]:+.3f} z={grid_center_body[2]:+.3f}'
         )
+        tf_msg = (
+            f'TF {self._esdf_global_frame}->{self._esdf_query_frame} rpy(deg)='
+            f'({math.degrees(roll):+.1f},{math.degrees(pitch):+.1f},{math.degrees(yaw):+.1f}) '
+            f'quat(xyzw)=({qx:+.3f},{qy:+.3f},{qz:+.3f},{qw:+.3f})'
+        )
+        bbox_msg = (
+            f'Grid AABB in {self._esdf_query_frame}: '
+            f'min=({bb_min[0]:+.2f},{bb_min[1]:+.2f},{bb_min[2]:+.2f}) '
+            f'max=({bb_max[0]:+.2f},{bb_max[1]:+.2f},{bb_max[2]:+.2f}) '
+            f'-> body origin {"INSIDE" if arm_inside else "OUTSIDE"} grid'
+        )
+        self._log_info(center_msg, event='esdf')
+        self._log_info(tf_msg, event='esdf')
+        self._log_info(bbox_msg, event='esdf')
+        # Mirror to terminal so the user can watch it live
+        self.get_logger().info('[ESDF] ' + center_msg)
+        self.get_logger().info('[ESDF] ' + tf_msg)
+        if arm_inside:
+            self.get_logger().info('[ESDF] ' + bbox_msg)
+        else:
+            self.get_logger().error('[ESDF] ' + bbox_msg + '  <-- arm WILL miss obstacles!')
+
+        # Stash for control-loop diagnostics
+        self._last_grid_bb_min = bb_min
+        self._last_grid_bb_max = bb_max
+        self._last_grid_arm_inside = arm_inside
+
+        # pose order: [x, y, z, qw, qx, qy, qz]
+        pose = [
+            float(grid_center_body[0]), float(grid_center_body[1]), float(grid_center_body[2]),
+            float(qw), float(qx), float(qy), float(qz),
+        ]
 
         return CuVoxelGrid(
             name='world_voxel',
             dims=self.__grid_size_m,
-            pose=grid_center + [1, 0.0, 0.0, 0.0],  # x, y, z, qw, qx, qy, qz
+            pose=pose,
             voxel_size=self.__voxel_size,
             feature_dtype=torch.float32,
             feature_tensor=data,
@@ -1352,7 +1413,27 @@ class CuroboMpcNode(Node):
                     cmd_pos='|'.join(f'{v:.6f}' for v in pos_list),
                     curr_pos='|'.join(f'{v:.6f}' for v in curr_pos_list),
                 )
-                self.get_logger().info(step_msg)
+
+                # Human-readable collision diagnostic to terminal.
+                # cuRobo VoxelGrid convention here: positive = inside obstacle.
+                # min_dist near the sentinel (~-100) means the sphere fell outside the voxel grid.
+                if min_dist <= -50.0:
+                    coll_status = f'NO-GRID-COVERAGE (sentinel min_dist={min_dist:.2f})'
+                elif min_dist > 0.0:
+                    coll_status = f'IN-COLLISION min_dist={min_dist:+.3f}m sphere#{closest_sphere}'
+                elif min_dist > -0.05:
+                    coll_status = f'NEAR-OBSTACLE min_dist={min_dist:+.3f}m sphere#{closest_sphere}'
+                else:
+                    coll_status = f'CLEAR min_dist={min_dist:+.3f}m sphere#{closest_sphere}'
+
+                grid_status = ''
+                if getattr(self, '_last_grid_arm_inside', None) is False:
+                    grid_status = ' [grid does not cover body!]'
+
+                self.get_logger().info(
+                    f'{step_msg} | {coll_status} | coll_cost={coll_cost:.1f} '
+                    f'pose_err={float(mpc_result.metrics.pose_error.item()):.3f}{grid_status}'
+                )
 
         except Exception as e:
             import traceback

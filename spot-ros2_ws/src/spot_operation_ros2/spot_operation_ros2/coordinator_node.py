@@ -276,25 +276,11 @@ class CoordinatorNode(Node):
             )
             # #endregion
             return
-        try:
-            seed = json.loads(result.message)
-            msg = String()
-            msg.data = json.dumps(seed, ensure_ascii=True)
-            self._seed_pub.publish(msg)
-            self._seed_apply_deadline = time.time() + self.seed_apply_grace_sec
-            self._dbg_log(
-                "H8",
-                "coordinator_node.py:_handle_vlm_result",
-                "seed_published",
-                {
-                    "payload_len": len(msg.data),
-                    "seed_subscriber_count": int(self._seed_pub.get_subscription_count()),
-                },
-            )
-            self.state = "IDLE"
-        except Exception as exc:
-            self.state = "DEGRADED"
-            self.get_logger().warn(f"Invalid VLM seed response payload: {exc}")
+        # Seed is published by vlm_relocalize_node directly on /perception/seed_command,
+        # so the manual service path also drives the full pipeline. Coordinator only
+        # tracks the grace window and state here.
+        self._seed_apply_deadline = time.time() + self.seed_apply_grace_sec
+        self.state = "IDLE"
 
 
 def main(args=None):

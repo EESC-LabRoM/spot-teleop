@@ -240,7 +240,7 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument(
                 "esdf_global_frame",
-                default_value="vision",
+                default_value="world",
                 description="nvblox global frame used for ESDF service queries (sim: 'odom', real: 'vision')",
             ),
             DeclareLaunchArgument(
