@@ -18,6 +18,7 @@ from PIL import Image, ImageDraw, ImageFont
 from cv_bridge import CvBridge
 from geometry_msgs.msg import PointStamped
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallbackGroup
+from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from sensor_msgs.msg import CameraInfo, Image as RosImage
 from std_msgs.msg import Float64, String
@@ -334,6 +335,7 @@ class Sam2TrackerNode(Node):
         super().__init__('sam2_tracker_node')
 
         # Parameters
+        self.declare_parameter('executor_threads', 6)
         self.declare_parameter('rgb_topic', '/hand/rgb')
         self.declare_parameter('depth_topic', '/hand/depth')
         self.declare_parameter('visualize', True)
@@ -373,6 +375,7 @@ class Sam2TrackerNode(Node):
         self.declare_parameter('hand_iou_min_overlap', 0.25)
         self.declare_parameter('hand_max_centroid_dist_px', 150.0)
 
+        self._executor_threads = int(self.get_parameter('executor_threads').value)
         self.visualize = self.get_parameter('visualize').value
         self.tracking_window_name = self.get_parameter('tracking_window_name').value
         self.publish_segmentation_mask = self.get_parameter('publish_segmentation_mask').value
@@ -491,8 +494,23 @@ class Sam2TrackerNode(Node):
         self._hand_max_centroid_dist_px = float(self.get_parameter('hand_max_centroid_dist_px').value)
 
         # Callback groups
-        self.img_cb_group = ReentrantCallbackGroup()
-        self.inference_cb_group = MutuallyExclusiveCallbackGroup()
+        # - io_cb_group: most subscriptions (Reentrant — they're fast, can run concurrently with each other and with inference)
+        # - hand_sync_cb_group: hand RGB+depth message_filters subs (MutuallyExclusive — ApproximateTimeSynchronizer
+        #   internal state is NOT thread-safe; both filter callbacks must serialize)
+        # - inference_cb_group_hand: hand 10 Hz inference timer (MutuallyExclusive)
+        # - _secondary_inference_groups[cam]: per-secondary 5 Hz inference timer, each its own MutuallyExclusive group
+        # - gui_cb_group: the single thread that owns cv2.imshow/waitKey (Qt is not thread-safe across executor workers)
+        self.io_cb_group = ReentrantCallbackGroup()
+        self.hand_sync_cb_group = MutuallyExclusiveCallbackGroup()
+        self.inference_cb_group_hand = MutuallyExclusiveCallbackGroup()
+        self.gui_cb_group = MutuallyExclusiveCallbackGroup()
+        self._secondary_inference_groups: dict = {}
+
+        # Pending GUI frames: window_name -> BGR ndarray. _update_display / _update_secondary_display
+        # only write here under _gui_lock; the gui_cb_group timer below is the only thread that
+        # calls cv2.imshow/waitKey, which keeps Qt happy.
+        self._gui_lock = threading.Lock()
+        self._pending_display_frames: dict = {}
 
         # Publishers
         self.mask_pub = self.create_publisher(RosImage, mask_topic, 10)
@@ -501,35 +519,50 @@ class Sam2TrackerNode(Node):
         self._seed_3d_pub = self.create_publisher(PointStamped, "/tracking/seed_3d", 10)
 
         # RGB+depth sync via ApproximateTimeSynchronizer
-        self.color_sub = message_filters.Subscriber(self, RosImage, rgb_topic)
-        self.depth_sub = message_filters.Subscriber(self, RosImage, depth_topic)
+        # Both filter subs share a single MutuallyExclusiveCallbackGroup because the
+        # ApproximateTimeSynchronizer's internal book-keeping is not thread-safe.
+        self.color_sub = message_filters.Subscriber(
+            self, RosImage, rgb_topic, callback_group=self.hand_sync_cb_group
+        )
+        self.depth_sub = message_filters.Subscriber(
+            self, RosImage, depth_topic, callback_group=self.hand_sync_cb_group
+        )
         self.sync = message_filters.ApproximateTimeSynchronizer(
             [self.color_sub, self.depth_sub], queue_size=10, slop=0.1
         )
         self.sync.registerCallback(self._synced_image_cb)
 
-        self._seed_sub = self.create_subscription(String, seed_topic, self._seed_command_cb, 10)
-        self._cam_info_sub = self.create_subscription(CameraInfo, depth_info_topic, self._camera_info_cb, 10)
+        self._seed_sub = self.create_subscription(
+            String, seed_topic, self._seed_command_cb, 10, callback_group=self.io_cb_group
+        )
+        self._cam_info_sub = self.create_subscription(
+            CameraInfo, depth_info_topic, self._camera_info_cb, 10, callback_group=self.io_cb_group
+        )
         self._hand_cam_speed = None
         self.create_subscription(
             Float64,
             str(self.get_parameter('camera_speed_topic').value),
             self._cam_speed_cb,
             10,
+            callback_group=self.io_cb_group,
         )
         self._coord_state_sub = self.create_subscription(
-            String, "/coordinator/state", self._coordinator_state_cb, 10
+            String, "/coordinator/state", self._coordinator_state_cb, 10,
+            callback_group=self.io_cb_group,
         )
         self._seed_pixel_sub = self.create_subscription(
-            PointStamped, "/tracking/seed_pixel", self._seed_pixel_cb, 10
+            PointStamped, "/tracking/seed_pixel", self._seed_pixel_cb, 10,
+            callback_group=self.io_cb_group,
         )
         self._prompt_change_sub = self.create_subscription(
-            String, "/vlm/prompt_change_id", self._prompt_change_cb, 10
+            String, "/vlm/prompt_change_id", self._prompt_change_cb, 10,
+            callback_group=self.io_cb_group,
         )
         # Geometry depth fallback: vision-frame object position reprojected to hand cam by tf_projection
         self._geometry_cam_pt: tuple = None  # (x, y, z) in hand_cam frame, TF-derived (no depth sensor)
         self.create_subscription(
-            PointStamped, "/tracking/geometry_3d_in_cam", self._geometry_cam_pt_cb, 10
+            PointStamped, "/tracking/geometry_3d_in_cam", self._geometry_cam_pt_cb, 10,
+            callback_group=self.io_cb_group,
         )
 
         # Register secondary cameras
@@ -570,18 +603,31 @@ class Sam2TrackerNode(Node):
                 'lifecycle': 'COLD',      # 'COLD' | 'WARM' | 'DEGRADED'
                 'warm_tracked_frames': 0, # successful frames since current init (for COLD→WARM promotion)
                 'warm_fail_streak': 0,    # consecutive warm re-prompt failures (→ DEGRADED)
+                # Guards latest_rgb/header/new_frame_available now that RGB callback (io_cb_group)
+                # and the 5 Hz inference timer (per-cam MutuallyExclusive) run on separate threads.
+                '_rgb_lock': threading.Lock(),
             }
             self.create_subscription(
                 RosImage, secondary_rgb_topic,
-                lambda msg, c=cam: self._secondary_rgb_cb(msg, c), 10
+                lambda msg, c=cam: self._secondary_rgb_cb(msg, c), 10,
+                callback_group=self.io_cb_group,
             )
             self.create_subscription(
                 PointStamped, f'/{cam}/tracking/seed_pixel',
-                lambda msg, c=cam: self._secondary_seed_pixel_cb(msg, c), 10
+                lambda msg, c=cam: self._secondary_seed_pixel_cb(msg, c), 10,
+                callback_group=self.io_cb_group,
             )
             secondary_mask_topic = secondary_mask_topic_pattern.replace('{cam}', cam)
             self._secondary_mask_pubs[cam] = self.create_publisher(
                 RosImage, secondary_mask_topic, 10
+            )
+            # Per-camera inference timer (5 Hz) on its own MutuallyExclusiveCallbackGroup so
+            # secondaries do not block each other or the hand timer at the executor level.
+            self._secondary_inference_groups[cam] = MutuallyExclusiveCallbackGroup()
+            self.create_timer(
+                0.2,
+                lambda c=cam: self._run_secondary_tracking_step(c),
+                callback_group=self._secondary_inference_groups[cam],
             )
         if self._secondary_cameras:
             self.get_logger().info(
@@ -589,8 +635,13 @@ class Sam2TrackerNode(Node):
             )
 
         self.tracking_timer = self.create_timer(
-            0.1, self._tracking_timer_cb, callback_group=self.inference_cb_group
+            0.1, self._tracking_timer_cb, callback_group=self.inference_cb_group_hand
         )
+
+        # GUI is NOT driven from a ROS timer: MultiThreadedExecutor would still run
+        # successive ticks on different worker threads, and Qt windows are bound to
+        # the thread that created them. Instead, main() spins the executor in a daemon
+        # thread and drains _pending_display_frames on the process main thread.
 
         self.get_logger().info(
             f"Sam2TrackerNode ready. rgb={rgb_topic}, depth={depth_topic}, "
@@ -979,10 +1030,20 @@ class Sam2TrackerNode(Node):
                 cv2.putText(img_bgr, speed_label, (10, 52), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 3)
                 cv2.putText(img_bgr, speed_label, (10, 52), cv2.FONT_HERSHEY_SIMPLEX, 0.6, speed_color, 2)
 
-            cv2.imshow(self.tracking_window_name, img_bgr)
-            cv2.waitKey(1)
+            with self._gui_lock:
+                self._pending_display_frames[self.tracking_window_name] = img_bgr
         except Exception as e:
             self.get_logger().warn(f"Visualization error: {e}")
+
+    def drain_pending_display_frames(self) -> list:
+        """Return (window_name, bgr) pairs queued since last call. Thread-safe.
+        Intended for the process main thread (see main()), which is the only
+        thread allowed to call cv2.imshow under Qt.
+        """
+        with self._gui_lock:
+            frames = list(self._pending_display_frames.items())
+            self._pending_display_frames.clear()
+        return frames
 
     def _publish_mask_for_header(self, header):
         """Publish last known mask (or zeros) stamped with the given header.
@@ -1590,10 +1651,12 @@ class Sam2TrackerNode(Node):
         try:
             cv_rgb = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
             cv_rgb = cv2.cvtColor(cv_rgb, cv2.COLOR_BGR2RGB)
-            st['latest_rgb'] = Image.fromarray(cv_rgb)
-            st['latest_rgb_header'] = msg.header
-            st['new_frame_available'] = True
-            st['_last_mask_shape'] = (msg.height, msg.width)
+            new_rgb = Image.fromarray(cv_rgb)
+            with st['_rgb_lock']:
+                st['latest_rgb'] = new_rgb
+                st['latest_rgb_header'] = msg.header
+                st['new_frame_available'] = True
+                st['_last_mask_shape'] = (msg.height, msg.width)
         except Exception as e:
             self.get_logger().error(f"[{cam}] RGB conversion error: {e}")
             return
@@ -1769,8 +1832,8 @@ class Sam2TrackerNode(Node):
             cv2.putText(img_bgr, header, (10, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 0, 0), 3)
             cv2.putText(img_bgr, header, (10, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.65, label_color, 2)
 
-            cv2.imshow(f"SAM2 {cam}", img_bgr)
-            cv2.waitKey(1)
+            with self._gui_lock:
+                self._pending_display_frames[f"SAM2 {cam}"] = img_bgr
         except Exception as e:
             self.get_logger().warn(f"[{cam}] Visualization error: {e}")
 
@@ -1781,8 +1844,15 @@ class Sam2TrackerNode(Node):
         remain visible from the moment the node starts.
         """
         st = self._secondary_cam_state[cam]
-        img_pil = st['latest_rgb']
-        frame_hdr = st.get('latest_rgb_header')
+        # Snapshot the RGB cache under the per-cam lock — the RGB callback runs on
+        # io_cb_group (different thread from this timer), so direct dict reads would
+        # race against writes in _secondary_rgb_cb.
+        with st['_rgb_lock']:
+            img_pil = st['latest_rgb']
+            frame_hdr = st.get('latest_rgb_header')
+            new_frame = st['new_frame_available']
+            if new_frame:
+                st['new_frame_available'] = False
         now = time.time()
 
         # ── FOV timeout: only applies while NOT actively tracking ────────────────
@@ -1802,7 +1872,7 @@ class Sam2TrackerNode(Node):
                 )
 
         # ── Always refresh display, even without a new SAM2 frame ─────────────
-        if not st['new_frame_available']:
+        if not new_frame:
             if self.visualize and img_pil is not None:
                 self._update_secondary_display(
                     cam, img_pil, st['_disp_state'],
@@ -1815,7 +1885,6 @@ class Sam2TrackerNode(Node):
                 )
             return
 
-        st['new_frame_available'] = False
         img_np = np.array(img_pil.convert('RGB'))
 
         # ── Object not in FOV at all (no seed ever or timed out) ─────────────
@@ -2216,22 +2285,57 @@ class Sam2TrackerNode(Node):
         is_tracking = self.tracking_active and self._hand_disp_state == 'TRACKING'
         st.data = "TRACKING" if is_tracking else "LOST"
         self._tracking_state_pub.publish(st)
-
-        for cam in self._secondary_cameras:
-            self._run_secondary_tracking_step(cam)
+        # Secondary inference is now driven by per-camera 5 Hz timers on their own
+        # MutuallyExclusiveCallbackGroups — see secondary registration loop in __init__.
 
 
 def main(args=None):
     rclpy.init(args=args)
     node = Sam2TrackerNode()
-    try:
-        rclpy.spin(node)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        node.destroy_node()
-        if rclpy.ok():
-            rclpy.shutdown()
+    executor = MultiThreadedExecutor(num_threads=node._executor_threads)
+    executor.add_node(node)
+    node.get_logger().info(
+        f"MultiThreadedExecutor started with {node._executor_threads} threads"
+    )
+
+    if node.visualize:
+        # cv2/Qt windows must live on the process main thread. Spin the executor in a
+        # background daemon thread and drain queued display frames here.
+        exec_thread = threading.Thread(target=executor.spin, name="sam2_executor", daemon=True)
+        exec_thread.start()
+        try:
+            while rclpy.ok():
+                for window_name, img_bgr in node.drain_pending_display_frames():
+                    try:
+                        cv2.imshow(window_name, img_bgr)
+                    except Exception as e:
+                        node.get_logger().warn(
+                            f"cv2.imshow failed: {e}", throttle_duration_sec=2.0
+                        )
+                # waitKey drives the Qt event loop; 30 ms gives ~33 Hz refresh.
+                cv2.waitKey(30)
+        except KeyboardInterrupt:
+            pass
+        finally:
+            executor.shutdown()
+            exec_thread.join(timeout=2.0)
+            try:
+                cv2.destroyAllWindows()
+            except Exception:
+                pass
+            node.destroy_node()
+            if rclpy.ok():
+                rclpy.shutdown()
+    else:
+        try:
+            executor.spin()
+        except KeyboardInterrupt:
+            pass
+        finally:
+            executor.shutdown()
+            node.destroy_node()
+            if rclpy.ok():
+                rclpy.shutdown()
 
 
 if __name__ == "__main__":
