@@ -20,8 +20,9 @@ class CoordinatorNode(Node):
         super().__init__("coordinator_node")
         self.declare_parameter("tracking_state_topic", "/tracking_state")
         self.declare_parameter("seed_command_topic", "/perception/seed_command")
-        self.declare_parameter("vlm_service_name", "/vlm/trigger_relocalize")
+        self.declare_parameter("vlm_service_name", "/roll/trigger_relocalize")
         self.declare_parameter("loop_hz", 2.0)
+        self.declare_parameter("max_seed_age_sec", 10.0)
         self.declare_parameter("relocalize_cooldown_sec", 1.5)
         self.declare_parameter("seed_apply_grace_sec", 2.0)
         self.declare_parameter("disable_auto_relocalize_on_lost", True)
@@ -30,6 +31,7 @@ class CoordinatorNode(Node):
         seed_command_topic = self.get_parameter("seed_command_topic").value
         service_name = self.get_parameter("vlm_service_name").value
         loop_hz = float(max(0.5, self.get_parameter("loop_hz").value))
+        self.max_seed_age_sec = float(max(1.0, self.get_parameter("max_seed_age_sec").value))
         self.relocalize_cooldown_sec = float(
             max(0.0, self.get_parameter("relocalize_cooldown_sec").value)
         )
@@ -41,7 +43,6 @@ class CoordinatorNode(Node):
 
         self.state = "IDLE"
         self.tracking_state = "UNKNOWN"
-        self._last_tracking_state = "UNKNOWN"
         self._vlm_inflight = False
         self._last_relocalize_attempt = 0.0
         self._seed_apply_deadline = 0.0
@@ -89,7 +90,6 @@ class CoordinatorNode(Node):
 
     def _tracking_state_cb(self, msg: String):
         self.tracking_state = msg.data.strip().upper()
-        self._last_tracking_state = self.tracking_state
         if self.tracking_state == "TRACKING":
             # Tracker locked on target: clear grace window.
             self._seed_apply_deadline = 0.0
@@ -172,7 +172,6 @@ class CoordinatorNode(Node):
         state_msg = String()
         state_msg.data = self.state
         self._state_pub.publish(state_msg)
-
     def _tick(self):
         now = time.time()
         self._dbg_tick_count += 1
@@ -190,7 +189,6 @@ class CoordinatorNode(Node):
             )
         if self.tracking_state == "TRACKING":
             self.state = "TRACKING"
-            self._publish_state()
             return
         if now < self._seed_apply_deadline:
             self.state = "SEEDING"
@@ -200,13 +198,11 @@ class CoordinatorNode(Node):
                 "seed_apply_grace_active",
                 {"remaining_sec": float(self._seed_apply_deadline - now)},
             )
-            self._publish_state()
             return
         # Trigger relocalization only when explicitly LOST.
         # UNKNOWN/IDLE/other states should not spam API calls.
         if self.tracking_state != "LOST":
             self.state = "IDLE"
-            self._publish_state()
             return
         # If disabled, don't auto-trigger on lost (let SAM2's memory handle re-detection)
         if self.disable_auto_relocalize_on_lost:
@@ -215,23 +211,15 @@ class CoordinatorNode(Node):
             return
         if self._vlm_inflight:
             self.state = "RELOCALIZING"
-            self._publish_state()
             return
         if now - self._last_relocalize_attempt < self.relocalize_cooldown_sec:
-            self._publish_state()
             return
         if not self._vlm_client.wait_for_service(timeout_sec=0.0):
             self.state = "DEGRADED"
-            self.get_logger().warn("[COORD] servico /roll/trigger_relocalize indisponivel")
-            self._publish_state()
             return
         self._last_relocalize_attempt = now
         self._vlm_inflight = True
         self.state = "RELOCALIZING"
-        self._publish_state()
-        self.get_logger().info(
-            f"[COORD] disparando request para /roll/trigger_relocalize  tracking_state={self.tracking_state}"
-        )
         self._dbg_log(
             "H16",
             "coordinator_node.py:_tick",
@@ -250,18 +238,6 @@ class CoordinatorNode(Node):
             self.get_logger().warn(f"Relocalize call failed: {exc}")
             return
         if result is None or not result.success:
-            msg_str = result.message if result is not None else ""
-            is_stability_gate = msg_str.startswith("camera_moving:")
-            if is_stability_gate:
-                self.get_logger().info(
-                    f"[COORD] VLM gate: {msg_str} — retentando"
-                )
-                self.state = "IDLE"
-            else:
-                self.get_logger().warn(
-                    f"[COORD] relocalize retornou sem sucesso. result_none={result is None} msg={msg_str}"
-                )
-                self.state = "DEGRADED"
             # #region agent log
             self._dbg_log(
                 "H10",
@@ -270,11 +246,11 @@ class CoordinatorNode(Node):
                 {
                     "result_is_none": result is None,
                     "result_success": bool(result.success) if result is not None else False,
-                    "result_message": msg_str[:240],
-                    "is_stability_gate": is_stability_gate,
+                    "result_message": (result.message[:240] if result is not None else ""),
                 },
             )
             # #endregion
+            self.state = "DEGRADED"
             return
         # Seed is published by vlm_relocalize_node directly on /perception/seed_command,
         # so the manual service path also drives the full pipeline. Coordinator only

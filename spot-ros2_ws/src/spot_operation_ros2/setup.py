@@ -45,7 +45,6 @@ setup(
             'vlm_relocalize_node = spot_operation_ros2.vlm_relocalize_node:main',
             'coordinator_node = spot_operation_ros2.coordinator_node:main',
             'tf_projection_node = spot_operation_ros2.tf_projection_node:main',
-            'roll_image_node = spot_operation_ros2.roll_image_node:main',
             'control_mode_switcher = spot_operation_ros2.control_mode_switcher:main',
             'fake_wrist_target = spot_operation_ros2.fake_wrist_target:main',
         ],

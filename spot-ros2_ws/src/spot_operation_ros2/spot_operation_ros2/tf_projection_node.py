@@ -24,6 +24,13 @@ class TFProjectionNode(Node):
         self.declare_parameter("hold_last_target_on_lost", True)
         self.declare_parameter("target_publish_hz", 30.0)
         self.declare_parameter("target_ema_alpha", 0.1)
+        # Treat target_object as world-fixed: reject hand-tracking 3D readings that jump
+        # more than this from the latched position (they come from partial/edge masks or
+        # the depth fallback under camera motion — the object itself is static). A
+        # SUSTAINED run of far readings (target_jump_relatch_count) is accepted as a real
+        # move and re-latches. 0 disables the gate (pure EMA, old behaviour).
+        self.declare_parameter("target_jump_reject_m", 0.15)
+        self.declare_parameter("target_jump_relatch_count", 8)
         self.declare_parameter("max_target_abs_m", 50.0)
         self.declare_parameter("tf_future_tolerance_sec", 0.35)
         self.declare_parameter("tf_past_tolerance_sec", 0.2)
@@ -50,6 +57,9 @@ class TFProjectionNode(Node):
         self.hold_last_target_on_lost = bool(self.get_parameter("hold_last_target_on_lost").value)
         self.target_publish_hz = float(max(0.5, self.get_parameter("target_publish_hz").value))
         self.target_ema_alpha = float(self.get_parameter("target_ema_alpha").value)
+        self.target_jump_reject_m = float(self.get_parameter("target_jump_reject_m").value)
+        self.target_jump_relatch_count = int(self.get_parameter("target_jump_relatch_count").value)
+        self._jump_count = 0  # consecutive far readings (for re-latch on a real move)
         self.max_target_abs_m = float(max(1.0, self.get_parameter("max_target_abs_m").value))
         self.tf_future_tolerance_sec = float(
             max(0.0, self.get_parameter("tf_future_tolerance_sec").value)
@@ -328,7 +338,11 @@ class TFProjectionNode(Node):
             pixel_msg.header.frame_id = tf_frame
             pixel_msg.point.x = float(u)
             pixel_msg.point.y = float(v)
-            pixel_msg.point.z = 1.0 if force_reinit else 0.0  # 1.0 = force SAM2 reinit
+            # point.z carries the object's expected depth (m) in the camera optical
+            # frame (= reprojected ray range, cam_z > 0 here). Its SIGN is the reinit
+            # flag: negative = force SAM2 reinit (VLM re-seed), positive = update-only.
+            # The tracker uses |z| for its COLD-init depth-consistency gate.
+            pixel_msg.point.z = -float(cam_z) if force_reinit else float(cam_z)
             self._secondary_seed_pixel_pubs[cam].publish(pixel_msg)
 
     def _camera_info_cb(self, msg: CameraInfo):
@@ -502,12 +516,34 @@ class TFProjectionNode(Node):
             return
 
         self._last_valid_target = (float(target_x), float(target_y), float(target_z))
-        
+
         if self._ema_target is None:
             self._ema_target = (float(target_x), float(target_y), float(target_z))
+            self._jump_count = 0
         else:
-            alpha = self.target_ema_alpha
             ex, ey, ez = self._ema_target
+            # World-fixed gate: reject readings that jump far from the latched position
+            # (partial/edge mask or depth-fallback noise under camera motion), unless a
+            # sustained run of far readings indicates the object actually moved.
+            if self.target_jump_reject_m > 0.0:
+                dist = math.sqrt((target_x - ex) ** 2 + (target_y - ey) ** 2 + (target_z - ez) ** 2)
+                if dist > self.target_jump_reject_m:
+                    self._jump_count += 1
+                    if self._jump_count < self.target_jump_relatch_count:
+                        self.get_logger().info(
+                            f"target jump {dist:.2f}m > {self.target_jump_reject_m:.2f}m rejected "
+                            f"(holding world-fixed, {self._jump_count}/{self.target_jump_relatch_count})",
+                            throttle_duration_sec=1.0,
+                        )
+                        return  # hold the latched position
+                    # sustained move → re-latch to the new location
+                    self.get_logger().info(
+                        f"target moved {dist:.2f}m for {self._jump_count} readings — re-latching")
+                    self._ema_target = (float(target_x), float(target_y), float(target_z))
+                    self._jump_count = 0
+                    return
+                self._jump_count = 0
+            alpha = self.target_ema_alpha
             self._ema_target = (
                 ex + alpha * (float(target_x) - ex),
                 ey + alpha * (float(target_y) - ey),

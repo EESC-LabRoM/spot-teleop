@@ -9,7 +9,8 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from geometry_msgs.msg import PoseStamped, TransformStamped, Point, Vector3, PointStamped
-from sensor_msgs.msg import JointState, PointCloud2
+from visualization_msgs.msg import Marker
+from sensor_msgs.msg import JointState
 import threading
 import torch
 import numpy as np
@@ -73,6 +74,21 @@ class CuroboMpcNode(Node):
         self.declare_parameter('grid_size_m', [4.0, 4.0, 2.0])
         self.declare_parameter('esdf_frame_id', 'body')   # robot base frame (cuRobo planning frame)
         self.declare_parameter('esdf_global_frame', 'odom')  # nvblox global frame (odom in sim, vision on real)
+        # Target ESDF clear (cuMotion-style "GIGO" catch-all). On every ESDF request,
+        # clear an object-sized region so any residual leak that slipped past the SAM2
+        # dynamic mask (e.g. the one-frame re-entry leak before a secondary predictor
+        # re-locks) is removed from cuRobo's collision world. Re-issued each cycle, so a
+        # fresh leak lives at most one ESDF period (~esdf_update_rate).
+        #   Preferred: an AABB sized to the object, measured by perception and published
+        #   as a Marker on target_clear_box_topic (dynamic, tight — best at preserving a
+        #   real obstacle right next to the target). target_clear_padding_m is added to
+        #   each half-extent.
+        #   Fallback (before the first box arrives, or if box disabled): a sphere of
+        #   target_clear_radius_m at target_clear_frame. 0.0 = no fallback.
+        self.declare_parameter('target_clear_frame', 'target_object')
+        self.declare_parameter('target_clear_radius_m', 0.0)
+        self.declare_parameter('target_clear_box_topic', '/target_object/clear_box')
+        self.declare_parameter('target_clear_padding_m', 0.03)
 
         # Get parameters
         robot_config_path = self.get_parameter('robot_config').get_parameter_value().string_value
@@ -98,6 +114,14 @@ class CuroboMpcNode(Node):
         self.target_frame = 'body'  # Frame for target object transforms
         self._esdf_query_frame = self.get_parameter('esdf_frame_id').get_parameter_value().string_value
         self._esdf_global_frame = self.get_parameter('esdf_global_frame').get_parameter_value().string_value
+        self._target_clear_frame = self.get_parameter('target_clear_frame').get_parameter_value().string_value
+        self._target_clear_radius_m = self.get_parameter('target_clear_radius_m').get_parameter_value().double_value
+        self._target_clear_box_topic = self.get_parameter('target_clear_box_topic').get_parameter_value().string_value
+        self._target_clear_padding_m = self.get_parameter('target_clear_padding_m').get_parameter_value().double_value
+        # Latest object clear-box from perception: (center_xyz np, half_xyz np, frame_id).
+        # Persisted (no timeout) — when the hand loses tracking the object is assumed
+        # not to have moved, so the last measured box stays valid.
+        self._clear_box = None
 
         # ... (Keeping default paths logic)
         os.environ['SPOT_URDF_PATH'] = os.path.dirname(urdf_path)
@@ -158,7 +182,21 @@ class CuroboMpcNode(Node):
         self.robot_cfg = robot_cfg_raw
         self.j_names = self.robot_cfg["kinematics"]["cspace"]["joint_names"]
         self.default_config = self.robot_cfg["kinematics"]["cspace"]["retract_config"]
-        self.robot_cfg["kinematics"]["collision_sphere_buffer"] += 0.02
+        # NOTE: previously this added +0.02 m on top of the config buffer (0.005),
+        # giving a 0.025 m effective clearance. Combined with the ESDF surface
+        # offset (+0.5*voxel) and voxel quantization, the gripper held a ~7 cm
+        # standoff from any obstacle — including a leaked target rim — so it could
+        # never reach the object surface to grasp. Made it a param (default 0.0 =
+        # use the config buffer as-is) so the standoff can be tuned for grasping.
+        self.declare_parameter('extra_collision_sphere_buffer', 0.0)
+        extra_buffer = self.get_parameter(
+            'extra_collision_sphere_buffer').get_parameter_value().double_value
+        self.robot_cfg["kinematics"]["collision_sphere_buffer"] += extra_buffer
+        self._log_info(
+            f'collision_sphere_buffer={self.robot_cfg["kinematics"]["collision_sphere_buffer"]:.4f} m '
+            f'(config + extra {extra_buffer:.4f})',
+            event='config',
+        )
 
         self._log_info(f'Joint names (URDF): {self.j_names}', event='config')
 
@@ -254,6 +292,7 @@ class CuroboMpcNode(Node):
         self._control_cb_group = MutuallyExclusiveCallbackGroup()
         self._sensor_cb_group = MutuallyExclusiveCallbackGroup()
         self._esdf_cb_group = MutuallyExclusiveCallbackGroup()
+        self._esdf_client_cb_group = MutuallyExclusiveCallbackGroup()
 
         qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
@@ -280,9 +319,6 @@ class CuroboMpcNode(Node):
         else:
             self.cmd_pub = self.create_publisher(JointState, cmd_topic, 10)
 
-        # ESDF visualization publisher
-        self.esdf_pub = self.create_publisher(PointCloud2, '/esdf_viz', 10)
-
         # Subscribe to sensors (fast updates)
         self.pose_sub = self.create_subscription(
             PoseStamped,
@@ -299,7 +335,16 @@ class CuroboMpcNode(Node):
             callback_group=self._sensor_cb_group,
         )
         
+        self._clear_box_sub = self.create_subscription(
+            Marker,
+            self._target_clear_box_topic,
+            self._clear_box_callback,
+            10,
+            callback_group=self._sensor_cb_group,
+        )
+
         self._log_info(f'Subscribed to Joint topic: {joint_topic}')
+        self._log_info(f'Subscribed to clear-box topic: {self._target_clear_box_topic}')
         self._log_info(f'Publishing to Command topic: {cmd_topic}')
 
         self.timer = self.create_timer(
@@ -310,12 +355,10 @@ class CuroboMpcNode(Node):
         self.step_count = 0
         self.start_time = time.time()
 
-        # ESDF service client — runs in a raw Python thread (NOT an executor callback)
-        # call_async inside executor callbacks deadlocks; threading.Event avoids it
         if self.use_esdf:
             self.__esdf_client = self.create_client(
                 EsdfAndGradients, self.esdf_service_name,
-                callback_group=self._esdf_cb_group
+                callback_group=self._esdf_client_cb_group,
             )
             self.__esdf_req = EsdfAndGradients.Request()
 
@@ -457,6 +500,18 @@ class CuroboMpcNode(Node):
         fields.pop('once', None)
         self._write_csv_log('FATAL', message, event=event, **fields)
 
+    def _log_gate(self, key: str, message: str, level: str = 'INFO', period: float = 1.0):
+        """Throttled per-key logging for control-loop early-return reasons.
+
+        Lets us see which gate is parking the loop without flooding at 50 Hz.
+        """
+        if not hasattr(self, '_gate_last_log'):
+            self._gate_last_log = {}
+        now = time.time()
+        if now - self._gate_last_log.get(key, 0.0) >= period:
+            self._gate_last_log[key] = now
+            self._write_csv_log(level, message, event='gate')
+
 
 
     def _generate_test_poses(self):
@@ -593,6 +648,15 @@ class CuroboMpcNode(Node):
             z=float(self.__grid_size_m[2]),
         )
 
+        # Target clear (catch-all for residual leaks). Reset every call, then populate
+        # an object-sized AABB (perception clear-box) or a fallback sphere, in the ESDF
+        # global frame. See _build_target_clear.
+        aabb_min, aabb_size, sph_center, sph_radius = self._build_target_clear()
+        self.__esdf_req.aabbs_to_clear_min_m = aabb_min
+        self.__esdf_req.aabbs_to_clear_size_m = aabb_size
+        self.__esdf_req.spheres_to_clear_center_m = sph_center
+        self.__esdf_req.spheres_to_clear_radius_m = sph_radius
+
         self._esdf_call_pending = True
         t0 = time.time()
         future = self.__esdf_client.call_async(self.__esdf_req)
@@ -613,6 +677,91 @@ class CuroboMpcNode(Node):
         # Inverse rotation uses negative vector part (conjugate)
         u = np.array([-qx, -qy, -qz])
         return v + 2.0 * qw * np.cross(u, v) + 2.0 * np.cross(u, np.cross(u, v))
+
+    def _clear_box_callback(self, msg: Marker):
+        """Store the latest object clear-box (CUBE Marker) from perception. The box is
+        axis-aligned in msg.header.frame_id with full size in msg.scale. Persisted; used
+        to clear an object-sized AABB from the ESDF in _update_esdf."""
+        try:
+            center = np.array([msg.pose.position.x, msg.pose.position.y, msg.pose.position.z])
+            half = 0.5 * np.array([msg.scale.x, msg.scale.y, msg.scale.z])
+            frame = msg.header.frame_id or self._esdf_global_frame
+            if not np.all(np.isfinite(center)) or not np.all(np.isfinite(half)):
+                return
+            self._clear_box = (center, half, frame)
+        except Exception as e:
+            self._log_warn(f'clear-box parse failed: {e}', event='esdf')
+
+    def _build_target_clear(self):
+        """Return (aabb_min_pts, aabb_size_vecs, sphere_centers, sphere_radii) lists to
+        clear the target from the ESDF, expressed in self._esdf_global_frame.
+
+        Preferred: the perception-measured object AABB (self._clear_box), re-enclosed
+        from its own frame into the global frame (h'_i = sum_j |R_ij| h_j) and padded.
+        Fallback: a sphere of target_clear_radius_m at target_clear_frame."""
+        if self._clear_box is not None:
+            center, half, frame = self._clear_box
+            try:
+                if frame != self._esdf_global_frame:
+                    tf = self.tf_buffer.lookup_transform(
+                        self._esdf_global_frame, frame, rclpy.time.Time(),
+                        timeout=rclpy.duration.Duration(seconds=0.05))
+                    tt = tf.transform.translation
+                    q = tf.transform.rotation
+                    R = self._quat_to_matrix(q.x, q.y, q.z, q.w)
+                    center_g = R @ center + np.array([tt.x, tt.y, tt.z])
+                    half_g = np.abs(R) @ half
+                else:
+                    center_g = center
+                    half_g = half
+                half_g = half_g + self._target_clear_padding_m
+                min_corner = center_g - half_g
+                size = 2.0 * half_g
+                self._log_info(
+                    f'ESDF clear AABB @{frame} center=({center_g[0]:.2f},{center_g[1]:.2f},'
+                    f'{center_g[2]:.2f}) size=({size[0]:.2f},{size[1]:.2f},{size[2]:.2f})',
+                    event='esdf')
+                return (
+                    [Point(x=float(min_corner[0]), y=float(min_corner[1]), z=float(min_corner[2]))],
+                    [Vector3(x=float(size[0]), y=float(size[1]), z=float(size[2]))],
+                    [], [],
+                )
+            except Exception as e:
+                self._log_warn(f'clear-box transform failed, falling back to sphere: {e}',
+                               event='esdf')
+        # Fallback sphere
+        if self._target_clear_radius_m > 0.0:
+            try:
+                tf = self.tf_buffer.lookup_transform(
+                    self._esdf_global_frame, self._target_clear_frame, rclpy.time.Time(),
+                    timeout=rclpy.duration.Duration(seconds=0.05))
+                ct = tf.transform.translation
+                self._log_info(
+                    f'ESDF clear sphere @{self._target_clear_frame} '
+                    f'({ct.x:.2f},{ct.y:.2f},{ct.z:.2f}) r={self._target_clear_radius_m:.2f}m',
+                    event='esdf')
+                return (
+                    [], [],
+                    [Point(x=float(ct.x), y=float(ct.y), z=float(ct.z))],
+                    [float(self._target_clear_radius_m)],
+                )
+            except Exception as e:
+                self._log_warn(
+                    f'target clear TF {self._target_clear_frame}→{self._esdf_global_frame} '
+                    f'unavailable: {e}', event='esdf')
+        return [], [], [], []
+
+    def _quat_to_matrix(self, qx, qy, qz, qw):
+        """3x3 rotation matrix from quaternion (x,y,z,w)."""
+        n = math.sqrt(qx * qx + qy * qy + qz * qz + qw * qw)
+        if n == 0.0:
+            return np.eye(3)
+        qx, qy, qz, qw = qx / n, qy / n, qz / n, qw / n
+        return np.array([
+            [1 - 2 * (qy * qy + qz * qz), 2 * (qx * qy - qz * qw), 2 * (qx * qz + qy * qw)],
+            [2 * (qx * qy + qz * qw), 1 - 2 * (qx * qx + qz * qz), 2 * (qy * qz - qx * qw)],
+            [2 * (qx * qz - qy * qw), 2 * (qy * qz + qx * qw), 1 - 2 * (qx * qx + qy * qy)],
+        ])
 
     def _on_esdf_response(self, future, t0: float):
         self._esdf_call_pending = False
@@ -668,9 +817,6 @@ class CuroboMpcNode(Node):
         total_voxels = data.shape[0]
         obstacle_count = int(np.sum(data < 0.0))  # nvblox: negative = inside obstacle
         self._log_info(f'ESDF: {obstacle_count}/{total_voxels} occupied voxels', event='esdf')
-
-        # Publish ESDF visualization
-        self._publish_esdf_viz(data, shape, response.origin_m)
 
         data = torch.as_tensor(data).view(shape[0], shape[1], shape[2]).reshape(-1, 1)
         data[data < -999.9] = 1000.0   # unobserved → free
@@ -790,80 +936,6 @@ class CuroboMpcNode(Node):
             feature_dtype=torch.float32,
             feature_tensor=data,
         )
-
-    def _publish_esdf_viz(self, data, shape, origin):
-        """Publish ESDF as colored PointCloud2 for RViz2 visualization.
-
-        Color coding:
-        - Red: Close to obstacle (distance < 0.2m)
-        - Yellow: Medium distance (0.2m < distance < 0.5m)
-        - Green: Far from obstacle (distance > 0.5m)
-        """
-        try:
-            points = []
-            colors = []
-
-            # Downsample for visualization (every 2nd voxel)
-            step = 2
-            for i in range(0, shape[0], step):
-                for j in range(0, shape[1], step):
-                    for k in range(0, shape[2], step):
-                        idx = i * shape[1] * shape[2] + j * shape[2] + k
-                        distance = data[idx]
-
-                        # Skip unobserved or very far voxels
-                        if distance > 2.0 or distance < -10.0:
-                            continue
-
-                        x = origin.x + i * self.__voxel_size
-                        y = origin.y + j * self.__voxel_size
-                        z = origin.z + k * self.__voxel_size
-
-                        points.append([x, y, z])
-
-                        # Color based on distance
-                        if distance < 0.2:
-                            colors.append([255, 0, 0, 255])  # Red - close to obstacle
-                        elif distance < 0.5:
-                            colors.append([255, 255, 0, 255])  # Yellow
-                        else:
-                            colors.append([0, 255, 0, 255])  # Green
-
-            if points:
-                msg = PointCloud2()
-                msg.header.stamp = self.get_clock().now().to_msg()
-                msg.header.frame_id = self._esdf_query_frame
-                msg.height = 1
-                msg.width = len(points)
-
-                # Create PointField objects correctly
-                from sensor_msgs.msg import PointField
-                msg.fields = [
-                    PointField(name='x', offset=0, datatype=PointField.FLOAT32, count=1),
-                    PointField(name='y', offset=4, datatype=PointField.FLOAT32, count=1),
-                    PointField(name='z', offset=8, datatype=PointField.FLOAT32, count=1),
-                    PointField(name='r', offset=12, datatype=PointField.UINT8, count=1),
-                    PointField(name='g', offset=13, datatype=PointField.UINT8, count=1),
-                    PointField(name='b', offset=14, datatype=PointField.UINT8, count=1),
-                    PointField(name='a', offset=15, datatype=PointField.UINT8, count=1),
-                ]
-                msg.is_bigendian = False
-                msg.point_step = 16
-                msg.row_step = msg.point_step * msg.width
-
-                # Create point cloud data
-                import struct
-                point_data = []
-                for (x, y, z), (r, g, b, a) in zip(points, colors):
-                    point_data.append(struct.pack('fffBBBB', x, y, z, r, g, b, a))
-
-                msg.data = b''.join(point_data)
-                self.esdf_pub.publish(msg)
-
-        except Exception as e:
-            self._log_warn(f'Failed to publish ESDF visualization: {e}', event='esdf')
-
-
 
     def compute_attractive(self, current: np.ndarray, target: np.ndarray, k_att: float = 0.1) -> np.ndarray:
         return k_att * (target - current)
@@ -1097,15 +1169,29 @@ class CuroboMpcNode(Node):
                         self.mpc.update_goal(self.goal_buffer)
                         
                         WARMUP_ITERS = 10
+                        _warmup_t0 = time.time()
                         for i in range(WARMUP_ITERS):
+                            _it_t0 = time.time()
                             warmup_result = self.mpc.step(self.current_state, max_attempts=2)
+                            torch.cuda.synchronize()  # so the timing reflects real GPU stall
+                            _it_ms = (time.time() - _it_t0) * 1000.0
+                            self._log_info(
+                                f'Warm-up iter {i+1}/{WARMUP_ITERS}: mpc.step={_it_ms:.0f}ms '
+                                f'(esdf_initialized={self._esdf_initialized}, '
+                                f'esdf_call_pending={self._esdf_call_pending})',
+                                event='warmup', mpc_step_ms=_it_ms, step=i + 1,
+                            )
                             # Feed MPC output back as current state so particles converge
                             warmup_ordered = warmup_result.js_action.get_ordered_joint_state(
                                 self.mpc.rollout_fn.joint_names
                             )
                             # But keep overriding with real state to anchor around it
                             self.current_state.copy_(cu_js_init)
-                        
+                        self._log_info(
+                            f'Warm-up loop wall time: {(time.time() - _warmup_t0)*1000.0:.0f}ms '
+                            f'for {WARMUP_ITERS} iters', event='warmup',
+                        )
+
                         # Log the first command after warm-up to verify convergence
                         warmup_cmd = warmup_ordered.position.view(-1).cpu().numpy()
                         real_pos = cu_js_init.position.view(-1).cpu().numpy()
@@ -1121,24 +1207,30 @@ class CuroboMpcNode(Node):
                         self._log_info('Initialized goal to current physical pose to prevent jumping.')
                 return
             if not self.joints_received or _js_msg is None or self.last_goal_pose is None:
+                self._log_gate(
+                    'inputs',
+                    f'Control loop gated: joints_received={self.joints_received} '
+                    f'js_msg={"set" if _js_msg is not None else "None"} '
+                    f'last_goal_pose={"set" if self.last_goal_pose is not None else "None"}',
+                )
                 return
-            if not self._esdf_initialized:
-                now = time.time()
-                if now - self._last_esdf_wait_log >= 2.0:
-                    self._last_esdf_wait_log = now
-                    self._log_info('Waiting for first ESDF map...', event='esdf')
-                return
+            # NOTE: the control loop no longer waits for the first ESDF map. MPC
+            # starts immediately against an empty collision world and obstacles
+            # populate as soon as the first ESDF response arrives (the world is
+            # updated in-place by _on_esdf_response). _esdf_initialized is kept
+            # only for the one-time "First ESDF map received" log.
 
         # Guard: skip MPC if joint state is too stale (Isaac Sim stopped publishing)
         JS_STALE_THRESHOLD = 2.0  # seconds
         if self._last_joint_stamp is not None:
             js_age_now = time.time() - self._last_joint_stamp
             if js_age_now > JS_STALE_THRESHOLD:
-                if self.step_count % 30 == 0:
-                    self._log_warn(
-                        f'⚠️ Joint state is STALE ({js_age_now*1000:.0f}ms)! '
-                        f'Isaac Sim may have stopped publishing. Skipping MPC step.'
-                    )
+                self._log_gate(
+                    'stale',
+                    f'⚠️ Joint state is STALE ({js_age_now*1000:.0f}ms)! '
+                    f'Source may have stopped publishing. Skipping MPC step.',
+                    level='WARN',
+                )
                 return
 
         try:
@@ -1341,7 +1433,14 @@ class CuroboMpcNode(Node):
                 joint_cmd.effort = []
 
             self.cmd_pub.publish(joint_cmd)
-            
+            if not getattr(self, '_first_cmd_logged', False):
+                self._first_cmd_logged = True
+                self._log_info(
+                    f'Control loop STARTED: first command published '
+                    f'{time.time() - self.start_time:.1f}s after node start',
+                    event='control_step',
+                )
+
             t_loop_end = time.time()
             total_loop_dt = t_loop_end - t_loop_start
             self._loop_times.append(total_loop_dt)

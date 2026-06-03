@@ -54,9 +54,13 @@ def launch_setup(context: LaunchContext):
         "-p",
         ["voxel_size:=", LaunchConfiguration("voxel_size")],
         "-p",
+        ["extra_collision_sphere_buffer:=", LaunchConfiguration("extra_collision_sphere_buffer")],
+        "-p",
         ["esdf_frame_id:=", LaunchConfiguration("esdf_frame_id")],
         "-p",
         ["esdf_global_frame:=", LaunchConfiguration("esdf_global_frame")],
+        "-p",
+        ["target_clear_radius_m:=", LaunchConfiguration("target_clear_radius_m")],
         "-p",
         f"robot_config:={robot_config_path}",
         "-p",
@@ -250,8 +254,17 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument(
                 "voxel_size",
-                default_value="0.05",
+                default_value="0.02",
                 description="Voxel size in meters for cuRobo collision world",
+            ),
+            DeclareLaunchArgument(
+                "extra_collision_sphere_buffer",
+                default_value="0.0",
+                description=(
+                    "Extra clearance (m) added on top of the config collision_sphere_buffer. "
+                    "0 keeps the gripper able to reach the object surface for grasping; "
+                    "raise it to be more conservative near real obstacles."
+                ),
             ),
             DeclareLaunchArgument(
                 "esdf_frame_id",
@@ -262,6 +275,16 @@ def generate_launch_description():
                 "esdf_global_frame",
                 default_value="world",
                 description="nvblox global frame used for ESDF service queries (sim: 'odom', real: 'vision')",
+            ),
+            DeclareLaunchArgument(
+                "target_clear_radius_m",
+                default_value="0.10",
+                description=(
+                    "Radius (m) of the cuMotion-style ESDF clear sphere centered on "
+                    "target_object, re-issued every ESDF request to wipe residual "
+                    "leaks from cuRobo's collision world. 0 = off. Keep TIGHT (object "
+                    "half-size + margin) or it deletes real neighbouring obstacles too."
+                ),
             ),
             DeclareLaunchArgument(
                 "use_sim_time",

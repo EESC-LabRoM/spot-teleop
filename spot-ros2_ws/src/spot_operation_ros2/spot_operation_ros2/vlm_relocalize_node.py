@@ -13,10 +13,19 @@ import numpy as np
 import rclpy
 import requests
 from PIL import Image
+from rclpy.duration import Duration
+from tf2_ros import Buffer, TransformListener
 from rclpy.node import Node
+from sensor_msgs.msg import CameraInfo
 from sensor_msgs.msg import Image as RosImage
 from std_msgs.msg import Float64, String
 from std_srvs.srv import Trigger, SetBool
+
+from .image_roll import (
+    roll_deg_from_quaternion,
+    rotate_image_upright,
+    inverse_rotate_coords_1000 as _inverse_rotate_coords_1000,
+)
 
 
 def _find_workspace_root() -> Path:
@@ -167,59 +176,6 @@ def parse_qwen_response(response_text: str, image_size: tuple = None) -> list:
     return boxes
 
 
-def _build_rotation_matrix(orig_w, orig_h, angle_deg):
-    """Reconstruct the forward rotation matrix (same logic as rotate_image_upright)."""
-    center = (orig_w / 2.0, orig_h / 2.0)
-    M = cv2.getRotationMatrix2D(center, angle_deg, 1.0)
-    cos_a = abs(M[0, 0])
-    sin_a = abs(M[0, 1])
-    rot_w = int(orig_h * sin_a + orig_w * cos_a)
-    rot_h = int(orig_h * cos_a + orig_w * sin_a)
-    M[0, 2] += (rot_w - orig_w) / 2.0
-    M[1, 2] += (rot_h - orig_h) / 2.0
-    return M, (rot_w, rot_h)
-
-
-def _inverse_rotate_coords_1000(bbox_1000, grasps_1000, M_forward, rotated_size, original_size):
-    """Map bbox and grasp points from rotated [0-1000] space back to original [0-1000] space."""
-    rot_w, rot_h = rotated_size
-    orig_w, orig_h = original_size
-    M_inv = cv2.invertAffineTransform(M_forward)
-
-    xmin = bbox_1000[0] / 1000.0 * rot_w
-    ymin = bbox_1000[1] / 1000.0 * rot_h
-    xmax = bbox_1000[2] / 1000.0 * rot_w
-    ymax = bbox_1000[3] / 1000.0 * rot_h
-
-    corners = np.array([[xmin, ymin], [xmax, ymin], [xmax, ymax], [xmin, ymax]], dtype=np.float64)
-    corners_h = np.hstack([corners, np.ones((4, 1), dtype=np.float64)])
-    orig_corners = (M_inv @ corners_h.T).T
-
-    ox_min = max(0.0, np.min(orig_corners[:, 0]))
-    oy_min = max(0.0, np.min(orig_corners[:, 1]))
-    ox_max = min(float(orig_w), np.max(orig_corners[:, 0]))
-    oy_max = min(float(orig_h), np.max(orig_corners[:, 1]))
-
-    corrected_bbox = [
-        int(ox_min / orig_w * 1000),
-        int(oy_min / orig_h * 1000),
-        int(ox_max / orig_w * 1000),
-        int(oy_max / orig_h * 1000),
-    ]
-
-    corrected_grasps = []
-    for g in (grasps_1000 or []):
-        gx_px = g[0] / 1000.0 * rot_w
-        gy_px = g[1] / 1000.0 * rot_h
-        pt_h = np.array([gx_px, gy_px, 1.0])
-        orig_pt = M_inv @ pt_h
-        ox = max(0.0, min(float(orig_w), orig_pt[0]))
-        oy = max(0.0, min(float(orig_h), orig_pt[1]))
-        corrected_grasps.append([int(ox / orig_w * 1000), int(oy / orig_h * 1000)])
-
-    return corrected_bbox, corrected_grasps
-
-
 def _encode_image_to_base64(image_input) -> str:
     if isinstance(image_input, (str, Path)):
         with open(image_input, "rb") as f:
@@ -235,10 +191,12 @@ def _encode_image_to_base64(image_input) -> str:
 class VlmRelocalizeNode(Node):
     def __init__(self):
         super().__init__("vlm_relocalize_node")
-        self.declare_parameter("rgb_topic", "/hand/rgb_upright")
-        self.declare_parameter("roll_metadata_topic", "/hand/roll_metadata")
+        self.declare_parameter("rgb_topic", "/hand/rgb")
+        self.declare_parameter("camera_info_topic", "/hand/camera_info")
+        self.declare_parameter("target_frame", "body")
+        self.declare_parameter("min_abs_rotation_deg", 5.0)
         self.declare_parameter("object_prompt", "wheel valve")
-        self.declare_parameter("vlm_url", "http://100.111.174.61:8000")
+        self.declare_parameter("vlm_url", "http://localhost:8000")
         self.declare_parameter("request_timeout_sec", 5.0)
         self.declare_parameter("request_max_retries", 1)
         self.declare_parameter("service_name", "/vlm/trigger_relocalize")
@@ -247,8 +205,11 @@ class VlmRelocalizeNode(Node):
         self.declare_parameter("stability_check_enabled", True)
         self.declare_parameter("max_frame_age_sec", 1.5)
         self.declare_parameter("new_object_prompt", "")
+
         rgb_topic = self.get_parameter("rgb_topic").value
-        roll_metadata_topic = self.get_parameter("roll_metadata_topic").value
+        camera_info_topic = self.get_parameter("camera_info_topic").value
+        self.target_frame = self.get_parameter("target_frame").value
+        self.min_abs_rotation_deg = float(self.get_parameter("min_abs_rotation_deg").value)
         self.object_prompt = self.get_parameter("object_prompt").value
         self.vlm_url = self.get_parameter("vlm_url").value
         self.request_timeout_sec = float(
@@ -262,18 +223,22 @@ class VlmRelocalizeNode(Node):
         self._latest_rgb_pil = None
         self._latest_stamp_sec = None
         self._latest_stamp_nanosec = None
+        self._latest_header = None
+        self._camera_frame_id = None
         self._last_served_stamp = None  # (sec, ns) of last frame the VLM actually scored
-        self._latest_roll_angle_deg = 0.0
-        self._latest_orig_size = None
         self._rgb_cb_count = 0
         self._srv_req_seq = 0
         self._camera_speed = None
         self._vlm_input_dir = _prepare_vlm_input_dir()
         self._current_prompt_change_id = 0
+
+        self.tf_buffer = Buffer(cache_time=Duration(seconds=120.0))
+        self.tf_listener = TransformListener(self.tf_buffer, self, spin_thread=False)
+
         self._prompt_change_pub = self.create_publisher(String, "/vlm/prompt_change_id", 10)
         self._seed_pub = self.create_publisher(String, "/perception/seed_command", 10)
         self._rgb_sub = self.create_subscription(RosImage, rgb_topic, self._rgb_cb, 10)
-        self._roll_meta_sub = self.create_subscription(String, roll_metadata_topic, self._roll_meta_cb, 10)
+        self._camera_info_sub = self.create_subscription(CameraInfo, camera_info_topic, self._camera_info_cb, 10)
         self._cam_speed_sub = self.create_subscription(
             Float64,
             str(self.get_parameter("camera_speed_topic").value),
@@ -284,7 +249,7 @@ class VlmRelocalizeNode(Node):
         self._set_prompt_srv = self.create_service(SetBool, "/vlm/set_object_prompt", self._handle_set_prompt)
         self.get_logger().info(
             f"VLM relocalize service ready at {service_name}, rgb_topic={rgb_topic}, "
-            f"roll_metadata={roll_metadata_topic}, input_dir={self._vlm_input_dir}"
+            f"camera_info={camera_info_topic}, input_dir={self._vlm_input_dir}"
         )
 
     def _dbg_log(self, hypothesis_id: str, location: str, message: str, data: dict):
@@ -306,13 +271,38 @@ class VlmRelocalizeNode(Node):
             pass
         # #endregion
 
-    def _roll_meta_cb(self, msg: String):
+    def _camera_info_cb(self, msg: CameraInfo):
+        frame = str(msg.header.frame_id).strip()
+        if not frame:
+            return
+        self._camera_frame_id = frame
+
+    def _resolve_source_frame(self, header) -> str:
+        if self._camera_frame_id:
+            return self._camera_frame_id
+        header_frame = str(header.frame_id).strip()
+        if header_frame:
+            return header_frame
+        raise RuntimeError("No source frame available from camera_info or RGB header")
+
+    def _lookup_roll_deg(self, source_frame: str, stamp) -> float:
+        st = rclpy.time.Time.from_msg(stamp)
         try:
-            meta = json.loads(msg.data)
-            self._latest_roll_angle_deg = float(meta.get("angle_deg", 0.0))
-            self._latest_orig_size = (int(meta["orig_w"]), int(meta["orig_h"]))
+            t = self.tf_buffer.lookup_transform(
+                self.target_frame, source_frame, st,
+                timeout=Duration(seconds=0.0),
+            )
         except Exception:
-            pass
+            t = self.tf_buffer.lookup_transform(
+                self.target_frame, source_frame, rclpy.time.Time(),
+                timeout=Duration(seconds=0.0),
+            )
+        return roll_deg_from_quaternion(
+            t.transform.rotation.x,
+            t.transform.rotation.y,
+            t.transform.rotation.z,
+            t.transform.rotation.w,
+        )
 
     def _cam_speed_cb(self, msg: Float64):
         self._camera_speed = float(msg.data)
@@ -330,6 +320,7 @@ class VlmRelocalizeNode(Node):
             self._latest_rgb_pil = Image.fromarray(rgb)
             self._latest_stamp_sec = int(msg.header.stamp.sec)
             self._latest_stamp_nanosec = int(msg.header.stamp.nanosec)
+            self._latest_header = msg.header
             self._rgb_cb_count += 1
             if self._rgb_cb_count <= 5:
                 self._dbg_log(
@@ -369,7 +360,7 @@ Output STRICTLY in JSON format as a list of dictionaries:
 If the object is NOT present or mostly occluded, return an empty list: []
 Ensure bounding box and grasp point coordinates are normalized to [0-1000] scale."""
         payload = {
-            "model": "Qwen/Qwen3-VL-8B-Instruct",
+            "model": "Qwen/Qwen3-VL-4B-Instruct",
             "messages": [
                 {
                     "role": "user",
@@ -540,9 +531,28 @@ Ensure bounding box and grasp point coordinates are normalized to [0-1000] scale
                 },
             )
             img = self._latest_rgb_pil.copy()
-            w, h = img.size
+            orig_w, orig_h = img.size
             self._last_served_stamp = (stamp_sec, stamp_ns)
-            saved_path = self._save_vlm_input_image(img, req_id, stamp_sec, stamp_ns)
+
+            # Look up roll angle dynamically via TF
+            try:
+                source_frame = self._resolve_source_frame(self._latest_header)
+                correction_angle = self._lookup_roll_deg(source_frame, self._latest_header.stamp)
+            except Exception as exc:
+                self.get_logger().warn(f"[VLM] Failed to lookup roll angle: {exc}. Using 0.0")
+                correction_angle = 0.0
+
+            # Rotate image upright on-demand
+            if abs(correction_angle) > self.min_abs_rotation_deg:
+                img_rot, M_fwd, rot_size = rotate_image_upright(img, correction_angle)
+                self.get_logger().info(f"[VLM] Rotated image upright by {correction_angle:.2f} deg")
+            else:
+                img_rot = img
+                correction_angle = 0.0
+                M_fwd = None
+                rot_size = (orig_w, orig_h)
+
+            saved_path = self._save_vlm_input_image(img_rot, req_id, stamp_sec, stamp_ns)
             if saved_path is not None:
                 self.get_logger().info(f"[VLM] input image saved at {saved_path}")
             self._dbg_log(
@@ -551,12 +561,12 @@ Ensure bounding box and grasp point coordinates are normalized to [0-1000] scale
                 "relocalize_image_ready",
                 {
                     "req_id": req_id,
-                    "width": int(w),
-                    "height": int(h),
+                    "width": int(rot_size[0]),
+                    "height": int(rot_size[1]),
                     "saved_path": str(saved_path) if saved_path is not None else None,
                 },
             )
-            text, latency_ms = self._run_vlm(img)
+            text, latency_ms = self._run_vlm(img_rot)
             # #region agent log
             schema_hint = {}
             try:
@@ -590,12 +600,8 @@ Ensure bounding box and grasp point coordinates are normalized to [0-1000] scale
             )
             # #endregion
             self.get_logger().info(f"[VLM] raw response (req_id={req_id}): {text[:300]}")
-            boxes = parse_qwen_response(text, image_size=(w, h))
-            if boxes and self._latest_roll_angle_deg != 0.0 and self._latest_orig_size is not None:
-                M_fwd, rot_size = _build_rotation_matrix(
-                    self._latest_orig_size[0], self._latest_orig_size[1],
-                    self._latest_roll_angle_deg,
-                )
+            boxes = parse_qwen_response(text, image_size=rot_size)
+            if boxes and correction_angle != 0.0 and M_fwd is not None:
                 for box in boxes:
                     if "bbox_1000" in box:
                         box["bbox_1000"], box["grasps_1000"] = _inverse_rotate_coords_1000(
@@ -603,7 +609,7 @@ Ensure bounding box and grasp point coordinates are normalized to [0-1000] scale
                             box.get("grasps_1000", []),
                             M_fwd,
                             rot_size,
-                            self._latest_orig_size,
+                            (orig_w, orig_h),
                         )
             self._dbg_log(
                 "H15",

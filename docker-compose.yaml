@@ -190,4 +190,4 @@ services:
     ports:
       - "8000:8000"
     command: >
-      python3 -m vllm.entrypoints.openai.api_server --model Qwen/Qwen3-VL-8B-Instruct --gpu-memory-utilization 0.6 --max-model-len 8192 --trust-remote-code --limit-mm-per-prompt '{"image": 1}'
+      python3 -m vllm.entrypoints.openai.api_server --model Qwen/Qwen3-VL-4B-Instruct --gpu-memory-utilization 0.4 --max-model-len 8192 --trust-remote-code --limit-mm-per-prompt '{"image": 4}'

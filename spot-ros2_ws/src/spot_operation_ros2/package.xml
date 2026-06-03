@@ -14,6 +14,7 @@
   <depend>opencv2</depend>
   <depend>std_srvs</depend>
   <depend>geometry_msgs</depend>
+  <depend>visualization_msgs</depend>
   <depend>tf2_ros</depend>
   <depend>tf2_geometry_msgs</depend>
   <depend>moveit_ros_planning_interface</depend>

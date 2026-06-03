@@ -41,10 +41,18 @@ class GripperControllerNode(Node):
         self.declare_parameter('use_ros2_control', True)
         self.declare_parameter('k_q_p', 16.0)
         self.declare_parameter('k_qd_p', 0.32)
+        # Non-ros2_control output: publish a JointState carrying arm_f1x to the same
+        # command topic the sim consumes (default /arm/joint_command, alongside cuRobo's
+        # arm joints). Set command_topic:=gripper/command to fall back to the legacy
+        # std_msgs/Float64 driver path.
+        self.declare_parameter('command_topic', '/arm/joint_command')
         self.default_duration = float(self.get_parameter('duration').value)
         self.use_ros2_control = self.get_parameter('use_ros2_control').value
         self.k_q_p = float(self.get_parameter('k_q_p').value)
         self.k_qd_p = float(self.get_parameter('k_qd_p').value)
+        self.command_topic = self.get_parameter('command_topic').value
+        # Legacy Float64 driver topic vs. JointState (sim / arm command bus)
+        self._use_float64 = self.command_topic.rstrip('/').endswith('gripper/command')
 
         # Current state
         self.current_goal = None
@@ -65,13 +73,15 @@ class GripperControllerNode(Node):
                 10
             )
             cmd_topic = '/spot_joint_controller/joint_commands'
+        elif self._use_float64:
+            # Legacy spot_driver path: raw angle on std_msgs/Float64
+            self.gripper_pub = self.create_publisher(Float64, self.command_topic, 10)
+            cmd_topic = self.command_topic
         else:
-            self.gripper_pub = self.create_publisher(
-                Float64,
-                'gripper/command',
-                10
-            )
-            cmd_topic = 'gripper/command'
+            # Sim / arm command bus: JointState carrying arm_f1x, merged by the
+            # articulation alongside cuRobo's 6 arm joints (disjoint joint sets).
+            self.gripper_pub = self.create_publisher(JointState, self.command_topic, 10)
+            cmd_topic = self.command_topic
 
         joint_topic = '/low_level/joint_states' if self.use_ros2_control else '/joint_states'
         self.joint_state_sub = self.create_subscription(
@@ -109,9 +119,15 @@ class GripperControllerNode(Node):
             msg.position = [angle]
             msg.k_q_p = [self.k_q_p]
             msg.k_qd_p = [self.k_qd_p]
-        else:
+        elif self._use_float64:
             msg = Float64()
             msg.data = angle
+        else:
+            msg = JointState()
+            msg.header.stamp = self.get_clock().now().to_msg()
+            msg.name = [self.GRIPPER_JOINT_NAME]
+            msg.position = [angle]
+            msg.velocity = [0.0]
         self.gripper_pub.publish(msg)
 
     def joint_state_callback(self, msg: JointState):

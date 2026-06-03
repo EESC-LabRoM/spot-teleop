@@ -15,7 +15,7 @@ cost:
   # Reduce collision weight slightly to avoid aggressive repulsion
   primitive_collision_cfg:
     weight: 50000.0    # Reduced from 100000.0
-    activation_distance: 0.045  # Increased from 0.025
+    activation_distance: 0.025  # Increased from 0.025
 
   # Increase smoothness weights
   bound_cfg:
