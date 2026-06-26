@@ -15,7 +15,7 @@ import cv2
 import message_filters
 import numpy as np
 import rclpy
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image
 from cv_bridge import CvBridge
 from geometry_msgs.msg import PointStamped
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallbackGroup
@@ -254,7 +254,6 @@ def select_best_mask_by_bbox_iou(masks, bbox, image_size):
     w, h = image_size
     bbox_region = np.zeros((h, w), dtype=bool)
     bbox_region[y1:y2, x1:x2] = True
-    bbox_area = int(bbox_region.sum())
     best_idx, best_iou = 0, -1.0
     for i in range(len(masks)):
         m = masks[i]
@@ -275,81 +274,6 @@ def select_best_mask_by_bbox_iou(masks, bbox, image_size):
             best_iou = iou
             best_idx = i
     return best_idx
-
-
-def create_crop_mosaic(image_pil, masks, bbox, output_path="debug_mosaic.jpg"):
-    w, h = image_pil.size
-    x1, y1, x2, y2 = bbox
-    bw, bh = x2 - x1, y2 - y1
-    margin_w, margin_h = int(bw * 0.1), int(bh * 0.1)
-    cx1, cy1 = max(0, x1 - margin_w), max(0, y1 - margin_h)
-    cx2, cy2 = min(w, x2 + margin_w), min(h, y2 + margin_h)
-    crop_w, crop_h = cx2 - cx1, cy2 - cy1
-    base_crop = image_pil.crop((cx1, cy1, cx2, cy2))
-    mosaic = Image.new("RGB", (crop_w * 3, crop_h))
-    draw = ImageDraw.Draw(mosaic)
-    try:
-        font = ImageFont.truetype("DejaVuSans.ttf", 40)
-    except Exception:
-        font = ImageFont.load_default()
-    for i in range(min(3, len(masks))):
-        m = masks[i]
-        if hasattr(m, 'cpu'):
-            m = m.cpu().numpy()
-        if m.ndim > 2:
-            m = m.squeeze()
-        mask_pil = Image.fromarray((m * 255).astype(np.uint8))
-        if mask_pil.size != image_pil.size:
-            mask_pil = mask_pil.resize(image_pil.size, Image.NEAREST)
-        mask_crop = mask_pil.crop((cx1, cy1, cx2, cy2))
-        green = Image.new("RGBA", base_crop.size, (0, 255, 0, 100))
-        comp = base_crop.convert("RGBA").copy()
-        comp.paste(green, (0, 0), mask_crop)
-        mosaic.paste(comp.convert("RGB"), (i * crop_w, 0))
-        draw.text((i * crop_w + 10, 10), str(i + 1), fill="white", font=font)
-        draw.text((i * crop_w + 12, 12), str(i + 1), fill="black", font=font)
-    mosaic.save(output_path)
-    return output_path
-
-
-def draw_result(image_input, boxes: list, output_path: str):
-    if isinstance(image_input, (str, Path)):
-        img = Image.open(image_input)
-    elif isinstance(image_input, Image.Image):
-        img = image_input.copy()
-    else:
-        raise ValueError("Invalid image input for drawing")
-    draw = ImageDraw.Draw(img)
-    w, h = img.size
-    try:
-        font = ImageFont.truetype("DejaVuSans.ttf", 24)
-    except IOError:
-        font = ImageFont.load_default()
-    for box_data in boxes:
-        label = box_data['label']
-        b1000 = box_data['bbox_1000']
-        x1 = max(0, int((b1000[0] / 1000.0) * w))
-        y1 = max(0, int((b1000[1] / 1000.0) * h))
-        x2 = min(w - 1, int((b1000[2] / 1000.0) * w))
-        y2 = min(h - 1, int((b1000[3] / 1000.0) * h))
-        color = '#00FF00'
-        for i in range(4):
-            draw.rectangle([x1 - i, y1 - i, x2 + i, y2 + i], outline=color)
-        if hasattr(draw, 'textbbox'):
-            tb = draw.textbbox((0, 0), label, font=font)
-            text_w, text_h = tb[2] - tb[0], tb[3] - tb[1]
-        else:
-            text_w, text_h = draw.textsize(label, font=font)
-        draw.rectangle([x1, y1 - text_h - 4, x1 + text_w + 4, y1], fill=color)
-        draw.text((x1 + 2, y1 - text_h - 2), label, fill='black', font=font)
-        for g1000 in box_data.get('grasps_1000', []):
-            gx = max(0, min(w - 1, int((g1000[0] / 1000.0) * w)))
-            gy = max(0, min(h - 1, int((g1000[1] / 1000.0) * h)))
-            r = 5
-            draw.ellipse([gx - r, gy - r, gx + r, gy + r], fill='red')
-    if img.mode == 'RGBA':
-        img = img.convert('RGB')
-    img.save(output_path)
 
 
 # ---------------------------------------------------------------------------
@@ -1626,15 +1550,6 @@ class Sam2TrackerNode(Node):
         if not grasp_points_uv:
             grasp_points_uv = [[(x1 + x2) // 2, (y1 + y2) // 2]]
 
-        seed_box = {
-            "label": str(seed.get("label", "target")),
-            "bbox_1000": [float(v) for v in bbox_1000[:4]],
-            "grasps_1000": [[float(p[0]), float(p[1])] for p in grasps_1000 if isinstance(p, list) and len(p) >= 2],
-            "confidence": float(seed.get("confidence", 1.0)),
-        }
-        draw_result(img_pil, [seed_box], "camera_capture_detected.jpg")
-        self.get_logger().info("Saved camera capture: camera_capture_detected.jpg")
-
         sam_img_predictor = _load_sam_model()
         grasp_u, grasp_v = grasp_points_uv[0]
         if sam_img_predictor is not None:
@@ -1647,8 +1562,6 @@ class Sam2TrackerNode(Node):
             if all_masks:
                 best_idx = 0
                 if len(all_masks) > 1:
-                    create_crop_mosaic(img_pil, all_masks, bbox, "debug_mosaic.jpg")
-                    self.get_logger().info("Saved mosaic: debug_mosaic.jpg")
                     best_idx = int(select_best_mask_by_bbox_iou(all_masks, bbox, img_pil.size))
                 grasp_u, grasp_v = grasp_points_uv[min(best_idx, len(grasp_points_uv) - 1)]
 

@@ -7,7 +7,6 @@ from launch_ros.parameter_descriptions import ParameterValue
 
 def generate_launch_description():
     use_sim_time = LaunchConfiguration("use_sim_time")
-    executor_threads = LaunchConfiguration("executor_threads")
     use_secondaries = LaunchConfiguration("use_secondaries")
     secondary_cameras = LaunchConfiguration("secondary_cameras")
     
@@ -40,11 +39,6 @@ def generate_launch_description():
                 "use_sim_time",
                 default_value="false",
                 description="Use simulation clock if true.",
-            ),
-            DeclareLaunchArgument(
-                "executor_threads",
-                default_value="3",
-                description="Perception node executor thread count.",
             ),
             DeclareLaunchArgument(
                 "use_secondaries",
