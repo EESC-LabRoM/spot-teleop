@@ -108,7 +108,7 @@ def launch_setup(context, *args, **kwargs):
         "use_color": True,
         "use_lidar": False,
         # ESDF
-        "esdf_mode": "2d",
+        "esdf_mode": "3d",
         "publish_esdf_distance_slice": True,
         "static_mapper.esdf_slice_min_height": 0.1,  # Ajustado pra braço (não pegar chão)
         "static_mapper.esdf_slice_max_height": 1.5,
