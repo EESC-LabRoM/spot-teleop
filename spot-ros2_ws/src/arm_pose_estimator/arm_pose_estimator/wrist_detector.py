@@ -86,8 +86,18 @@ class WristDetector(Node):
         
         # Scale factor to compensate human arm vs Spot arm length
         # Spot arm reach: ~984mm, Human arm (shoulder to wrist): ~650mm
+        # Used at startup and as fallback when online estimation is disabled
+        # or has not converged yet.
         self.declare_parameter('scale_factor', 984.0 / 650.0)
         self.scale_factor = self.get_parameter('scale_factor').value
+
+        # Online arm-length estimation: estimate the operator's arm length as
+        # the segment sum ||shoulder->elbow|| + ||elbow->wrist||, which is
+        # pose-invariant (rigid segments), so no calibration pose is needed.
+        self.declare_parameter('online_scale_estimation', True)
+        self.online_scale_estimation = self.get_parameter('online_scale_estimation').value
+        self.declare_parameter('robot_reach', 0.984)  # Spot arm reach in meters
+        self.robot_reach = self.get_parameter('robot_reach').value
         
         # Output frame for wrist pose (robot's body frame)
         self.declare_parameter('output_frame', 'body')
@@ -159,6 +169,14 @@ class WristDetector(Node):
         
         # Previous wrist_in_body for jump filter
         self.prev_wrist_in_body = None
+
+        # Online arm-length estimation state
+        self.arm_length_samples = []       # rolling window of segment-sum lengths (m)
+        self.arm_length_window = 150       # ~5 s at 30 Hz
+        self.arm_length_min_samples = 90   # samples required before latching
+        self.arm_length_max_spread = 0.03  # IQR convergence threshold (m)
+        self.online_scale = None           # latched scale; None until converged
+        self.current_r_sh_3d = None        # right shoulder 3D of the current frame
         
         # Previous axes for angular jump filter
         self.prev_axes = {}
@@ -201,6 +219,9 @@ class WristDetector(Node):
         self.get_logger().info(f'Wrist jump threshold: {self.wrist_jump_threshold*100:.1f} cm/frame')
         self.get_logger().info(f'Axis jump threshold: {np.degrees(self.axis_jump_threshold):.1f} deg/frame')
         self.get_logger().info(f'Scale factor (human to Spot arm): {self.scale_factor:.3f}')
+        self.get_logger().info(
+            f'Online scale estimation: {self.online_scale_estimation} '
+            f'(robot reach: {self.robot_reach:.3f} m)')
         self.get_logger().info(f'Shoulder offset (body->sh0): X={self.shoulder_offset[0]:.3f}, Y={self.shoulder_offset[1]:.3f}, Z={self.shoulder_offset[2]:.3f}')
         
         # Store last comparison results for logging
@@ -314,6 +335,45 @@ class WristDetector(Node):
             self.prev_landmarks_3d[landmark_name] = new_pos.copy()
             return new_pos
 
+    def update_arm_length(self, sh_3d, el_3d, wr_3d):
+        """Accumulate arm-length samples and latch the scale on convergence.
+
+        The upper-arm and forearm segment lengths are pose-invariant, so
+        ||elbow - shoulder|| + ||wrist - elbow|| estimates the operator's
+        arm length at any flexion, with no calibration pose. The median of
+        a rolling window rejects depth outliers; once enough samples agree,
+        the scale is latched so the hand-to-robot mapping does not keep
+        drifting during operation.
+
+        Args:
+            sh_3d: Right shoulder 3D position, camera frame (numpy array)
+            el_3d: Right elbow 3D position, camera frame (numpy array)
+            wr_3d: Right wrist 3D position, camera frame (numpy array)
+        """
+        length = np.linalg.norm(el_3d - sh_3d) + np.linalg.norm(wr_3d - el_3d)
+        if not (0.3 < length < 1.2):
+            return  # implausible arm length — depth artifact
+
+        self.arm_length_samples.append(length)
+        if len(self.arm_length_samples) > self.arm_length_window:
+            self.arm_length_samples.pop(0)
+
+        if len(self.arm_length_samples) < self.arm_length_min_samples:
+            return
+
+        q1, median, q3 = np.percentile(self.arm_length_samples, [25, 50, 75])
+        if (q3 - q1) < self.arm_length_max_spread:
+            self.online_scale = self.robot_reach / median
+            self.get_logger().info(
+                f'Arm length converged: {median*100:.1f} cm '
+                f'(IQR {(q3-q1)*100:.1f} cm, {len(self.arm_length_samples)} samples) '
+                f'-> scale latched at {self.online_scale:.3f}')
+        elif self.frame_count % 150 == 0:
+            self.get_logger().info(
+                f'Estimating arm length: {len(self.arm_length_samples)} samples, '
+                f'median {median*100:.1f} cm, IQR {(q3-q1)*100:.1f} cm '
+                f'(need < {self.arm_length_max_spread*100:.1f} cm)')
+
     def apply_axis_jump_filter(self, axis_name, new_axis):
         """Apply angular jump filter to limit sudden axis rotations.
         
@@ -378,7 +438,11 @@ class WristDetector(Node):
             if results.pose_landmarks:
                 self.detection_count += 1
                 landmarks = results.pose_landmarks.landmark
-                
+
+                # Shoulder of the current frame only (for arm-length estimation);
+                # never pair a stale shoulder with the current wrist
+                self.current_r_sh_3d = None
+
                 # Draw landmarks if requested
                 if self.show_all_landmarks:
                     self.mp_drawing.draw_landmarks(
@@ -405,7 +469,8 @@ class WristDetector(Node):
                     if d_sh_l and d_sh_r:
                         l_sh_3d = self.apply_jump_filter('l_sh', self.deproject_pixel_to_3d(sh_l_px[0], sh_l_px[1], d_sh_l))
                         r_sh_3d = self.apply_jump_filter('r_sh', self.deproject_pixel_to_3d(sh_r_px[0], sh_r_px[1], d_sh_r))
-                        
+                        self.current_r_sh_3d = r_sh_3d
+
                         # Initialize vectors
                         up_vec = np.array([0.0, -1.0, 0.0]) # Default up (camera frame)
                         torso_center = (l_sh_3d + r_sh_3d) / 2
@@ -491,6 +556,22 @@ class WristDetector(Node):
                     if w_depth is not None and 0.1 < w_depth < 10.0:
                         w_3d_cam = self.deproject_pixel_to_3d(w_x, w_y, w_depth)
                         if w_3d_cam is not None:
+                            # Online arm-length estimation: needs shoulder, elbow,
+                            # and wrist from the same frame. The elbow is not
+                            # jump-filtered (that would freeze the body frame on
+                            # elbow noise); the median window rejects outliers.
+                            if (self.online_scale_estimation and self.online_scale is None
+                                    and self.current_r_sh_3d is not None):
+                                r_elbow = landmarks[self.mp_pose.PoseLandmark.RIGHT_ELBOW.value]
+                                if r_elbow.visibility > 0.5:
+                                    e_x, e_y = int(r_elbow.x * width), int(r_elbow.y * height)
+                                    e_depth = self.get_depth_at_pixel(depth_image, e_x, e_y)
+                                    if e_depth is not None and 0.1 < e_depth < 10.0:
+                                        e_3d_cam = self.deproject_pixel_to_3d(e_x, e_y, e_depth)
+                                        if e_3d_cam is not None:
+                                            self.update_arm_length(
+                                                self.current_r_sh_3d, e_3d_cam, w_3d_cam)
+
                             w_in_body_raw = self.last_valid_R.T @ (w_3d_cam - self.last_valid_origin)
                             
                             # Jump filter: reject jumped values from EMA entirely
@@ -523,7 +604,8 @@ class WristDetector(Node):
                 
             # ALWAYS publish last valid wrist (persists through occlusion and jumps)
             if self.filtered_wrist_in_body is not None:
-                wrist_final = self.filtered_wrist_in_body * self.scale_factor + self.shoulder_offset
+                scale = self.online_scale if self.online_scale is not None else self.scale_factor
+                wrist_final = self.filtered_wrist_in_body * scale + self.shoulder_offset
                 
                 stamp = self.get_clock().now().to_msg()
                 
