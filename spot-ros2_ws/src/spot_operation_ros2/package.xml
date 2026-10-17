@@ -20,6 +20,7 @@
   <depend>moveit_ros_planning_interface</depend>
   <depend>moveit_msgs</depend>
   <depend>spot_msgs</depend>
+  <depend>bosdyn_api_msgs</depend>
   <depend>synchros2</depend>
   <depend>message_filters</depend>
   <depend>std_msgs</depend>

@@ -47,6 +47,8 @@ setup(
             'tf_projection_node = spot_operation_ros2.tf_projection_node:main',
             'control_mode_switcher = spot_operation_ros2.control_mode_switcher:main',
             'fake_wrist_target = spot_operation_ros2.fake_wrist_target:main',
+            'autonomous_grasp_node = spot_operation_ros2.autonomous_grasp_node:main',
+            'wrist_arm_follower = spot_operation_ros2.wrist_arm_follower:main',
         ],
     },
 )
