@@ -94,7 +94,7 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument(
                 "target_parent_frame",
-                default_value="world",
+                default_value="vision",
                 description="Parent TF frame for the projected target_object transform.",
             ),
             DeclareLaunchArgument(
@@ -127,6 +127,11 @@ def generate_launch_description():
                 default_value="3.0",
                 description="Deadband (deg): below this roll the hand frame is fed native (no warp).",
             ),
+            DeclareLaunchArgument(
+                "show_deroll_debug",
+                default_value="false",
+                description="Pop the 'Hand Upright (de-rolled)' cv2 validation window. De-roll processing always runs.",
+            ),
             Node(
                 package="spot_operation_ros2",
                 executable="sam2_tracker_node",
@@ -139,6 +144,8 @@ def generate_launch_description():
                         LaunchConfiguration("hand_deroll_enabled"), value_type=bool),
                     "hand_deroll_min_deg": ParameterValue(
                         LaunchConfiguration("hand_deroll_min_deg"), value_type=float),
+                    "show_deroll_debug": ParameterValue(
+                        LaunchConfiguration("show_deroll_debug"), value_type=bool),
                     "secondary_cameras": ParameterValue(secondary_cameras, value_type=str),
                     "rgb_topic": rgb_topic,
                     "depth_topic": depth_topic,

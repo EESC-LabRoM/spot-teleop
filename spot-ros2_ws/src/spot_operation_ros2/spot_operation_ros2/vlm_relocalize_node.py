@@ -195,7 +195,7 @@ class VlmRelocalizeNode(Node):
         self.declare_parameter("target_frame", "body")
         self.declare_parameter("min_abs_rotation_deg", 5.0)
         self.declare_parameter("object_prompt", "wheel valve")
-        self.declare_parameter("vlm_url", "http://localhost:8000")
+        self.declare_parameter("vlm_url", "http://100.111.174.61:8000")
         self.declare_parameter("request_timeout_sec", 5.0)
         self.declare_parameter("request_max_retries", 1)
         self.declare_parameter("service_name", "/vlm/trigger_relocalize")

@@ -71,6 +71,20 @@ def launch_setup(context: LaunchContext):
         ["use_sim:=", use_sim],
         "-p",
         ["use_ros2_control:=", LaunchConfiguration("use_ros2_control")],
+        "-p",
+        ["use_attraction:=", LaunchConfiguration("use_attraction")],
+        "-p",
+        ["k_att:=", LaunchConfiguration("k_att")],
+        "-p",
+        ["attraction_radius:=", LaunchConfiguration("attraction_radius")],
+        "-p",
+        ["attraction_profile:=", LaunchConfiguration("attraction_profile")],
+        "-p",
+        ["lock_xyz_on_grasp:=", LaunchConfiguration("lock_xyz_on_grasp")],
+        "-p",
+        ["gripper_state_topic:=", LaunchConfiguration("gripper_state_topic")],
+        "-p",
+        ["gripper_closed_threshold:=", LaunchConfiguration("gripper_closed_threshold")],
     ]
 
     # Remap /joint_states -> /low_level/joint_states when using ros2_control
@@ -273,7 +287,7 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument(
                 "esdf_global_frame",
-                default_value="world",
+                default_value="vision",
                 description="nvblox global frame used for ESDF service queries (sim: 'odom', real: 'vision')",
             ),
             DeclareLaunchArgument(
@@ -300,6 +314,41 @@ def generate_launch_description():
                 "use_ros2_control",
                 default_value="false",
                 description="If true, publish JointCommand to spot_joint_controller instead of JointState",
+            ),
+            DeclareLaunchArgument(
+                "use_attraction",
+                default_value="true",
+                description="Enable the attractive potential field (False = raw operator command; avoidance-only ablation)",
+            ),
+            DeclareLaunchArgument(
+                "k_att",
+                default_value="0.2",
+                description="Attractive nudge fraction toward the object (0=none, 1=full lock). Raise for a stronger/visible assist.",
+            ),
+            DeclareLaunchArgument(
+                "attraction_radius",
+                default_value="0.40",
+                description="Activation distance (m) from wrist_target to object below which the attraction engages",
+            ),
+            DeclareLaunchArgument(
+                "attraction_profile",
+                default_value="fixed",
+                description="'fixed' = constant k_att nudge; 'linear' = distance-weighted k_att*(1-d/radius), stronger lock-on near the object",
+            ),
+            DeclareLaunchArgument(
+                "lock_xyz_on_grasp",
+                default_value="false",
+                description="When the gripper closes, freeze the EE position and allow rotation only (valve turning). Releasing the gripper unlocks.",
+            ),
+            DeclareLaunchArgument(
+                "gripper_state_topic",
+                default_value="/gripper/goal",
+                description="Float64 topic carrying the gripper command (rad) used to detect grasp for the XYZ lock. Real/ros2_control: /gripper/goal; Isaac sim: /gripper/command",
+            ),
+            DeclareLaunchArgument(
+                "gripper_closed_threshold",
+                default_value="-0.5",
+                description="Gripper closed when command >= this (rad). Convention: open=-1.57, close=0.0",
             ),
             OpaqueFunction(function=launch_setup),
         ]

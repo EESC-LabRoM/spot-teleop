@@ -11,6 +11,7 @@ from rclpy.executors import MultiThreadedExecutor
 from geometry_msgs.msg import PoseStamped, TransformStamped, Point, Vector3, PointStamped
 from visualization_msgs.msg import Marker
 from sensor_msgs.msg import JointState
+from std_msgs.msg import Float64
 import threading
 import torch
 import numpy as np
@@ -65,6 +66,36 @@ class CuroboMpcNode(Node):
         self.declare_parameter('use_ros2_control', False)  # True=publish JointCommand to spot_joint_controller
         self.declare_parameter('startup_delay', 5.0)  # Wait N seconds before considering obstacles
 
+        # Attractive potential field (semi-autonomous assist). Toggle/tune for ablations:
+        #   use_attraction=False -> pure operator command (PF off, e.g. avoidance-only exp)
+        #   k_att                -> attraction INFLUENCE SHARE in [0,1] (0=pure operator,
+        #                           1=full lock to object): the fraction of the way from
+        #                           the wrist to the object the EE settles at.
+        #   attraction_radius    -> activation distance (m) from the EE to the object
+        # The wrist target is always the anchor and the pull is measured from the current
+        # EE: goal = wrist + k_eff*(object - EE), with k_eff = a/(1-a) for influence a, so
+        # steady-state reach == a. Operator stays primary (far from the object a -> 0); the
+        # field strengthens and locks on as the EE closes.
+        self.declare_parameter('use_attraction', True)
+        self.declare_parameter('k_att', 0.2)
+        self.declare_parameter('attraction_radius', 0.40)
+        # 'fixed'  : constant influence -> EE settles k_att of the way to the object
+        # 'linear' : distance-weighted  -> influence = k_att*(1 - d_ee/radius)  (0 at boundary -> k_att near contact; stronger lock-on feel)
+        self.declare_parameter('attraction_profile', 'fixed')
+
+        # Rotation-only lock on grasp (valve turning). When lock_xyz_on_grasp is true and
+        # the gripper is closed (cmd on gripper_state_topic >= gripper_closed_threshold;
+        # gripper convention: open=-1.57, close=0.0), the EE position is frozen at the
+        # grasp point so the operator can only ROTATE the end-effector in place (roll about
+        # X / motion in the YZ plane). Orientation still tracks the wrist. Opening the
+        # gripper unlocks and restores full position control.
+        self.declare_parameter('lock_xyz_on_grasp', False)
+        # /gripper/goal carries the operator's gripper command in ros2_control mode
+        # (gripper_controller forwards it to /spot_joint_controller/joint_commands).
+        # /gripper/command is only published on the Isaac sim path.
+        self.declare_parameter('gripper_state_topic', '/gripper/goal')
+        self.declare_parameter('gripper_closed_threshold', -0.5)
+
         # ESDF / nvblox parameters
         self.declare_parameter('use_esdf', True)
         self.declare_parameter('esdf_service_name', '/nvblox_node/get_esdf_and_gradient')
@@ -105,6 +136,17 @@ class CuroboMpcNode(Node):
         self.use_ros2_control = self.get_parameter('use_ros2_control').get_parameter_value().bool_value
         self.startup_delay = self.get_parameter('startup_delay').get_parameter_value().double_value
 
+        self.use_attraction = self.get_parameter('use_attraction').get_parameter_value().bool_value
+        self.k_att = self.get_parameter('k_att').get_parameter_value().double_value
+        self.attraction_radius = self.get_parameter('attraction_radius').get_parameter_value().double_value
+        self.attraction_profile = self.get_parameter('attraction_profile').get_parameter_value().string_value
+
+        self.lock_xyz_on_grasp = self.get_parameter('lock_xyz_on_grasp').get_parameter_value().bool_value
+        self.gripper_state_topic = self.get_parameter('gripper_state_topic').get_parameter_value().string_value
+        self.gripper_closed_threshold = self.get_parameter('gripper_closed_threshold').get_parameter_value().double_value
+        self._gripper_value = None   # latest gripper command (rad); None until first msg
+        self._xyz_lock_pos = None    # frozen EE position while rotation-locked
+
         self.use_esdf = self.get_parameter('use_esdf').get_parameter_value().bool_value
         self.esdf_service_name = self.get_parameter('esdf_service_name').get_parameter_value().string_value
         self.esdf_update_rate = self.get_parameter('esdf_update_rate').get_parameter_value().double_value
@@ -132,6 +174,7 @@ class CuroboMpcNode(Node):
         self._log_info(f'Control rate: {self.control_rate} Hz', event='startup')
         self._log_info(f'Use sim: {self.use_sim} ({"arm0_ prefix" if self.use_sim else "arm_ prefix"})', event='startup')
         self._log_info(f'Use ESDF: {self.use_esdf} ({self.esdf_service_name} @ {self.esdf_update_rate} Hz)', event='startup')
+        self._log_info(f'Attraction: {self.use_attraction} (profile={self.attraction_profile}, k_att={self.k_att}, radius={self.attraction_radius} m)', event='startup')
 
         # Initialize cuRobo
         setup_curobo_logger("warn")
@@ -342,6 +385,19 @@ class CuroboMpcNode(Node):
             10,
             callback_group=self._sensor_cb_group,
         )
+
+        if self.lock_xyz_on_grasp:
+            self._gripper_sub = self.create_subscription(
+                Float64,
+                self.gripper_state_topic,
+                self._gripper_state_callback,
+                10,
+                callback_group=self._sensor_cb_group,
+            )
+            self._log_info(
+                f'Rotation-only grasp lock ENABLED: holding EE position when '
+                f'{self.gripper_state_topic} >= {self.gripper_closed_threshold} rad (closed)',
+                event='startup')
 
         self._log_info(f'Subscribed to Joint topic: {joint_topic}')
         self._log_info(f'Subscribed to clear-box topic: {self._target_clear_box_topic}')
@@ -588,6 +644,10 @@ class CuroboMpcNode(Node):
             self.current_joint_state = msg
             self._last_joint_stamp = time.time()
             self.joints_received = True
+
+    def _gripper_state_callback(self, msg: Float64):
+        """Latest gripper command (rad); used to detect grasp for the XYZ lock."""
+        self._gripper_value = float(msg.data)
 
     def _update_esdf(self):
         """Query nvblox in its global frame, computing AABB from current robot TF."""
@@ -1257,10 +1317,34 @@ class CuroboMpcNode(Node):
                 self.current_state.copy_(current_state_partial)
 
             self.goal_buffer.goal_pose.copy_(self.last_goal_pose)
-            
+
+            # --- Rotation-only lock on grasp (valve turning) ---
+            # While the gripper is closed, freeze the EE position at the grasp point so the
+            # operator can only ROTATE (roll) the end-effector in place. Orientation keeps
+            # tracking the wrist (already copied above); only X/Y/Z are held. Opening the
+            # gripper unlocks. Attraction is suppressed while locked (see condition below).
+            xyz_locked = False
+            if self.lock_xyz_on_grasp and self._gripper_value is not None \
+                    and self._gripper_value >= self.gripper_closed_threshold:
+                xyz_locked = True
+                if self._xyz_lock_pos is None:
+                    # Rising edge: capture current EE position via FK and hold it.
+                    fk_lock = self.mpc.rollout_fn.compute_kinematics(self.current_state)
+                    self._xyz_lock_pos = fk_lock.ee_pos_seq.detach().clone().view(-1)[:3]
+                    p = self._xyz_lock_pos
+                    self._log_info(
+                        f'XYZ LOCKED on grasp at ({p[0]:.3f},{p[1]:.3f},{p[2]:.3f}) '
+                        f'- rotation-only (valve mode)', event='xyz_lock')
+                # Hold position; orientation (roll) still comes from the wrist.
+                self.goal_buffer.goal_pose.position.copy_(self._xyz_lock_pos)
+            elif self._xyz_lock_pos is not None:
+                self._xyz_lock_pos = None
+                self._log_info('XYZ UNLOCKED (gripper opened) - full position control restored',
+                               event='xyz_lock')
+
             # --- Attractive Potential Field Logic ---
             # Semi-autonomous: wrist_target (operator) is the primary goal; the PF
-            # biases that goal toward the detected object when the wrist is near it.
+            # biases that goal toward the detected object when the EE is near it.
             try:
                 # 1. Operator-commanded wrist target (in body frame), used as PF reference
                 wrist_target_tensor = self.goal_buffer.goal_pose.position
@@ -1285,14 +1369,32 @@ class CuroboMpcNode(Node):
                     float(target_pos_np[2]),
                 )
 
-                # 3. Distance is measured from the operator's wrist target to the object,
-                #    so the assist engages based on where the operator is aiming.
-                dist = np.linalg.norm(target_pos_np - wrist_target_np)
+                # 3. Proximity is measured from the current END-EFFECTOR to the object
+                #    (not the wrist). This makes the attraction grow as the arm actually
+                #    closes on the object and keeps pulling the last stretch, so the
+                #    operator can stop the wrist short and the field carries it in.
+                fk_ee = self.mpc.rollout_fn.compute_kinematics(self.current_state)
+                ee_pos_np = fk_ee.ee_pos_seq.cpu().numpy().flatten()[:3]
+                dist = np.linalg.norm(target_pos_np - ee_pos_np)
                 self._last_target_dist = float(dist)
 
-                # 4. Bias wrist target toward object when close
-                if dist < 0.40:
-                    delta = self.compute_attractive(wrist_target_np, target_pos_np, k_att=0.2)
+                # 4. Bias the goal toward the object when the EE is close. The operator's
+                #    wrist target stays the ANCHOR (goal = wrist + pull) so the operator
+                #    keeps primary control; the field only ADDS a pull measured from the
+                #    EE. Gated by use_attraction so avoidance-only ablations run raw cmd.
+                if self.use_attraction and not xyz_locked and dist < self.attraction_radius:
+                    # k_att in [0,1] = the field's INFLUENCE SHARE: the fraction of the
+                    # way from the wrist to the object the EE settles at (0 = pure
+                    # operator, 1 = full lock to object). 'linear' fades that influence
+                    # to 0 at the boundary and up to k_att at contact; 'fixed' keeps it.
+                    if self.attraction_profile == 'linear':
+                        influence = self.k_att * (1.0 - dist / self.attraction_radius)
+                    else:
+                        influence = self.k_att
+                    influence = float(np.clip(influence, 0.0, 0.999))  # 1.0 -> infinite gain
+                    # Convert influence share -> EE-pull gain so steady-state reach == influence.
+                    k_eff = influence / (1.0 - influence)
+                    delta = self.compute_attractive(ee_pos_np, target_pos_np, k_att=k_eff)
                     new_pos_np = wrist_target_np + delta
 
                     # Update the goal position (keep orientation from last_goal_pose)
