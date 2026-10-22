@@ -1,0 +1,155 @@
+{
+ "tag": "before_swap",
+ "joint_state_stamp": 1792184524,
+ "clear_box": {
+  "centre": [
+   0.601,
+   -0.264,
+   0.154
+  ],
+  "size": [
+   0.239,
+   0.27,
+   0.262
+  ],
+  "pad": 0.03
+ },
+ "raw": {
+  "node": "nvblox_node",
+  "voxel_m": 0.02,
+  "grid_shape": [
+   71,
+   81,
+   61
+  ],
+  "occupied_total": 28768,
+  "unknown": 186192,
+  "esdf_ms_mean": 74.5,
+  "esdf_ms_max": 152.1,
+  "esdf_ms_n": 10,
+  "occupied_per_arm_link": {
+   "fr3_link0": {
+    "in_hull": 341,
+    "within_3cm": 694
+   },
+   "fr3_link1": {
+    "in_hull": 310,
+    "within_3cm": 498
+   },
+   "fr3_link2": {
+    "in_hull": 314,
+    "within_3cm": 606
+   },
+   "fr3_link3": {
+    "in_hull": 124,
+    "within_3cm": 295
+   },
+   "fr3_link4": {
+    "in_hull": 117,
+    "within_3cm": 243
+   },
+   "fr3_link5": {
+    "in_hull": 226,
+    "within_3cm": 489
+   },
+   "fr3_link6": {
+    "in_hull": 173,
+    "within_3cm": 331
+   },
+   "fr3_link7": {
+    "in_hull": 53,
+    "within_3cm": 168
+   },
+   "fr3_hand": {
+    "in_hull": 68,
+    "within_3cm": 171
+   },
+   "fr3_leftfinger": {
+    "in_hull": 3,
+    "within_3cm": 43
+   },
+   "fr3_rightfinger": {
+    "in_hull": 0,
+    "within_3cm": 10
+   }
+  },
+  "arm_voxels_in_hull_total": 1729,
+  "arm_voxels_within_3cm_total": 2664,
+  "drill_box_occupied": {
+   "plain": 312,
+   "with_3cm_clear_box": 0,
+   "plain_padded_region": 347,
+   "with_3cm_clear_box_padded_region": 31,
+   "unknown_in_box": 0
+  }
+ },
+ "masked": {
+  "node": "fr3_nvblox",
+  "voxel_m": 0.02,
+  "grid_shape": [
+   71,
+   81,
+   61
+  ],
+  "occupied_total": 22998,
+  "unknown": 208098,
+  "esdf_ms_mean": 61.8,
+  "esdf_ms_max": 139.9,
+  "esdf_ms_n": 10,
+  "occupied_per_arm_link": {
+   "fr3_link0": {
+    "in_hull": 0,
+    "within_3cm": 9
+   },
+   "fr3_link1": {
+    "in_hull": 0,
+    "within_3cm": 1
+   },
+   "fr3_link2": {
+    "in_hull": 0,
+    "within_3cm": 0
+   },
+   "fr3_link3": {
+    "in_hull": 0,
+    "within_3cm": 0
+   },
+   "fr3_link4": {
+    "in_hull": 0,
+    "within_3cm": 0
+   },
+   "fr3_link5": {
+    "in_hull": 0,
+    "within_3cm": 0
+   },
+   "fr3_link6": {
+    "in_hull": 0,
+    "within_3cm": 0
+   },
+   "fr3_link7": {
+    "in_hull": 0,
+    "within_3cm": 0
+   },
+   "fr3_hand": {
+    "in_hull": 0,
+    "within_3cm": 0
+   },
+   "fr3_leftfinger": {
+    "in_hull": 0,
+    "within_3cm": 0
+   },
+   "fr3_rightfinger": {
+    "in_hull": 0,
+    "within_3cm": 0
+   }
+  },
+  "arm_voxels_in_hull_total": 0,
+  "arm_voxels_within_3cm_total": 10,
+  "drill_box_occupied": {
+   "plain": 141,
+   "with_3cm_clear_box": 0,
+   "plain_padded_region": 169,
+   "with_3cm_clear_box_padded_region": 29,
+   "unknown_in_box": 3
+  }
+ }
+}

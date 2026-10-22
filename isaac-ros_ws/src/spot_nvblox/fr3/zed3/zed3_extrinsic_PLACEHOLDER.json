@@ -1,0 +1,12 @@
+{
+ "description": "PLACEHOLDER - zed3 is NOT calibrated. Pose of zed3 (ZED 2i left RECTIFIED optical frame, OpenCV x right y down z forward) in the FR3 base frame fr3_link0; T_base_cam maps camera coords to base coords. Same format as ../sim/zed1_extrinsic_1016.json (consumed by real_extrinsics_tf.py --calib). The values below are an IDENTITY stand-in with the camera at the base origin: they are WRONG on purpose and must be replaced by a measurement before zed3 is used for anything that needs TF (nvblox, cameras:=...,zed3). The operator-wrist pipeline (wrist_detector) does not use this file.",
+ "calibrated": false,
+ "T_base_cam": [
+  [1.0, 0.0, 0.0, 0.0],
+  [0.0, 1.0, 0.0, 0.0],
+  [0.0, 0.0, 1.0, 0.0],
+  [0.0, 0.0, 0.0, 1.0]
+ ],
+ "source": "placeholder",
+ "mount": "fixed (tripod at operator station), not on the FR3"
+}

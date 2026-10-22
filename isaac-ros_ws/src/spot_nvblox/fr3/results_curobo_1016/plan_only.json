@@ -1,0 +1,174 @@
+{
+ "start_q": [
+  -0.006099999882280827,
+  -0.6115999817848206,
+  -0.27869999408721924,
+  -3.0415000915527344,
+  -0.12189999967813492,
+  2.177999973297119,
+  0.5722000002861023
+ ],
+ "box": {
+  "centre": [
+   0.601,
+   -0.264,
+   0.154
+  ],
+  "size": [
+   0.237,
+   0.263,
+   0.258
+  ]
+ },
+ "pad": 0.03,
+ "plans": [
+  {
+   "map": "masked",
+   "node": "nvblox_node",
+   "clear_box_pad": false,
+   "goal": "pregrasp_10cm_above_object_top",
+   "goal_xyz": [
+    0.601,
+    -0.264,
+    0.383
+   ],
+   "success": true,
+   "plan_time_s": 0.426,
+   "wall_s": 0.547,
+   "status": "None",
+   "esdf_ms": 18.0,
+   "occupied_voxels": 21040,
+   "traj_points": 45,
+   "traj_s": 0.8,
+   "path_len_rad": 1.871
+  },
+  {
+   "map": "masked",
+   "node": "nvblox_node",
+   "clear_box_pad": false,
+   "goal": "grasp_at_object_centre",
+   "goal_xyz": [
+    0.601,
+    -0.264,
+    0.154
+   ],
+   "success": true,
+   "plan_time_s": 0.344,
+   "wall_s": 0.459,
+   "status": "None",
+   "esdf_ms": 18.0,
+   "occupied_voxels": 21040,
+   "traj_points": 40,
+   "traj_s": 0.71,
+   "path_len_rad": 1.767
+  },
+  {
+   "map": "masked",
+   "node": "nvblox_node",
+   "clear_box_pad": true,
+   "goal": "pregrasp_10cm_above_object_top",
+   "goal_xyz": [
+    0.601,
+    -0.264,
+    0.383
+   ],
+   "success": true,
+   "plan_time_s": 0.318,
+   "wall_s": 0.434,
+   "status": "None",
+   "esdf_ms": 80.4,
+   "occupied_voxels": 20870,
+   "traj_points": 45,
+   "traj_s": 0.8,
+   "path_len_rad": 1.876
+  },
+  {
+   "map": "masked",
+   "node": "nvblox_node",
+   "clear_box_pad": true,
+   "goal": "grasp_at_object_centre",
+   "goal_xyz": [
+    0.601,
+    -0.264,
+    0.154
+   ],
+   "success": true,
+   "plan_time_s": 0.333,
+   "wall_s": 0.45,
+   "status": "None",
+   "esdf_ms": 80.4,
+   "occupied_voxels": 20870,
+   "traj_points": 41,
+   "traj_s": 0.73,
+   "path_len_rad": 1.768
+  },
+  {
+   "map": "raw",
+   "node": "nvblox_raw_ref",
+   "clear_box_pad": false,
+   "goal": "pregrasp_10cm_above_object_top",
+   "goal_xyz": [
+    0.601,
+    -0.264,
+    0.383
+   ],
+   "success": false,
+   "plan_time_s": 0.0,
+   "wall_s": 0.014,
+   "status": "MotionGenStatus.INVALID_START_STATE_WORLD_COLLISION",
+   "esdf_ms": 19.4,
+   "occupied_voxels": 25559
+  },
+  {
+   "map": "raw",
+   "node": "nvblox_raw_ref",
+   "clear_box_pad": false,
+   "goal": "grasp_at_object_centre",
+   "goal_xyz": [
+    0.601,
+    -0.264,
+    0.154
+   ],
+   "success": false,
+   "plan_time_s": 0.0,
+   "wall_s": 0.015,
+   "status": "MotionGenStatus.INVALID_START_STATE_WORLD_COLLISION",
+   "esdf_ms": 19.4,
+   "occupied_voxels": 25559
+  },
+  {
+   "map": "raw",
+   "node": "nvblox_raw_ref",
+   "clear_box_pad": true,
+   "goal": "pregrasp_10cm_above_object_top",
+   "goal_xyz": [
+    0.601,
+    -0.264,
+    0.383
+   ],
+   "success": false,
+   "plan_time_s": 0.0,
+   "wall_s": 0.008,
+   "status": "MotionGenStatus.INVALID_START_STATE_WORLD_COLLISION",
+   "esdf_ms": 67.4,
+   "occupied_voxels": 24985
+  },
+  {
+   "map": "raw",
+   "node": "nvblox_raw_ref",
+   "clear_box_pad": true,
+   "goal": "grasp_at_object_centre",
+   "goal_xyz": [
+    0.601,
+    -0.264,
+    0.154
+   ],
+   "success": false,
+   "plan_time_s": 0.0,
+   "wall_s": 0.003,
+   "status": "MotionGenStatus.INVALID_START_STATE_WORLD_COLLISION",
+   "esdf_ms": 67.4,
+   "occupied_voxels": 24985
+  }
+ ]
+}

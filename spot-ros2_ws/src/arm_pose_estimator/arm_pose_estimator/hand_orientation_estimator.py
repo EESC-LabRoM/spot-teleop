@@ -38,9 +38,20 @@ class HandOrientationEstimator(Node):
         self.declare_parameter('color_topic', '/camera/camera/color/image_raw')
         self.color_topic = self.get_parameter('color_topic').value
 
+        self.declare_parameter('visualize', True)  # false → headless (no cv2 debug window)
+        self.visualize = self.get_parameter('visualize').value
+        input_queue_depth = self.declare_parameter('input_queue_depth', 10).value
+
         # EMA alpha for roll angle smoothing (0 = max smooth/lag, 1 = no smoothing)
         self.declare_parameter('ema_alpha', 0.2)
         self.ema_alpha = self.get_parameter('ema_alpha').value
+
+        # Roll zero-calibration. The palm-normal angle is measured from the +X axis, but
+        # an upright hand has the normal along the vertical axis (90 deg from +X), so the
+        # raw reading is offset by ~90 deg. Subtract it here so upright -> 0 roll. Flip the
+        # sign (use +90) if the corrected roll comes out reversed (CW vs CCW).
+        self.declare_parameter('roll_offset_deg', 90.0)
+        self.roll_offset = math.radians(self.get_parameter('roll_offset_deg').value)
 
         self.get_logger().info(f'Subscribing to color topic: {self.color_topic}')
         self.get_logger().info(f'EMA alpha: {self.ema_alpha}')
@@ -49,7 +60,7 @@ class HandOrientationEstimator(Node):
             Image,
             self.color_topic,
             self.image_callback,
-            10
+            input_queue_depth
         )
         self.quat_pub = self.create_publisher(Quaternion, "/hand_roll_quat", 10)
         self.gesture_sub = self.create_subscription(String, "hand_gesture", self._gesture_cb, 10)
@@ -125,7 +136,7 @@ class HandOrientationEstimator(Node):
             normal /= np.linalg.norm(normal)
             normal = -normal  # flip to point from back-of-hand toward palm
 
-            roll_raw = -math.atan2(normal[1], normal[0])
+            roll_raw = -math.atan2(normal[1], normal[0]) + self.roll_offset
 
             # Circular EMA to handle angle wrapping correctly
             s = math.sin(roll_raw)
@@ -192,8 +203,9 @@ class HandOrientationEstimator(Node):
                 cv2.putText(frame, "FROZEN (fist)", (50, 90),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 165, 255), 2)
 
-        cv2.imshow("Hand Orientation Debug", frame)
-        cv2.waitKey(1)
+        if self.visualize:
+            cv2.imshow("Hand Orientation Debug", frame)
+            cv2.waitKey(1)
 
     def _publish_delayed(self):
         now = time.time()

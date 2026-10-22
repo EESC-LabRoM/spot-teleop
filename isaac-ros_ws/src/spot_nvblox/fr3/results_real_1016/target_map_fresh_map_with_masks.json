@@ -1,0 +1,22 @@
+{
+ "without_clear_box": {
+  "occupied_in_object_box": 35,
+  "occupied_region": 1977
+ },
+ "with_clear_box": {
+  "occupied_in_object_box": 19,
+  "occupied_region": 1961
+ },
+ "tag": "fresh_map_with_masks",
+ "node": "fr3_nvblox",
+ "box_centre": [
+  0.569,
+  -0.245,
+  0.155
+ ],
+ "box_size": [
+  0.122,
+  0.214,
+  0.275
+ ]
+}

@@ -1,0 +1,22 @@
+{
+ "without_clear_box": {
+  "occupied_in_object_box": 226,
+  "occupied_region": 2413
+ },
+ "with_clear_box": {
+  "occupied_in_object_box": 32,
+  "occupied_region": 2219
+ },
+ "tag": "murilo_nvblox_raw_depth",
+ "node": "nvblox_node",
+ "box_centre": [
+  0.569,
+  -0.244,
+  0.154
+ ],
+ "box_size": [
+  0.122,
+  0.216,
+  0.277
+ ]
+}

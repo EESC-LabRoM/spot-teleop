@@ -1,0 +1,22 @@
+{
+ "without_clear_box": {
+  "occupied_in_object_box": 107,
+  "occupied_region": 2177
+ },
+ "with_clear_box": {
+  "occupied_in_object_box": 20,
+  "occupied_region": 2104
+ },
+ "tag": "drill_already_in_map",
+ "node": "fr3_nvblox",
+ "box_centre": [
+  0.57,
+  -0.244,
+  0.155
+ ],
+ "box_size": [
+  0.12,
+  0.215,
+  0.276
+ ]
+}

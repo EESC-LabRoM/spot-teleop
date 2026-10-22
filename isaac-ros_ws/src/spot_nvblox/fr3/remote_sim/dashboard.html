@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="pt-BR"><meta charset="utf-8"><meta name="viewport" content="width=device-width">
+<title>Franka · ZED remota · Simulação</title>
+<style>
+body{background:#10151c;color:#e4edf5;font:16px system-ui;margin:24px}h1{font-size:24px}button{padding:12px;border:0;border-radius:8px;margin:4px;background:#213b56;color:white;cursor:pointer}#start{background:#16704e}button:disabled{opacity:.5}.grid{display:grid;grid-template-columns:2fr 1fr;gap:16px}img{width:100%;min-height:180px;background:#19222c;border-radius:10px}#status,#feedback{padding:12px;background:#1c2835;margin:12px 0;border-radius:8px}#feedback:empty{display:none}.error{color:#ffacac}small{color:#a2b4c7}.active{border-left:5px solid #32c183}.paused,.calibrating{border-left:5px solid #e8b648}pre{font:14px ui-monospace,monospace;white-space:pre-wrap}@media(max-width:800px){.grid{grid-template-columns:1fr}}
+</style>
+<h1>Franka + cuRobo · ZED no notebook</h1>
+<small>SIMULAÇÃO · cena equivalente à bancada · sem conexão com o robô real</small>
+<div><button id="start" onclick="act('start')">Start teleop ZED</button><button onclick="act('stop')">Parar</button><button onclick="act('home')">Home</button><button onclick="act('test')">Teste de 3 cm</button><button onclick="act('rotate')">Teste giro 10°</button><button onclick="act('open')">Abrir garra</button><button onclick="act('close')">Fechar garra</button><label>Velocidade <input id="speed" type="range" min="5" max="100" value="50" onchange="act('speed',this.value/100)"><span id="sv">50%</span></label></div>
+<div id="feedback" role="alert"></div><div id="status" aria-live="polite">Conectando...</div>
+<div class="grid"><div><h3>Franka simulada · cuRobo MPC</h3><img id="sim" alt="Franka simulada"><pre id="motion"></pre><p>Avançar o braço aproxima a garra dos objetos. Palma aberta abre a garra; punho fechado fecha.</p></div><div><h3>ZED no mhc-lenovo</h3><img id="hand" alt="Rastreamento da mão"><p id="camera-status"></p><pre id="metrics"></pre><p><b>Posição:</b> ponto do punho. <b>Orientação:</b> plano da palma. O Start captura a postura de referência; os movimentos seguintes controlam a pose relativa da garra.</p><p>Ao perder a mão, o robô segura a posição. Quando ela volta estável, a referência é recuperada sem salto. <b>Parar</b> encerra o controle.</p></div></div>
+<script>
+const el=id=>document.getElementById(id);
+let posting=false,polling=false;
+async function act(action,value){
+ if(posting)return;posting=true;el('start').disabled=true;
+ try{
+  const r=await fetch('/control',{method:'POST',headers:{'Content-Type':'application/json','X-Sim-Control':'1'},body:JSON.stringify({action,value})});const d=await r.json();
+  el('feedback').textContent=r.ok?(d.note||'Comando recebido'):(d.error||'Comando recusado');el('feedback').className=r.ok?'':'error';
+ }catch(e){el('feedback').textContent='O comando não chegou ao servidor: '+e;el('feedback').className='error'}
+ finally{posting=false;el('start').disabled=false;update()}
+}
+const numbers=a=>a?a.map(v=>Number(v).toFixed(1)).join(' / '):'–';
+async function update(){
+ if(polling)return;polling=true;
+ try{
+  const s=await(await fetch('/state',{cache:'no-store'})).json();const c=s.calibration||{};
+  el('status').className=s.phase;
+  let text=s.note;
+  if(s.phase==='calibrating'||s.phase==='paused')text+=' · '+(c.frames||0)+'/'+(c.required_frames||3)+' quadros estáveis · '+(c.stable_ms||0)+'/'+(c.required_ms||400)+' ms';
+  if(s.phase==='calibrating'&&s.tracking?.reason)text+=' · '+s.tracking.reason;
+  el('status').textContent=s.mpc_ready===false?'cuRobo indisponível: '+s.mpc_error:s.mpc_warmed===false?'Preparando o controle...':(s.sim_age_ms===null||s.sim_age_ms>1000)?'Aguardando estado recente da simulação...':text;
+  el('start').textContent={calibrating:'Calibrando ZED…',active:'ZED ativa',paused:'ZED pausada · aguardando mão'}[s.phase]||'Start teleop ZED';
+  const live=s.overlay_age_ms!==null&&s.overlay_age_ms<1500;
+  el('camera-status').textContent=live?'ZED recebendo imagem':'ZED sem imagem recente · confira notebook e conexão';el('hand').style.opacity=live?'1':'.4';
+  el('sv').textContent=Math.round(s.scale*100)+'%';
+  el('metrics').textContent='Gesto: '+(s.gesture||'indefinido')+'\nPose válida: '+(s.hand_fps||0)+' Hz · idade '+(s.hand_age_ms??'–')+' ms\nProcessamento: '+(s.tracking?.processing_ms??'–')+' ms\nMPC: '+s.solver_ms+' ms · abertura medida '+Math.round((s.finger_width_m||0)*1000)+' mm\nÚltimo comando recebido: '+(s.last_control?.action||'–')+' · total '+(s.control_count||0)+'\nFísica: '+Math.round(s.simulation_performance?.physics_hz||0)+' Hz · simulação '+(s.simulation_performance?.realtime_factor||0).toFixed(2)+'× tempo real';
+  el('motion').textContent='Movimento relativo à calibração\nX / Y / Z [cm]: '+numbers(s.relative_xyz_cm)+'\nRolagem / Inclinação / Giro [°]: '+numbers(s.relative_rpy_deg);
+ }catch(e){el('status').textContent='Sem conexão com o painel: '+e}
+ finally{polling=false}
+}
+function camera(id,path){const img=el(id);const next=delay=>setTimeout(()=>{img.src=path+'?t='+Date.now()},delay);img.onload=()=>next(150);img.onerror=()=>next(1000);next(0)}
+camera('sim','/view.jpg');camera('hand','/operator.jpg');setInterval(update,250);update();
+</script></html>

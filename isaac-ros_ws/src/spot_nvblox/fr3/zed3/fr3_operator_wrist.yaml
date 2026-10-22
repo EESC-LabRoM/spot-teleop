@@ -1,0 +1,41 @@
+# FR3 version of the Spot branch's operator-wrist perception (arm_pose_estimator: wrist_detector + hand_orientation_estimator),
+# fed by zed3. zed3 (ZED 2i, serial 34046618) is NOT on the robot: it is FIXED on a tripod at the operator station and looks at the
+# person (VR headset) - "pegar o wrist" = grab the OPERATOR's right wrist (MediaPipe Pose landmark 16) for teleop. See zed3/README.md.
+# wrist_detector uses NO TF: it deprojects the wrist with the zed3 depth + camera_info, builds a torso frame from the shoulders/hips,
+# and publishes the wrist in that body frame, scaled to the robot's reach.
+# STAGED: output goes to /fr3_operator/wrist_pose (remapped in the launch file), NOT /wrist_pose, so nothing built for the Spot can
+# consume it; nothing here commands the FR3.
+wrist_detector:
+  ros__parameters:
+    color_topic: /zed3/zed_node/rgb/image_rect_color
+    depth_topic: /zed3/zed_node/depth/depth_registered
+    camera_info_topic: /zed3/zed_node/depth/camera_info
+    visualize: false
+    require_fresh_tracking: true
+    orientation_mode: full_6d
+    hand_geometry_source: model
+    hand_gestures: true
+    use_hand_roi: true
+    robust_depth: true
+    operator_depth_range: [0.35, 3.0]
+    body_frame_mode: shoulders
+    teleop_sample_topic: /fr3_operator/teleop_sample
+    body_frame_timeout: 0.6
+    overlay_topic: /fr3_operator/wrist_overlay
+    show_all_landmarks: true
+    apriltag_size: 0.16
+    # Spot: arm reach 984 mm / human shoulder->wrist 650 mm = 1.514.  FR3 reach 855 mm -> 855/650.
+    scale_factor: 1.315
+    online_scale_estimation: true
+    robot_reach: 0.855
+    operator_arm_length_range: [0.45, 0.95]
+    operator_arm_segment_range: [0.15, 0.50]
+    # Spot: 'body' frame, shoulder offset body->arm_sh0 = (0.292, 0, 0.188).  FR3: base frame fr3_link0; shoulder (joint 2) is 0.333 m up.
+    # TUNE on the bench: this is where the operator's shoulder maps to in the robot frame. Operator forward is mapped to fr3_link0 +x.
+    output_frame: fr3_link0
+    shoulder_offset: [0.0, 0.0, 0.333]
+hand_orientation_estimator:
+  ros__parameters:
+    input_queue_depth: 1
+    color_topic: /zed3/zed_node/rgb/image_rect_color
+    visualize: false

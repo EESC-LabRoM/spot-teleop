@@ -422,7 +422,8 @@ class TFProjectionNode(Node):
 
         t_now_stamp_sec = t_now.header.stamp.sec + t_now.header.stamp.nanosec * 1e-9
         dt = t_now_stamp_sec - t0_stamp_sec
-        if abs(dt) > 8.0:
+        # stamp 0 = an all-static chain (fixed cameras, e.g. the FR3 bench ZEDs): valid at any time, nothing is stale
+        if t_now_stamp_sec > 0.0 and abs(dt) > 8.0:
             self.get_logger().warn(
                 f"[TF] T0→T_now interval too large ({dt:.1f}s, |dt| > 8.0s), discarding stale reprojection"
             )

@@ -1,0 +1,37 @@
+# The Spot branch's object tracking (spot_operation_ros2: sam2_tracker_node + tf_projection_node) on the FR3 bench.
+# zed1 (front) plays the hand camera's role (primary: seed, SAM2 video tracking), zed2 (top) is a secondary camera.
+# The seed comes on /perception/seed_command (vlm_relocalize_node with Qwen on the Spot; any JSON with bbox_1000 here).
+# Output used for the map: /zed1/segmentation_mask, /zed2/segmentation_mask (fr3_arm_mask_node.py removes them from the depth),
+# /target_object/clear_box (for cuRobo's ESDF clear), TF fr3_link0 -> target_object.
+sam2_tracker_node:
+  ros__parameters:
+    rgb_topic: /zed1/zed_node/rgb/image_rect_color
+    depth_topic: /zed1/zed_node/depth/depth_registered
+    depth_info_topic: /zed1/zed_node/depth/camera_info
+    segmentation_mask_topic: /zed1/segmentation_mask
+    visualize: false
+    hand_deroll_enabled: false
+    roll_reference_frame: fr3_link0
+    camera_speed_topic: /zed1/camera_speed
+    mask_dilation_px: 7
+    secondary_cameras: zed2
+    secondary_rgb_topic_pattern: /{cam}/zed_node/rgb/image_rect_color
+    secondary_depth_topic_pattern: /{cam}/zed_node/depth/depth_registered
+    secondary_mask_topic_pattern: /{cam}/segmentation_mask
+    secondary_camera_info_topic_pattern: /{cam}/zed_node/rgb/camera_info
+    target_parent_frame: fr3_link0
+    # 0.30 m on the Spot: here a seed that misses a 20 cm tall object lands on the table ~17 cm deeper and SAM2 segments the table
+    # (seen 10-16 with the drill in zed2); 0.10 m rejects it instead
+    secondary_seed_depth_tol_m: 0.10
+    # the Spot's square box prompt (object's largest size x 1.4) is mostly table for an elongated object seen from zed2 (top):
+    # SAM2 returned the table around the drill. Point-only prompt on the object instead.
+    secondary_box_scale: 0.0
+tf_projection_node:
+  ros__parameters:
+    target_parent_frame: fr3_link0
+    camera_info_topic: /zed1/zed_node/rgb/camera_info
+    secondary_cameras: zed2
+    secondary_camera_info_topic_pattern: /{cam}/zed_node/rgb/camera_info
+    hand_camera_frame: zed1_left_camera_optical_frame
+    camera_speed_reference_frame: fr3_link0
+    camera_speed_topic: /zed1/camera_speed

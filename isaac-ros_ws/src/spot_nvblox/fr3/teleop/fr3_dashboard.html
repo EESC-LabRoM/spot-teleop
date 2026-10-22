@@ -1,0 +1,468 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FR3 Gazebo Live</title>
+<style>
+  :root { --bg:#f6f7f9; --panel:#ffffff; --ink:#1c2430; --mute:#68727f; --line:#dde1e7; --acc:#2f6fdb; --ok:#1f9d55; --warn:#d9822b; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg:#0f1319; --panel:#171c24; --ink:#e6eaf0; --mute:#8d97a5; --line:#2a313c; --acc:#6aa3ff; --ok:#46c27a; --warn:#f0a050; } }
+  :root[data-theme="dark"] { --bg:#0f1319; --panel:#171c24; --ink:#e6eaf0; --mute:#8d97a5; --line:#2a313c; --acc:#6aa3ff; --ok:#46c27a; --warn:#f0a050; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.4 system-ui, sans-serif; }
+  .wrap { display:grid; grid-template-columns: 1fr 320px; gap:12px; padding:12px 16px; height:100vh; }
+  #view { position:relative; background:var(--panel); border:1px solid var(--line); border-radius:8px; overflow:hidden; min-height:300px; }
+  #view canvas { display:block; width:100%; height:100%; }
+  #hint { position:absolute; left:10px; bottom:8px; color:var(--mute); font-size:12px; }
+  .side { display:flex; flex-direction:column; gap:12px; overflow:auto; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:10px 12px; }
+  h1 { font-size:15px; margin:0 0 6px; } h2 { font-size:13px; margin:0 0 6px; color:var(--mute); font-weight:600; text-transform:uppercase; letter-spacing:.04em; }
+  .row { display:flex; justify-content:space-between; gap:8px; font-variant-numeric:tabular-nums; }
+  .k { color:var(--mute); }
+  .pill { display:inline-block; padding:1px 8px; border-radius:10px; font-size:12px; border:1px solid var(--line); }
+  .pill.on { color:#fff; background:var(--ok); border-color:var(--ok); } .pill.warn { color:#fff; background:var(--warn); border-color:var(--warn); }
+  .bar { position:relative; height:10px; background:var(--bg); border:1px solid var(--line); border-radius:5px; margin:2px 0 6px; }
+  .bar i { position:absolute; top:0; bottom:0; background:var(--acc); border-radius:4px; }
+  .bar b { position:absolute; top:-2px; bottom:-2px; width:1px; left:50%; background:var(--line); }
+  .btns { display:flex; flex-wrap:wrap; gap:4px; } .btn { padding:1px 7px; border:1px solid var(--line); border-radius:4px; font-size:12px; color:var(--mute); }
+  .btn.down { background:var(--acc); color:#fff; border-color:var(--acc); }
+  .pc-prompt { font-size:17px; font-weight:600; margin:6px 0; min-height:2.6em; }
+  .pc-list { margin:6px 0 0; padding:0; list-style:none; font-size:12.5px; }
+  .pc-list li { padding:1px 0; } .pc-ok { color:var(--ok); } .pc-bad { color:#d64545; font-weight:600; }
+  button.pc { padding:3px 10px; border:1px solid var(--line); border-radius:5px; background:var(--panel); color:var(--ink); cursor:pointer; }
+  button.pc.primary { background:var(--acc); color:#fff; border-color:var(--acc); }
+  @media (max-width: 800px) { .wrap { grid-template-columns: 1fr; height:auto; } #view { height:60vh; } }
+  .rk { list-style:none; margin:6px 0; padding:0; font-size:12.5px; } .rk li { padding:1px 0; display:flex; gap:6px; }
+  .rk .s { width:1.2em; text-align:center; font-weight:700; } .rk .ok .s { color:var(--ok); } .rk .bad .s { color:#d64545; } .rk .warn .s, .rk .wait .s { color:var(--warn); }
+  .rk .t { flex:1; } .rk .d { color:var(--mute); text-align:right; max-width:55%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #rviz { width:100%; max-width:320px; height:auto; display:block; margin:4px 0; } #rbtns { margin-top:2px; }
+  #rbanner { position:absolute; left:10px; top:10px; z-index:5; padding:5px 10px; border-radius:6px; font-size:13px; font-weight:600; color:#fff; background:#d64545; box-shadow:0 1px 4px rgba(0,0,0,.25); max-width:90%; }
+  #rbanner.ok { background:var(--ok); } #rbanner.warn, #rbanner.wait { background:var(--warn); } #rbanner.live { background:#c0392b; animation:rp 1s infinite; }
+  @keyframes rp { 50% { opacity:.65; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div id="view"><div id="rbanner" hidden></div><div id="hint">drag: rotate &middot; wheel: zoom &middot; right-drag: pan &middot; blue = commanded pose, orange = measured TCP</div></div>
+  <div class="side">
+    <div class="card"><h1><span id="title">FR3</span> <span id="conn" class="pill">connecting</span></h1>
+      <div class="row"><span class="k">teleop</span><span id="eng" class="pill">&ndash;</span></div>
+      <div class="row"><span class="k" id="timelbl">time</span><span id="simt">&ndash;</span></div>
+      <div class="row"><span class="k">TCP (base frame, m)</span><span id="tcp">&ndash;</span></div>
+      <div class="row"><span class="k">command &minus; TCP (cm)</span><span id="err">&ndash;</span></div>
+      <div class="row"><span class="k">path length (m)</span><span id="plen">0.00</span></div>
+      <div class="row" style="margin-top:6px"><span class="k">links drawn</span><span id="nl">&ndash;</span></div>
+    </div>
+    <div class="card"><h2>ZED3 · 6D operator hand</h2>
+      <div class="row"><span id="zedstatus" class="pill">waiting for tracking</span></div>
+      <img id="zed3video" src="zed3/wrist" alt="ZED3 wrist view unavailable" style="width:100%;height:auto;border-radius:5px;background:#111" />
+      <div class="k">Green: wrist tracked. Red: tracking lost. Motion stays off until Start.</div>
+      <div class="row" style="margin-top:8px"><label for="inputsource">Control input</label>
+        <select id="inputsource"><option value="joystick">Joystick</option><option value="zed">ZED3 wrist · 6D</option></select></div>
+      <div style="display:flex;gap:8px;margin-top:10px">
+        <button type="button" id="zedactivate" disabled>Ativar ZED</button>
+        <button type="button" id="zedstop">Desabilitar</button>
+      </div>
+      <div class="k" id="inputnote">Selecione ZED3 e clique Ativar ZED. A posição atual do robô vira a referência. Desabilitar interrompe o acompanhamento.</div>
+      <div class="k">ZED: translation + roll, pitch and yaw, anchored at Start. A/B on the pad close/open the gripper.</div>
+    </div>
+    <div class="card"><h2>Teleop speed</h2>
+      <div class="row"><span class="k">translation</span><span><b id="spv">&ndash;</b></span></div>
+      <input type="range" id="sp" min="5" max="100" step="5" value="100" style="width:100%" disabled>
+      <div class="k" id="spnote">waiting for the teleop</div>
+      <div class="row" style="margin-top:8px"><span class="k">rotation</span><span><b id="rpv">&ndash;</b></span></div>
+      <input type="range" id="rp" min="5" max="100" step="5" value="100" style="width:100%" disabled>
+      <div class="k" id="rpnote">waiting for the teleop</div>
+      <div class="k" style="margin-top:6px">100 % is the ceiling the teleop was started with; the sliders only move below it. Real arm speed is also capped by the controller (stiffness x error clip) and the leash.</div>
+    </div>
+    <div class="card"><h2>Gripper force</h2>
+      <div class="row"><span class="k">grasp force</span><span><b id="gfv">&ndash;</b></span></div>
+      <input type="range" id="gf" min="5" max="70" step="5" value="20" style="width:100%" disabled>
+      <div class="k" id="gfnote">waiting for the teleop</div>
+      <div class="k" style="margin-top:6px">Force of the NEXT grasp (close button on the pad). Holding something already? Press close again to re-grasp with the new force. Franka Hand: up to 70 N continuous.</div>
+    </div>
+    <div class="card"><h2>Pad check</h2>
+      <div class="k" id="pcnote">Walks through every control the teleop uses and checks it against the teleop's own bindings. While it runs the teleop ignores the pad (nothing engages, no gripper, no motion).</div>
+      <div class="pc-prompt" id="pcprompt"></div>
+      <div><button class="pc primary" id="pcgo">Start pad check</button> <button class="pc" id="pcskip" style="display:none">Skip</button> <button class="pc" id="pcstop" style="display:none">Stop</button></div>
+      <ul class="pc-list" id="pclist"></ul>
+    </div>
+    <div class="card"><h2>Gamepad (8BitDo, <span id="layout">?</span>)</h2><div id="pad">no pad data</div></div>
+    <div class="card" id="rcard" hidden><h1>Remote gamepad (this browser) <span id="rbadge" class="pill">&ndash;</span></h1>
+      <ul class="rk" id="rcheck"></ul>
+      <canvas id="rviz" width="320" height="104"></canvas>
+      <div class="btns" id="rbtns"></div>
+      <div class="row" style="margin-top:6px"><span class="k">round trip</span><span id="rrtt">&ndash;</span></div>
+      <div class="k" id="rmsg" style="margin:4px 0;min-height:1.4em"></div>
+      <button id="ren" disabled>Enable remote control</button> <span class="k">Esc = disable</span>
+      <details id="rdet" style="margin-top:8px"><summary class="k" style="cursor:pointer">What the browser sees / troubleshooting</summary>
+        <pre id="rall" class="k" style="white-space:pre-wrap;margin:6px 0"></pre>
+        <div class="k">The browser only lists a pad after you press a button <b>while this tab is focused</b> (click the page first). Close other tabs or tester pages that may hold the pad, and quit Steam / DS4Windows / Remote Play if they are running (they take the pad over). PS4 over USB or Bluetooth both work in Chrome/Edge; Firefox may report a non-standard mapping, which is refused.</div>
+      </details>
+      <div class="k" style="margin-top:6px">PS4: Options = engage, Share = disengage, left stick = x/y, right stick = roll/pitch, L1/L2 = up/down, R1/R2 = yaw, Cross/Circle = close/open gripper.</div>
+    </div>
+    <div class="card"><h2>Notes</h2>
+      <div class="k"><span id="notes">Mirror of the robot state (TF + URDF meshes), updated at 20 Hz. Read-only: nothing here sends a command.</span></div>
+      <div style="margin-top:6px"><label><input type="checkbox" id="trail" checked> TCP trail</label> &nbsp; <button id="clr">clear</button></div>
+    </div>
+  </div>
+</div>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"}}</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { ColladaLoader } from 'three/addons/loaders/ColladaLoader.js';
+
+const $ = id => document.getElementById(id);
+$('zed3video').onerror = () => setTimeout(() => { $('zed3video').src = 'zed3/wrist?t=' + Date.now(); }, 2000);
+let zedControlBusy = false;
+let zedControlGeneration = 0;
+async function zedControl(action) {
+  if (zedControlBusy && action !== 'disengage') return;
+  const generation = ++zedControlGeneration;
+  zedControlBusy = true; $('zedactivate').disabled = true;
+  try {
+    const r = await fetch('zed-control', {method:'POST', headers:{'Content-Type':'application/json','X-Dashboard':'1'}, body:JSON.stringify({action})});
+    const body = await r.text();
+    let d; try { d = JSON.parse(body); } catch (_) { d = {ok:false, message:body || ('HTTP ' + r.status)}; }
+    if (generation === zedControlGeneration) $('inputnote').textContent = d.ok ? (action === 'engage' ? 'ZED ativada. Sua mão controla o braço.' : 'Controle desabilitado.') : (d.message || 'Não foi possível executar o comando');
+  } catch(e) { if (generation === zedControlGeneration) $('inputnote').textContent = 'Sem resposta. Confira o estado do controle antes de tentar novamente.'; }
+  finally { if (generation === zedControlGeneration) zedControlBusy = false; }
+}
+$('zedactivate').onclick = () => zedControl('engage');
+$('zedstop').onclick = () => zedControl('disengage');
+let sourceBusy = false;
+$('inputsource').onchange = async () => {
+  sourceBusy = true; $('inputsource').disabled = true;
+  try {
+    const r = await fetch('input-source', {method:'POST', headers:{'Content-Type':'application/json','X-Dashboard':'1'}, body:JSON.stringify({source:$('inputsource').value})});
+    const d = await r.json();
+    $('inputnote').textContent = d.ok ? 'Entrada selecionada. Clique Ativar ZED quando o indicador estiver verde.' : d.message;
+  } catch (e) { $('inputnote').textContent = 'Could not select input: ' + e.message; }
+  finally { sourceBusy = false; $('inputsource').disabled = false; }
+};
+const view = $('view');
+const dark = matchMedia('(prefers-color-scheme: dark)').matches;
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(dark ? 0x10151c : 0xeef1f5);
+THREE.Object3D.DEFAULT_UP.set(0, 0, 1);                       // ROS convention: z up
+const cam = new THREE.PerspectiveCamera(45, 1, 0.02, 50);
+cam.up.set(0, 0, 1); cam.position.set(1.5, -1.3, 1.0);
+const ren = new THREE.WebGLRenderer({ antialias: true });
+ren.setPixelRatio(Math.min(devicePixelRatio, 2)); view.appendChild(ren.domElement);
+const ctl = new OrbitControls(cam, ren.domElement); ctl.target.set(0.3, 0, 0.35); ctl.update();
+scene.add(new THREE.HemisphereLight(0xffffff, 0x667788, 1.6));
+const sun = new THREE.DirectionalLight(0xffffff, 1.8); sun.position.set(2, -1.5, 3); scene.add(sun);
+const grid = new THREE.GridHelper(4, 40, dark ? 0x3a4452 : 0x9aa5b4, dark ? 0x232b36 : 0xcdd4de); grid.rotation.x = Math.PI / 2; scene.add(grid);
+scene.add(new THREE.AxesHelper(0.2));                         // base frame
+
+function frame(color) {                                       // small RGB-ish axes for a pose, tinted by role
+  const g = new THREE.Group(); g.add(new THREE.AxesHelper(0.08));
+  const s = new THREE.Mesh(new THREE.SphereGeometry(0.012, 16, 12), new THREE.MeshBasicMaterial({ color })); g.add(s); g.visible = false; scene.add(g); return g;
+}
+const cmdF = frame(0x2f6fdb), tcpF = frame(0xe8801c);
+const robot = new THREE.Group(); scene.add(robot);
+const linkGroups = {};
+const trailPts = [], trailGeo = new THREE.BufferGeometry(), trail = new THREE.Line(trailGeo, new THREE.LineBasicMaterial({ color: 0xe8801c }));
+scene.add(trail);
+let plen = 0, lastTcp = null;
+
+function setPose(o, p) { o.position.set(p[0], p[1], p[2]); o.quaternion.set(p[3], p[4], p[5], p[6]); o.visible = true; }
+function resize() { const w = view.clientWidth, h = view.clientHeight; ren.setSize(w, h, false); cam.aspect = w / h; cam.updateProjectionMatrix(); }
+addEventListener('resize', resize); resize();
+(function loop() { requestAnimationFrame(loop); ctl.update(); ren.render(scene, cam); })();
+
+async function loadRobot() {
+  let cfg;
+  for (;;) { cfg = await (await fetch('config')).json(); if (cfg.visuals.length) break; await new Promise(r => setTimeout(r, 1000)); }
+  const SRC = { sim: ['FR3 in Gazebo (physics)', 'sim time', 'Gazebo itself runs headless.'], real: ['FR3 real robot (state only)', 'ROS time', 'Shows the real arm and hand from franka_ros2; the dashboard cannot move it.'], mock: ['FR3 mock hardware (no robot)', 'ROS time', 'Mock hardware: the pose does not move.'] }[cfg.source] || ['FR3', 'time', ''];
+  $('title').textContent = SRC[0]; $('timelbl').textContent = SRC[1]; $('notes').textContent += ' ' + SRC[2];
+  const loader = new ColladaLoader();
+  const mat = new THREE.MeshStandardMaterial({ color: dark ? 0xdfe5ee : 0xf4f6f9, roughness: 0.55, metalness: 0.1 });
+  let n = 0;
+  await Promise.all(cfg.visuals.map(v => new Promise(res => {
+    loader.load('mesh/' + v.mesh, c => {
+      const m = c.scene; m.rotation.set(0, 0, 0);               // URDF ignores the DAE up-axis; undo the loader's Z_UP rotation
+      m.traverse(o => { if (o.isMesh) { o.material = Array.isArray(o.material) ? o.material.map(() => mat) : mat; } });
+      const holder = new THREE.Group(); holder.add(m);
+      holder.position.set(...v.xyz); holder.rotation.set(0, 0, 0);
+      holder.quaternion.setFromEuler(new THREE.Euler(v.rpy[0], v.rpy[1], v.rpy[2], 'ZYX'));  // URDF rpy = fixed-axis xyz = intrinsic ZYX
+      holder.scale.set(...v.scale);
+      const lg = linkGroups[v.link] || (linkGroups[v.link] = (() => { const g = new THREE.Group(); g.visible = false; robot.add(g); return g; })());
+      lg.add(holder); n++; res();
+    }, undefined, () => res());
+  })));
+  $('nl').textContent = n + ' meshes / ' + Object.keys(linkGroups).length + ' links';
+}
+loadRobot();
+
+const LAYOUTS = {                                              // raw joydev numbering of the two 8BitDo modes
+  xinput: { btn: ['A','B','X','Y','LB','RB','Back','Start','Guide','L3','R3'], ax: ['LX','LY','LT','RX','RY','RT','Dpad X','Dpad Y'], trig: [2, 5] },
+  dinput: { btn: ['A','B','C','X','Y','Z','LB','RB','LT','RT','Back','Start','Guide','L3','R3','?'], ax: ['LX','LY','RX','RY','RT','LT','Dpad X','Dpad Y'], trig: [4, 5] },
+};
+let NAMES = LAYOUTS.xinput;
+function drawPad(p) {
+  if (!p || !p.ok) { $('pad').innerHTML = '<span class="k">no pad connected on the lab PC (re-plugging is picked up automatically)</span>'; $('layout').textContent = 'not connected'; return; }
+  NAMES = LAYOUTS[p.layout] || LAYOUTS.xinput; $('layout').textContent = p.layout === 'dinput' ? 'Bluetooth / DInput' : 'USB / XInput';
+  let h = '';
+  NAMES.ax.forEach((nm, i) => {
+    const trig = NAMES.trig.includes(i), v = p.axes[i] ?? (trig ? -1 : 0), t = (v + 1) / 2;
+    const lo = trig ? 0 : Math.min(0.5, t), w = trig ? t : Math.abs(t - 0.5);
+    h += `<div class="row"><span class="k">${nm}</span><span>${v.toFixed(2)}</span></div><div class="bar"><b></b><i style="left:${lo * 100}%;width:${w * 100}%"></i></div>`;
+  });
+  h += '<div class="btns">' + NAMES.btn.map((nm, i) => `<span class="btn ${p.buttons[i] ? 'down' : ''}">${nm}</span>`).join('') + '</div>';
+  $('pad').innerHTML = h;
+}
+
+let gfBusy = false, gfTimer = null;
+function drawGrip(sp) {
+  const el = $('gf'), f = sp && sp.length > 5 ? sp[5] : null;
+  if (f === null) { el.disabled = true; $('gfv').textContent = '–'; $('gfnote').textContent = sp ? 'this teleop has no live grasp force (restart it)' : 'teleop not running'; return; }
+  el.disabled = false;
+  if (!gfBusy && document.activeElement !== el) el.value = Math.round(f);
+  $('gfv').textContent = Math.round(f) + ' N'; if (!gfBusy) $('gfnote').textContent = 'set in the teleop: ' + Math.round(f) + ' N';
+}
+$('gf').addEventListener('input', () => {
+  gfBusy = true; $('gfv').textContent = $('gf').value + ' N'; clearTimeout(gfTimer);
+  gfTimer = setTimeout(async () => {
+    try {
+      const r = await fetch('grip', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Dashboard': '1' }, body: JSON.stringify({ force: Number($('gf').value) }) });
+      const j = await r.json().catch(() => ({})); $('gfnote').textContent = r.ok ? 'applied: ' + Math.round(j.force) + ' N (next grasp)' : 'not applied: ' + (j.message || r.status);
+    } catch (e) { $('gfnote').textContent = 'not applied: ' + e; }
+    gfBusy = false;
+  }, 200);
+});
+const spBusy = { scale: false, rot_scale: false }, spTimer = {};
+function drawSpeed(sp) {
+  const rows = [['scale', 'sp', 'spv', 'spnote', sp && sp[0], sp && sp[1] * 100, sp && sp[2] * 100, 'cm/s horizontal', 'cm/s vertical'],
+                ['rot_scale', 'rp', 'rpv', 'rpnote', sp && sp[3], sp && sp[4], null, 'deg/s', '']];
+  for (const [key, sid, vid, nid, frac, max1, max2, u1, u2] of rows) {
+    const el = $(sid);
+    if (!sp || frac === undefined || frac === null) { el.disabled = true; $(vid).textContent = '–'; $(nid).textContent = 'teleop not running'; continue; }
+    el.disabled = false;
+    if (!spBusy[key] && document.activeElement !== el) el.value = Math.round(frac * 100);
+    $(vid).textContent = Math.round(frac * 100) + ' %';
+    $(nid).textContent = `${(frac * max1).toFixed(0)} ${u1}` + (max2 ? `, ${(frac * max2).toFixed(0)} ${u2}` : '') + `  (100 % = ${max1.toFixed(0)}${max2 ? ' / ' + max2.toFixed(0) : ''})`;
+  }
+}
+for (const [key, sid, vid, nid] of [['scale', 'sp', 'spv', 'spnote'], ['rot_scale', 'rp', 'rpv', 'rpnote']]) {
+  $(sid).addEventListener('input', () => {
+    spBusy[key] = true; $(vid).textContent = $(sid).value + ' %'; clearTimeout(spTimer[key]);
+    spTimer[key] = setTimeout(async () => {
+      try {
+        const r = await fetch('speed', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Dashboard': '1' }, body: JSON.stringify({ [key]: $(sid).value / 100 }) });
+        const j = await r.json().catch(() => ({})); if (!r.ok) $(nid).textContent = 'not applied: ' + (j.message || r.status);
+      } catch (e) { $(nid).textContent = 'not applied: ' + e; }
+      spBusy[key] = false;
+    }, 150);
+  });
+}
+// ---- pad check: press each control, compare with the bindings the teleop actually uses (/teleop/pad_map) ----------------------------------------
+const PC_STEPS = [
+  { role: 'x', kind: 'axis', ask: 'Push the LEFT stick UP and hold it', name: 'left stick up (forward)' },
+  { role: 'y', kind: 'axis', ask: 'Push the LEFT stick LEFT and hold it', name: 'left stick left' },
+  { role: 'z', kind: 'axis', ask: 'Pull LT (left trigger) all the way', name: 'LT (down)' },
+  { role: 'z_up', kind: 'button', ask: 'Press and hold LB', name: 'LB (up)' },
+  { role: 'roll', kind: 'axis', ask: 'Push the RIGHT stick RIGHT and hold it', name: 'right stick right (roll)' },
+  { role: 'pitch', kind: 'axis', ask: 'Push the RIGHT stick UP and hold it', name: 'right stick up (pitch)' },
+  { role: 'yaw', kind: 'axis', ask: 'Pull RT (right trigger) all the way', name: 'RT (yaw)' },
+  { role: 'yaw_ccw', kind: 'button', ask: 'Press and hold RB', name: 'RB (yaw back)' },
+  { role: 'close', kind: 'button', ask: 'Press A', name: 'A (close gripper)' },
+  { role: 'open', kind: 'button', ask: 'Press B', name: 'B (open gripper)' },
+  { role: 'engage', kind: 'button', ask: 'Press Start', name: 'Start (engage)' },
+  { role: 'disengage', kind: 'button', ask: 'Press Back', name: 'Back (disengage)' },
+];
+const PC = { on: false, phase: 'idle', step: 0, rest: {}, rs: {}, t0: 0, cand: null, candT: 0, relT: 0, stepT: 0, results: [], hb: null };
+const pcPost = on => fetch('padtest', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Dashboard': '1' }, body: JSON.stringify({ on }) })
+  .then(async r => { const j = await r.json().catch(() => ({})); return { ok: r.ok && j.ok, message: j.message || r.status }; }).catch(e => ({ ok: false, message: String(e) }));
+function pcRender(msg) {
+  $('pcprompt').textContent = msg ?? $('pcprompt').textContent;
+  $('pclist').innerHTML = PC.results.map(r => `<li class="${r.ok ? 'pc-ok' : 'pc-bad'}">${r.ok ? '✓' : '✗'} ${r.name}: ${r.text}</li>`).join('');
+  $('pcgo').style.display = PC.on ? 'none' : ''; $('pcskip').style.display = $('pcstop').style.display = PC.on ? '' : 'none';
+}
+async function pcStart() {
+  const r = await pcPost(true);
+  if (!r.ok) { pcRender('Cannot start: ' + r.message + (r.message === 'teleop is not running' ? ' (it publishes the bindings this check compares against)' : '')); return; }
+  Object.assign(PC, { on: true, phase: 'rest', step: 0, rest: {}, rs: {}, t0: performance.now(), cand: null, results: [] });
+  clearInterval(PC.hb); PC.hb = setInterval(() => pcPost(true), 2000);
+  pcRender('Hands off the pad for 3 seconds (measuring the rest position)…');
+}
+function pcStop(msg) {
+  clearInterval(PC.hb); PC.on = false; PC.phase = 'idle'; pcPost(false);
+  pcRender(msg || 'Stopped. The teleop reads the pad again (press Start to engage).');
+}
+function pcActive(pad) {                                        // the one control currently pushed, or null
+  for (const [k, v] of Object.entries(pad.buttons)) if (v) return { kind: 'button', idx: +k };
+  for (const [k, v] of Object.entries(pad.axes)) { const i = +k; if (i >= 6) continue; const dev = v - (PC.rest[i] ?? 0); if (Math.abs(dev) > 0.7) return { kind: 'axis', idx: i, sign: Math.sign(dev) }; }
+  return null;
+}
+const pcName = g => g.kind === 'button' ? `button ${g.idx}${NAMES.btn[g.idx] ? ' (' + NAMES.btn[g.idx] + ' in this pad mode)' : ''}`
+  : `axis ${g.idx}${g.kind === 'axis' && g.sign ? (g.sign > 0 ? ' positive' : ' negative') : ''}${NAMES.ax[g.idx] ? ' (' + NAMES.ax[g.idx] + ' in this pad mode)' : ''}`;
+function pcJudge(st, got, map) {
+  if (st.kind === 'button') {
+    const exp = map.btn[st.role];
+    return got.kind === 'button' && got.idx === exp ? { ok: true, text: `button ${exp}, as the teleop expects` }
+      : { ok: false, text: `you pressed ${pcName(got)}, but the teleop reads button ${exp} for this` };
+  }
+  const spec = String(map.ax[st.role]), exp = Math.abs(parseInt(spec)), trig = map.trigger_axes.includes(exp), sgn = spec.startsWith('-') ? -1 : 1;
+  if (got.kind !== 'axis' || got.idx !== exp) return { ok: false, text: `you moved ${pcName(got)}, but the teleop reads axis ${exp} for this` };
+  if (!trig && got.sign !== sgn) return { ok: false, text: `right axis (${exp}) but the opposite direction: the teleop would move the other way (inverted stick)` };
+  return { ok: true, text: `axis ${exp}${trig ? '' : (sgn > 0 ? ' positive' : ' negative')}, as the teleop expects` };
+}
+function pcNext() { PC.step++; PC.phase = 'release'; PC.relT = performance.now(); PC.cand = null; }
+function pcFrame(d) {
+  if (!PC.on) return;
+  const pad = d.pad, map = d.padmap, now = performance.now();
+  if (!pad || !pad.ok) { pcRender('The pad is disconnected. Reconnect it (the check continues).'); return; }
+  if (!map) { pcStop('The teleop is not publishing its bindings (not running?).'); return; }
+  if (PC.phase === 'rest') {
+    for (const [k, v] of Object.entries(pad.axes)) { const r = PC.rs[k] || (PC.rs[k] = { lo: v, hi: v, sum: 0, n: 0 }); r.lo = Math.min(r.lo, v); r.hi = Math.max(r.hi, v); r.sum += v; r.n++; }
+    if (now - PC.t0 > 3000) {
+      const bad = [];
+      for (const [k, r] of Object.entries(PC.rs)) {
+        const i = +k, mean = r.sum / r.n; PC.rest[i] = mean; if (i >= 6) continue;
+        const trig = map.trigger_axes.includes(i), off = Math.abs(mean - (trig ? map.trigger_rest : 0)), rng = r.hi - r.lo;
+        if (off > (trig ? 0.1 : map.deadzone * 0.5) || rng > 0.05) bad.push(`axis ${i}: rests at ${mean.toFixed(2)}, wobbles ${rng.toFixed(2)}`);
+      }
+      PC.results.push({ ok: bad.length === 0, name: 'Rest position', text: bad.length ? bad.join('; ') + ` (the teleop ignores sticks inside ${map.deadzone})` : `all axes at rest, well inside the teleop's dead zone (${map.deadzone})` });
+      PC.phase = 'step'; PC.stepT = now; pcRender(PC_STEPS[0].ask);
+    }
+    return;
+  }
+  if (PC.step >= PC_STEPS.length) {
+    const bad = PC.results.filter(r => !r.ok).length;
+    pcStop(bad ? `Done: ${bad} of ${PC.results.length} checks failed (red). Tell me which, or just send me this list.` : `Done: all ${PC.results.length} checks match the teleop's bindings (${map.layout} map).`); return;
+  }
+  const st = PC_STEPS[PC.step], act = pcActive(pad);
+  if (PC.phase === 'release') {
+    if (act) PC.relT = now;
+    if (now - PC.relT > 300) { PC.phase = 'step'; PC.stepT = now; PC.cand = null; if (PC.step < PC_STEPS.length) pcRender(PC_STEPS[PC.step].ask); }
+    return;
+  }
+  if (act) {
+    const key = `${act.kind}${act.idx}${act.sign || ''}`;
+    if (!PC.cand || PC.cand.key !== key) PC.cand = { key, t: now, g: act };
+    else if (now - PC.cand.t > 300) {
+      const r = pcJudge(st, PC.cand.g, map); PC.results.push({ ok: r.ok, name: st.name, text: r.text });
+      pcRender(r.ok ? 'OK, release it.' : 'Mismatch, release it.'); pcNext();
+    }
+  } else PC.cand = null;
+  if (PC.phase === 'step' && now - PC.stepT > 20000) { PC.results.push({ ok: false, name: st.name, text: 'no input seen within 20 s' }); pcRender(''); pcNext(); }
+}
+$('pcgo').onclick = pcStart; $('pcstop').onclick = () => pcStop(); $('pcskip').onclick = () => { if (PC.on && PC.phase === 'step' && PC.step < PC_STEPS.length) { PC.results.push({ ok: false, name: PC_STEPS[PC.step].name, text: 'skipped' }); pcNext(); pcRender(''); } };
+window.__pc = { pcStart, pcStop, pcFrame, PC, PC_STEPS };   // test hook: scripted pad input (window.__pcFake = true stops the live stream from feeding the check)
+function connect() {
+  const es = new EventSource('stream');
+  es.onopen = () => { $('conn').textContent = 'live'; $('conn').className = 'pill on'; };
+  es.onerror = () => { $('conn').textContent = 'reconnecting'; $('conn').className = 'pill warn'; };
+  es.onmessage = e => {
+    const d = JSON.parse(e.data);
+    for (const [l, p] of Object.entries(d.links || {})) if (linkGroups[l]) setPose(linkGroups[l], p);
+    if (d.cmd) setPose(cmdF, d.cmd);
+    if (d.tcp) {
+      setPose(tcpF, d.tcp); const t = d.tcp;
+      $('tcp').textContent = t.slice(0, 3).map(x => x.toFixed(3)).join('  ');
+      if (lastTcp) plen += Math.hypot(t[0] - lastTcp[0], t[1] - lastTcp[1], t[2] - lastTcp[2]);
+      lastTcp = t; $('plen').textContent = plen.toFixed(2);
+      if ($('trail').checked) { trailPts.push(new THREE.Vector3(t[0], t[1], t[2])); if (trailPts.length > 2000) trailPts.shift(); trailGeo.setFromPoints(trailPts); }
+    }
+    if (d.cmd && d.tcp) $('err').textContent = [0, 1, 2].map(i => ((d.cmd[i] - d.tcp[i]) * 100).toFixed(1)).join('  ');
+    $('simt').textContent = d.t ? d.t.toFixed(1) + ' s' : '–';
+    if (!sourceBusy && ['joystick','zed'].includes(d.input_source)) $('inputsource').value = d.input_source;
+    $('zedactivate').disabled = zedControlBusy || d.engaged || d.input_source !== 'zed' || !d.zed || !!d.zed.reason;
+    $('zedstatus').textContent = d.zed ? (d.zed.reason || 'Pronto · clique Ativar ZED') : 'tracking status unavailable';
+    $('zedstatus').className = 'pill ' + (d.zed && !d.zed.reason ? 'on' : '');
+    $('eng').textContent = d.engaged ? 'engaged' : 'not engaged (press Start)'; $('eng').className = 'pill ' + (d.engaged ? 'on' : '');
+    drawPad(d.pad); drawSpeed(d.speed); drawGrip(d.speed); if (!window.__pcFake) pcFrame(d);
+  };
+}
+connect();
+// ---- remote gamepad: Gamepad API (standard mapping, e.g. PS4) -> WebSocket /ws. Everything starts OFF: the operator has to press
+// Enable, and any loss (tab hidden, pad unplugged, socket closed, server says blocked) switches it off again until pressed anew.
+// The server re-checks everything (neutral gate, frame age, round trip, single client); this page is only the reader.
+// Indicators: a banner over the 3D view, a checklist (secure page / API / pad / pad responding / link / state), a live view of the
+// pad as the BROWSER sees it (works before Enable, so "is my PS4 recognised and moving?" has a visible answer), and the raw list of pads.
+const R = { ws: null, want: false, seq: 0, sent: new Map(), rtt: null, st: null, note: null, lastInput: 0, prev: '', timer: null };
+const PS4 = ['Cross', 'Circle', 'Square', 'Triangle', 'L1', 'R1', 'L2', 'R2', 'Share', 'Options', 'L3', 'R3', 'Up', 'Down', 'Left', 'Right', 'PS'];
+const slots = () => (navigator.getGamepads ? [...navigator.getGamepads()] : []);
+const allPads = () => slots().filter(g => g && g.connected);
+function pickPad() { return allPads().find(g => g.mapping === 'standard' && g.buttons.length >= 17 && g.axes.length >= 4) || null; }
+function remoteOff(why) { if (R.want) R.note = { t: performance.now(), msg: why }; R.want = false; renderRemote(); }   // the reason stays visible for 8 s
+function renderRemote() {
+  const g = pickPad(), others = allPads(), open = !!(R.ws && R.ws.readyState === 1), now = performance.now(), live = R.st && R.st.state === 'live';
+  const secure = !!window.isSecureContext, api = !!navigator.getGamepads, seen = g && now - R.lastInput < 3000;
+  const items = [
+    [secure ? 'ok' : 'bad', 'Secure page (HTTPS)', secure ? 'yes' : 'no: the browser hides gamepads on plain http'],
+    [api ? 'ok' : 'bad', 'Browser gamepad support', api ? 'yes' : 'missing'],
+    [g ? 'ok' : (others.length ? 'warn' : 'bad'), 'PS4 detected by the browser', g ? g.id.slice(0, 34) : (others.length ? 'non-standard mapping (' + (others[0].mapping || 'none') + '): ' + others[0].id.slice(0, 24) : 'none: click this page, press a button on the pad'),
+     g ? '' : (others.length ? 'A pad is seen but with a non-standard mapping, which is refused. Use Chrome or Edge, USB or Bluetooth, and close Steam / DS4Windows.' : 'No PS4 detected by the browser. Click this page, then press a button on the pad (see troubleshooting in the right panel).')],
+    [g ? (seen ? 'ok' : 'wait') : 'wait', 'Pad responding', g ? (seen ? 'inputs changing' : 'move a stick or press a button') : '-'],
+    [open ? 'ok' : 'bad', 'Link to the robot PC', open ? 'connected' + (R.rtt == null ? '' : ', ' + R.rtt.toFixed(0) + ' ms') : 'offline, retrying'],
+    [live ? 'ok' : (R.want ? 'wait' : 'wait'), 'Remote control', live ? 'LIVE: your pad drives the robot input' : (R.want ? ((R.st && R.st.msg) || 'enabling') : 'off (press Enable)')],
+  ];
+  $('rcheck').innerHTML = items.map(([c, t, d]) => `<li class="${c}"><span class="s">${{ ok: '&#10003;', bad: '&#10007;', warn: '!', wait: '&#9675;' }[c]}</span><span class="t">${t}</span><span class="d" title="${d}">${d}</span></li>`).join('');
+  const firstBad = items.find(i => i[0] === 'bad') || items.find(i => i[0] === 'warn');
+  const badge = live ? ['LIVE', 'warn'] : firstBad ? ['not ready', ''] : ['ready', 'on'];
+  $('rbadge').textContent = badge[0]; $('rbadge').className = 'pill ' + badge[1];
+  const b = $('rbanner'); b.hidden = false;
+  if (live) { b.className = 'live'; b.textContent = 'REMOTE PAD LIVE: your PS4 is driving the robot input'; }
+  else if (firstBad) { b.className = firstBad[0]; b.textContent = firstBad[3] || ('Remote pad: ' + firstBad[1] + ' - ' + firstBad[2]); }
+  else if (!seen) { b.className = 'wait'; b.textContent = 'PS4 detected - move a stick or press a button to confirm it responds'; }
+  else { b.className = 'ok'; b.textContent = 'PS4 connected and responding - press Enable remote control (right panel)'; }
+  $('ren').disabled = !(g && open); $('ren').textContent = R.want ? 'DISABLE remote control' : 'Enable remote control';
+  $('rrtt').textContent = R.rtt == null ? '–' : R.rtt.toFixed(0) + ' ms';
+  $('rmsg').textContent = R.note && now - R.note.t < 8000 ? R.note.msg : (R.st ? R.st.msg : '');
+  const s = slots(); $('rall').textContent = (s.length ? s.map((x, i) => `[${i}] ` + (x ? `${x.id} | mapping=${x.mapping || '(none)'} | ${x.buttons.length} buttons, ${x.axes.length} axes` : 'empty slot')).join('\n') : 'navigator.getGamepads() returned nothing') + `\nsecure=${secure}  link=${open}  state=${R.st ? R.st.state : '-'}`;
+  if (!g) $('rdet').open = true;
+}
+function drawViz() {                                          // live view of what the BROWSER reads from the pad (independent of Enable)
+  requestAnimationFrame(drawViz);
+  const g = pickPad() || allPads()[0] || null, c = $('rviz'), x = c.getContext('2d'), cs = getComputedStyle(document.body);
+  const snap = g ? g.axes.map(a => a.toFixed(2)).join() + g.buttons.map(b => b.value.toFixed(2)).join() : '';
+  const key = g ? g.index + g.id : ''; if (key !== R.key) { R.key = key; R.prev = ''; R.lastInput = 0; }   // a newly seen pad has not 'responded' yet
+  if (g && R.prev !== '' && snap !== R.prev) R.lastInput = performance.now(); R.prev = snap;
+  x.clearRect(0, 0, c.width, c.height); const ink = cs.getPropertyValue('--ink'), line = cs.getPropertyValue('--line'), acc = cs.getPropertyValue('--acc'), mute = cs.getPropertyValue('--mute');
+  const stick = (cx, ax, ay, lab) => { x.strokeStyle = line; x.lineWidth = 2; x.beginPath(); x.arc(cx, 52, 34, 0, 7); x.stroke(); x.fillStyle = g ? acc : mute; x.beginPath(); x.arc(cx + (g ? (g.axes[ax] || 0) : 0) * 28, 52 + (g ? (g.axes[ay] || 0) : 0) * 28, 8, 0, 7); x.fill(); x.fillStyle = mute; x.font = '11px sans-serif'; x.textAlign = 'center'; x.fillText(lab, cx, 100); };
+  stick(48, 0, 1, 'left stick'); stick(272, 2, 3, 'right stick');
+  const trig = (bx, i, lab) => { const v = g && g.buttons[i] ? g.buttons[i].value : 0; x.strokeStyle = line; x.strokeRect(bx, 20, 18, 64); x.fillStyle = acc; x.fillRect(bx, 84 - 64 * v, 18, 64 * v); x.fillStyle = mute; x.font = '11px sans-serif'; x.textAlign = 'center'; x.fillText(lab, bx + 9, 100); };
+  trig(112, 6, 'L2'); trig(190, 7, 'R2');
+  if (!g) { x.fillStyle = mute; x.font = '12px sans-serif'; x.textAlign = 'center'; x.fillText('no pad seen by the browser', 160, 56); }
+  const bs = $('rbtns').children; for (let i = 0; i < bs.length; i++) bs[i].classList.toggle('down', !!(g && g.buttons[i] && g.buttons[i].pressed));
+}
+function remoteOpen() {
+  const u = new URL('ws', location.href); u.protocol = u.protocol === 'https:' ? 'wss:' : 'ws:';
+  const ws = new WebSocket(u); R.ws = ws;
+  ws.onopen = () => { R.seq = 0; R.sent.clear(); R.rtt = null; R.st = null; renderRemote(); };
+  ws.onmessage = e => {
+    const st = JSON.parse(e.data); R.st = st;
+    const t0 = R.sent.get(st.seq); if (t0 !== undefined) { R.rtt = performance.now() - t0; for (const k of R.sent.keys()) if (k <= st.seq) R.sent.delete(k); }
+    if (st.state === 'blocked') remoteOff('server: ' + st.msg);
+    else renderRemote();
+  };
+  ws.onclose = ev => { R.ws = null; remoteOff('link closed' + (ev.reason ? ': ' + ev.reason : '')); renderRemote(); setTimeout(remoteOpen, 2000); };
+  ws.onerror = () => {};
+}
+function remoteSend() {
+  const ws = R.ws; if (!ws || ws.readyState !== 1) return;
+  const g = pickPad();
+  if (R.want && (!g || document.hidden)) remoteOff(g ? 'tab hidden: remote control off' : 'pad disconnected: remote control off');
+  const a = g ? [0, 1, 2, 3].map(i => g.axes[i]) : [0, 0, 0, 0];
+  const b = g ? Array.from({ length: 17 }, (_, i) => g.buttons[i].value) : new Array(17).fill(0);
+  const seq = ++R.seq; R.sent.set(seq, performance.now());
+  if (R.sent.size > 200) R.sent.delete(R.sent.keys().next().value);
+  ws.send(JSON.stringify({ t: 'pad', seq, en: R.want, a, b, rtt: R.rtt }));
+}
+function initRemote() {
+  const card = $('rcard'); card.hidden = false; card.parentNode.insertBefore(card, card.parentNode.firstChild);   // first thing in the side panel
+  $('rbtns').innerHTML = PS4.map(n => `<span class="btn">${n}</span>`).join('');
+  $('ren').onclick = () => { if (R.want) { remoteOff('remote control off'); } else if (pickPad()) { R.want = true; R.note = null; renderRemote(); } };
+  addEventListener('keydown', e => { if (e.key === 'Escape') remoteOff('remote control off (Esc)'); });
+  addEventListener('gamepadconnected', renderRemote); addEventListener('gamepaddisconnected', () => remoteOff('pad disconnected: remote control off'));
+  document.addEventListener('visibilitychange', () => { if (document.hidden) remoteOff('tab hidden: remote control off'); });
+  remoteOpen(); R.timer = setInterval(remoteSend, 25); setInterval(renderRemote, 400); renderRemote(); drawViz();
+}
+fetch('config').then(r => r.json()).then(c => { if (c.remote) initRemote(); }).catch(() => {});
+$('clr').onclick = () => { trailPts.length = 0; trailGeo.setFromPoints([]); plen = 0; lastTcp = null; };
+</script>
+</body>
+</html>

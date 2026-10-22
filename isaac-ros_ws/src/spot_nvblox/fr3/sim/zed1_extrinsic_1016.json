@@ -1,0 +1,41 @@
+{
+ "description": "Pose of the front camera (zed1, ZED 2i left RECTIFIED optical frame, OpenCV x right y down z forward) in the FR3 base frame fr3_link0. T_base_cam maps camera coords to base coords. EasyHeC joint mask+depth fit on live captures of the real arm, 2026-10-16 (hec_live2.py, 91 frames, depth scale fixed 1). Supersedes the 2026-10-15 recorded-frame fit.",
+ "T_base_cam": [
+  [
+   0.9723160862922668,
+   -0.0038478069473057985,
+   0.23363777995109558,
+   0.3006579279899597
+  ],
+  [
+   -0.2101316750049591,
+   -0.4517350494861603,
+   0.8670524954795837,
+   -0.6168973445892334
+  ],
+  [
+   0.10220614075660706,
+   -0.8921437859535217,
+   -0.4400378465652466,
+   0.6317898631095886
+  ],
+  [
+   0.0,
+   0.0,
+   0.0,
+   1.0
+  ]
+ ],
+ "source": "live_captures_1016_all_frames",
+ "n_frames": 91,
+ "held_out_validation_splits": {
+  "iou": [
+   0.806226840851197,
+   0.7793390282582977
+  ],
+  "depth_median_mm": [
+   5.657401691094113,
+   6.290279747675477
+  ]
+ }
+}

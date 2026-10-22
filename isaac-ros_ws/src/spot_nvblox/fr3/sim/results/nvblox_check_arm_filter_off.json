@@ -1,0 +1,36 @@
+{
+ "tag": "arm_filter_off",
+ "voxel": 0.019999999552965164,
+ "known": 73179,
+ "occupied": 18027,
+ "spurious": 4662,
+ "spurious_above_table": 4577,
+ "esdf_err_median_cm": 1.1,
+ "esdf_err_p90_cm": 10.01,
+ "obstacles": [
+  {
+   "name": "front_wall",
+   "occupied_near": 538,
+   "top_true_cm": 22.0,
+   "top_mapped_cm": 22.0
+  },
+  {
+   "name": "left_box",
+   "occupied_near": 229,
+   "top_true_cm": 15.0,
+   "top_mapped_cm": 14.0
+  },
+  {
+   "name": "right_box",
+   "occupied_near": 275,
+   "top_true_cm": 15.0,
+   "top_mapped_cm": 14.0
+  },
+  {
+   "name": "back_box",
+   "occupied_near": 353,
+   "top_true_cm": 12.0,
+   "top_mapped_cm": 12.0
+  }
+ ]
+}

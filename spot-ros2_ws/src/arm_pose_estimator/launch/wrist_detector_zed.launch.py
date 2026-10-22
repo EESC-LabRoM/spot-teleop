@@ -81,6 +81,12 @@ def generate_launch_description():
         description='Use simulation (Gazebo/Isaac) clock if true'
     )
 
+    visualize_arg = DeclareLaunchArgument(
+        'visualize',
+        default_value='true',
+        description="Show the cv2 wrist-detection preview window. false = headless."
+    )
+
     # Wrist Detector Node
     wrist_detector_node = Node(
         package='arm_pose_estimator',
@@ -92,6 +98,7 @@ def generate_launch_description():
             'depth_topic': LaunchConfiguration('depth_topic'),
             'camera_info_topic': LaunchConfiguration('camera_info_topic'),
             'show_all_landmarks': LaunchConfiguration('show_all'),
+            'visualize': LaunchConfiguration('visualize'),
             'wrist_circle_radius': LaunchConfiguration('radius'),
             'wrist_circle_color': [0, 255, 0],  # Green in BGR
             'apriltag_size': LaunchConfiguration('tag_size'),
@@ -101,17 +108,18 @@ def generate_launch_description():
     )
 
 
-    # Hand Orientation Estimator (MediaPipe based)
-    hand_orientation_node = Node(
-        package='arm_pose_estimator',
-        executable='hand_orientation_estimator',
-        name='hand_orientation_estimator',
-        output='screen',
-        parameters=[{
-            'color_topic': LaunchConfiguration('color_topic'),
-            'use_sim_time': LaunchConfiguration('use_sim_time')
-        }]
-    )
+    # # Hand Orientation Estimator (MediaPipe based)
+    # hand_orientation_node = Node(
+    #     package='arm_pose_estimator',
+    #     executable='hand_orientation_estimator',
+    #     name='hand_orientation_estimator',
+    #     output='screen',
+    #     parameters=[{
+    #         'color_topic': LaunchConfiguration('color_topic'),
+    #         'use_sim_time': LaunchConfiguration('use_sim_time'),
+    #         'visualize': LaunchConfiguration('visualize'),
+    #     }]
+    # )
 
     # Hand Pose Estimator (Gesture detection)
     hand_pose_node = Node(
@@ -134,7 +142,8 @@ def generate_launch_description():
         radius_arg,
         apriltag_size_arg,
         use_sim_time_arg,
-        hand_orientation_node,
+        visualize_arg,
+        # hand_orientation_node,
         hand_pose_node,
         wrist_detector_node,
     ])

@@ -13,9 +13,15 @@ Subscribed Topics:
 Author: Generated for spot-teleop
 """
 
+import json
+import os
+from types import SimpleNamespace
+from std_msgs.msg import String
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import Image, CameraInfo
+from array import array
 from geometry_msgs.msg import PoseStamped, TransformStamped, Quaternion
 import tf2_ros
 from cv_bridge import CvBridge
@@ -24,6 +30,7 @@ import cv2.aruco as aruco
 import mediapipe as mp
 import numpy as np
 import message_filters
+from arm_pose_estimator.hand_frame import palm_rotation, tool_orientation, quaternion_matrix, OrientationFilter, fingers_open, hand_roi, robust_depth, proper_rotation, GestureOrientationLock
 
 
 class WristDetector(Node):
@@ -73,12 +80,55 @@ class WristDetector(Node):
         self.declare_parameter('wrist_circle_radius', 10)
         self.declare_parameter('wrist_circle_color', [0, 255, 0])  # Green in BGR
         self.declare_parameter('apriltag_size', 0.16)  # AprilTag size in meters (default 10cm)
-        
+        self.declare_parameter('visualize', True)  # false → headless (no cv2 preview window)
+
         # Get parameters
         color_topic = self.get_parameter('color_topic').value
         depth_topic = self.get_parameter('depth_topic').value
         camera_info_topic = self.get_parameter('camera_info_topic').value
         self.show_all_landmarks = self.get_parameter('show_all_landmarks').value
+        self.visualize = self.get_parameter('visualize').value
+        # Opt-in FR3 contract: never make a cached/occluded wrist look current.
+        self.require_fresh_tracking = self.declare_parameter('require_fresh_tracking', False).value
+        self.body_frame_timeout = self.declare_parameter('body_frame_timeout', 0.6).value
+        self.max_capture_age = float(self.declare_parameter('max_capture_age', 0.30).value)
+        if not 0 < self.max_capture_age <= 1.: raise ValueError('max_capture_age must be within (0, 1]')
+        self.last_body_time = None
+        self.orientation_mode = self.declare_parameter('orientation_mode', 'roll').value
+        if self.orientation_mode not in ('roll', 'full_6d'): raise ValueError('orientation_mode must be roll or full_6d')
+        self.hand_gesture, self.hand_gesture_score = None, 0.
+        self.gesture_recognizer = None
+        self.hand_capture_ms = -1
+        if self.orientation_mode == 'full_6d' and self.declare_parameter('hand_gestures', False).value:
+            # Same pretrained Open_Palm / Closed_Fist model used by Spot's hand_pose_estimator.
+            model = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'models', 'gesture_recognizer.task')
+            options = mp.tasks.vision.GestureRecognizerOptions(
+                base_options=mp.tasks.BaseOptions(model_asset_path=model),
+                running_mode=mp.tasks.vision.RunningMode.VIDEO, num_hands=2,
+                min_hand_detection_confidence=.6, min_hand_presence_confidence=.6,
+                min_tracking_confidence=.5)
+            self.gesture_recognizer = mp.tasks.vision.GestureRecognizer.create_from_options(options)
+        sample_topic = self.declare_parameter('teleop_sample_topic', '').value
+        self.teleop_sample_pub = self.create_publisher(String, sample_topic, 1) if sample_topic else None
+        self.hand_6d = (mp.solutions.hands.Hands(static_image_mode=False, max_num_hands=2,
+                        min_detection_confidence=.7, min_tracking_confidence=.7)
+                        if self.orientation_mode == 'full_6d' and self.gesture_recognizer is None else None)
+        self.hand_geometry_source = self.declare_parameter('hand_geometry_source', 'depth').value
+        if self.hand_geometry_source not in ('depth', 'model'): raise ValueError('invalid hand geometry source')
+        self.orientation_filter = OrientationFilter()
+        self.gesture_orientation_lock = GestureOrientationLock()
+        self.use_hand_roi = self.declare_parameter('use_hand_roi', False).value
+        self.body_frame_mode = self.declare_parameter('body_frame_mode', 'hierarchical').value
+        if self.body_frame_mode not in ('hierarchical', 'shoulders'): raise ValueError('invalid body frame mode')
+        self.robust_depth_enabled = self.declare_parameter('robust_depth', False).value
+        self.operator_depth_range = tuple(self.declare_parameter('operator_depth_range', [.1,10.]).value)
+        self.last_capture_ns = -1
+        self.hand_wrist_camera = None
+        self.hand_wrist_pixel = None
+        self.hand_reason = 'hand not tracked'
+        self.hand_rpy = None
+        overlay_topic = self.declare_parameter('overlay_topic', '').value
+        self.overlay_pub = self.create_publisher(Image, overlay_topic, 1) if overlay_topic else None
         self.wrist_radius = self.get_parameter('wrist_circle_radius').value
         color_param = self.get_parameter('wrist_circle_color').value
         self.wrist_color = tuple(color_param)
@@ -86,18 +136,17 @@ class WristDetector(Node):
         
         # Scale factor to compensate human arm vs Spot arm length
         # Spot arm reach: ~984mm, Human arm (shoulder to wrist): ~650mm
-        # Used at startup and as fallback when online estimation is disabled
-        # or has not converged yet.
         self.declare_parameter('scale_factor', 984.0 / 650.0)
         self.scale_factor = self.get_parameter('scale_factor').value
-
-        # Online arm-length estimation: estimate the operator's arm length as
-        # the segment sum ||shoulder->elbow|| + ||elbow->wrist||, which is
-        # pose-invariant (rigid segments), so no calibration pose is needed.
-        self.declare_parameter('online_scale_estimation', True)
-        self.online_scale_estimation = self.get_parameter('online_scale_estimation').value
-        self.declare_parameter('robot_reach', 0.984)  # Spot arm reach in meters
-        self.robot_reach = self.get_parameter('robot_reach').value
+        # Official origin/dev segment-sum estimator, opt-in to preserve local Spot defaults.
+        self.online_scale_estimation = self.declare_parameter('online_scale_estimation', False).value
+        self.robot_reach = self.declare_parameter('robot_reach', 0.984).value
+        self.arm_length_samples = []
+        self.arm_length_window, self.arm_length_min_samples = 150, 90
+        self.arm_length_max_spread = 0.03
+        self.online_scale = None
+        self.arm_length_range = self.declare_parameter('operator_arm_length_range', [.3, 1.2]).value
+        self.arm_segment_range = self.declare_parameter('operator_arm_segment_range', [0., 1.2]).value
         
         # Output frame for wrist pose (robot's body frame)
         self.declare_parameter('output_frame', 'body')
@@ -116,13 +165,14 @@ class WristDetector(Node):
         self.tf_broadcaster = tf2_ros.TransformBroadcaster(self)
         
         # Create synchronized subscribers for color and depth
-        self.color_sub = message_filters.Subscriber(self, Image, color_topic)
-        self.depth_sub = message_filters.Subscriber(self, Image, depth_topic)
+        input_qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT) if self.require_fresh_tracking else 10
+        self.color_sub = message_filters.Subscriber(self, Image, color_topic, qos_profile=input_qos)
+        self.depth_sub = message_filters.Subscriber(self, Image, depth_topic, qos_profile=input_qos)
         
         # Synchronize color and depth messages
         self.sync = message_filters.ApproximateTimeSynchronizer(
             [self.color_sub, self.depth_sub],
-            queue_size=10,
+            queue_size=2 if self.require_fresh_tracking else 10,
             slop=0.1
         )
         self.sync.registerCallback(self.synced_callback)
@@ -140,18 +190,57 @@ class WristDetector(Node):
         self.detection_count = 0
         
         # EMA filter parameters
-        self.declare_parameter('filter_alpha_axes', 0.15)  # Lower = smoother body frame
-        self.declare_parameter('filter_alpha_wrist', 0.2)  # Higher = more responsive wrist
+        self.declare_parameter('filter_alpha_axes', 0.08)  # Lower = smoother/steadier body frame
+        self.declare_parameter('filter_alpha_wrist', 0.13)  # Higher = more responsive, lower = smoother
         self.alpha_axes = self.get_parameter('filter_alpha_axes').value
         self.alpha_wrist = self.get_parameter('filter_alpha_wrist').value
         
-        # Jump filter parameters (max allowed movement per frame in meters)
-        self.declare_parameter('jump_threshold', 0.40)  # Increased to 40cm for more fluid body follow
+        # Jump filter parameters.
+        # The gate is VELOCITY based: allowed = velocity * dt, clamped to [min, max].
+        # This makes it physically meaningful (a shoulder can't move 40cm in one 33ms
+        # frame) instead of a single huge fixed budget that lets bad depth through.
+        self.declare_parameter('jump_threshold', 0.40)  # absolute hard cap (m)
         self.jump_threshold = self.get_parameter('jump_threshold').value
-        
+
+        # Floor for the velocity gate so detector jitter at high frame rate isn't
+        # rejected (m). Body landmarks get this tight floor; the wrist floor is larger.
+        self.declare_parameter('min_jump_threshold', 0.06)
+        self.min_jump_threshold = self.get_parameter('min_jump_threshold').value
+
+        # Re-seed only on a CONFIRMED stable relocation, never on a transient occlusion.
+        # A rejected reading starts/extends a "candidate" baseline; we only adopt it once
+        # the candidate has held still (within the gate of itself) for this many frames.
+        # Erratic occlusion readings (e.g. your arm crossing in front of a hip) never
+        # stay consistent long enough, so the jump filter just holds the frame — which is
+        # exactly what should happen for a near-static body.
+        self.declare_parameter('reseed_confirm_frames', 12)
+        self.reseed_confirm_frames = self.get_parameter('reseed_confirm_frames').value
+
+        # The body is near-static, so the frame does NOT need to be recomputed at wrist
+        # rate. Sampling it slowly makes it much stickier (fewer chances for depth noise
+        # to leak in) and is cheaper. The wrist still updates every frame against the
+        # last held frame. Set to 0.0 to update every frame.
+        self.declare_parameter('axes_update_period', 0.2)  # seconds (~5 Hz)
+        self.axes_update_period = self.get_parameter('axes_update_period').value
+
+        # Wrist re-seed: simpler consecutive-rejection recovery (wrist moves fast and
+        # genuinely; we don't want it frozen for long).
+        self.declare_parameter('max_consecutive_rejections', 8)
+        self.max_consecutive_rejections = self.get_parameter('max_consecutive_rejections').value
+
         # Wrist jump filter (higher threshold since wrist moves faster)
-        self.declare_parameter('wrist_jump_threshold', 0.40)  # 40cm max jump per frame
+        self.declare_parameter('wrist_jump_threshold', 0.40)  # absolute hard cap (m)
         self.wrist_jump_threshold = self.get_parameter('wrist_jump_threshold').value
+        self.declare_parameter('max_wrist_velocity', 3.0)  # m/s, wrist moves fast
+        self.max_wrist_velocity = self.get_parameter('max_wrist_velocity').value
+        self.declare_parameter('min_wrist_jump_threshold', 0.10)  # m, velocity-gate floor
+        self.min_wrist_jump_threshold = self.get_parameter('min_wrist_jump_threshold').value
+
+        # Hard slew-rate cap on the FINAL published wrist (m/frame). Guarantees the
+        # output can never snap regardless of any residual upstream jump — the strongest
+        # robustness/smoothness guarantee, independent of the body-frame quality.
+        self.declare_parameter('max_wrist_step', 0.04)
+        self.max_wrist_step = self.get_parameter('max_wrist_step').value
         
         # Angular jump filter (max allowed rotation per frame in degrees)
         self.declare_parameter('axis_jump_threshold_deg', 30.0)  # Increased to 30 degrees
@@ -169,14 +258,6 @@ class WristDetector(Node):
         
         # Previous wrist_in_body for jump filter
         self.prev_wrist_in_body = None
-
-        # Online arm-length estimation state
-        self.arm_length_samples = []       # rolling window of segment-sum lengths (m)
-        self.arm_length_window = 150       # ~5 s at 30 Hz
-        self.arm_length_min_samples = 90   # samples required before latching
-        self.arm_length_max_spread = 0.03  # IQR convergence threshold (m)
-        self.online_scale = None           # latched scale; None until converged
-        self.current_r_sh_3d = None        # right shoulder 3D of the current frame
         
         # Previous axes for angular jump filter
         self.prev_axes = {}
@@ -186,8 +267,21 @@ class WristDetector(Node):
         self.declare_parameter('max_landmark_velocity', 1.5)
         self.max_landmark_velocity = self.get_parameter('max_landmark_velocity').value
         
-        # Timestamps for velocity-based convergence
+        # Timestamps for velocity-based gating
         self.prev_landmark_times = {}
+
+        # Candidate baselines for confirmed re-seed: {name: {'pos': np.array, 'count': int}}
+        self.reseed_candidates = {}
+
+        # Low-rate body-frame update clock
+        self.last_axes_update_time = None
+
+        # Wrist gate state
+        self.prev_wrist_time = None
+        self.reject_count_wrist = 0
+
+        # Final slew-rate-limited published wrist position
+        self.published_wrist_in_body = None
         
         # Last valid body frame (used when any landmark is rejected)
         self.last_valid_origin = None
@@ -214,14 +308,15 @@ class WristDetector(Node):
         self.get_logger().info(f'AprilTag size: {self.tag_size} meters')
         self.get_logger().info(f'Output frame for wrist pose: {self.output_frame}')
         self.get_logger().info(f'Filter alpha (axes): {self.alpha_axes}, (wrist): {self.alpha_wrist}')
-        self.get_logger().info(f'Jump threshold: {self.jump_threshold*100:.1f} cm/frame')
+        self.get_logger().info(f'Jump threshold: {self.jump_threshold*100:.1f} cm/frame (max)')
+        self.get_logger().info(f'Min jump threshold (body): {self.min_jump_threshold*100:.1f} cm/frame')
         self.get_logger().info(f'Max landmark velocity: {self.max_landmark_velocity:.2f} m/s')
+        self.get_logger().info(f'Re-seed confirm frames: {self.reseed_confirm_frames}')
+        self.get_logger().info(f'Axes update period: {self.axes_update_period:.2f} s (~{1.0/self.axes_update_period:.1f} Hz)')
         self.get_logger().info(f'Wrist jump threshold: {self.wrist_jump_threshold*100:.1f} cm/frame')
+        self.get_logger().info(f'Max wrist step (final slew): {self.max_wrist_step*100:.1f} cm/frame')
         self.get_logger().info(f'Axis jump threshold: {np.degrees(self.axis_jump_threshold):.1f} deg/frame')
         self.get_logger().info(f'Scale factor (human to Spot arm): {self.scale_factor:.3f}')
-        self.get_logger().info(
-            f'Online scale estimation: {self.online_scale_estimation} '
-            f'(robot reach: {self.robot_reach:.3f} m)')
         self.get_logger().info(f'Shoulder offset (body->sh0): X={self.shoulder_offset[0]:.3f}, Y={self.shoulder_offset[1]:.3f}, Z={self.shoulder_offset[2]:.3f}')
         
         # Store last comparison results for logging
@@ -247,6 +342,8 @@ class WristDetector(Node):
 
     def get_depth_at_pixel(self, depth_image, u, v, window_size=5):
         """Get depth at pixel using median of a window to reduce noise."""
+        if getattr(self, 'robust_depth_enabled', False):
+            return robust_depth(depth_image, int(u), int(v), window_size//2, self.operator_depth_range)
         h, w = depth_image.shape[:2]
         half = window_size // 2
         
@@ -300,40 +397,76 @@ class WristDetector(Node):
             return new_value.copy()
         return alpha * new_value + (1 - alpha) * filtered_value
 
-    def apply_jump_filter(self, landmark_name, new_pos):
-        """Apply pure rejection jump filter for body landmarks.
-        
-        Natural movement at detection frequency always produces intermediate
-        points within the threshold. If a reading exceeds the threshold,
-        it's bad data (occlusion, depth noise) — reject entirely and keep
-        the previous valid position. No convergence toward bad readings.
-        
+    def apply_jump_filter(self, landmark_name, new_pos, now_sec):
+        """Velocity-gated rejection filter for body landmarks, with stuck-recovery.
+
+        A shoulder/hip physically cannot move more than `max_landmark_velocity * dt`
+        between two frames, so the allowed budget scales with the actual frame interval
+        (clamped to [min_jump_threshold, jump_threshold]). Anything larger is bad data
+        (occlusion, depth noise) and is rejected, keeping the previous valid position.
+
+        Pure rejection alone gets stuck forever once the operator genuinely moves (the
+        baseline never advances). But we must NOT re-seed on a transient occlusion (e.g.
+        an arm crossing in front of a hip), or the frame snaps onto the arm and back.
+        So we only re-seed when the rejected readings form a STABLE cluster held for
+        `reseed_confirm_frames` frames — a genuine relocation. Erratic occlusion readings
+        reset the candidate and never confirm, so the frame is simply held.
+
         Args:
-            landmark_name: Identifier for the landmark (e.g., 'l_shoulder')
+            landmark_name: Identifier for the landmark (e.g., 'l_sh')
             new_pos: New 3D position (numpy array)
-        
+            now_sec: Current time in seconds (for the velocity gate)
+
         Returns:
-            Previous valid position if jump detected, otherwise new_pos
+            Position to use for the body frame this frame.
         """
         if landmark_name not in self.prev_landmarks_3d:
             self.prev_landmarks_3d[landmark_name] = new_pos.copy()
+            self.prev_landmark_times[landmark_name] = now_sec
+            self.reseed_candidates.pop(landmark_name, None)
             return new_pos
-        
+
         prev_pos = self.prev_landmarks_3d[landmark_name]
-        delta = new_pos - prev_pos
-        distance = np.linalg.norm(delta)
-        
-        if distance > self.jump_threshold:
-            # Bad data — reject entirely, keep previous valid position
-            self.get_logger().warn(
-                f'JUMP REJECTED on {landmark_name}: {distance*100:.1f}cm — keeping previous'
-            )
-            self.body_landmark_rejected = True
-            return prev_pos
-        else:
-            # Normal movement — accept and update baseline
+        dt = max(now_sec - self.prev_landmark_times.get(landmark_name, now_sec), 1e-3)
+        allowed = np.clip(self.max_landmark_velocity * dt,
+                          self.min_jump_threshold, self.jump_threshold)
+        distance = np.linalg.norm(new_pos - prev_pos)
+
+        if distance <= allowed:
+            # Normal movement — accept, update baseline, drop any pending candidate.
             self.prev_landmarks_3d[landmark_name] = new_pos.copy()
+            self.prev_landmark_times[landmark_name] = now_sec
+            self.reseed_candidates.pop(landmark_name, None)
             return new_pos
+
+        # Rejected: hold the frame this cycle no matter what.
+        self.body_landmark_rejected = True
+
+        # Confirmed-relocation logic: only adopt a NEW baseline if the rejected readings
+        # cluster (stay consistent with each other) for `reseed_confirm_frames` frames.
+        # Transient occlusion is erratic, so it resets the candidate and never confirms.
+        cand = self.reseed_candidates.get(landmark_name)
+        if cand is not None and np.linalg.norm(new_pos - cand['pos']) <= allowed:
+            cand['pos'] = new_pos.copy()
+            cand['count'] += 1
+            if cand['count'] >= self.reseed_confirm_frames:
+                self.get_logger().warn(
+                    f'{landmark_name}: re-seeding baseline — stable new position held '
+                    f'{cand["count"]} frames ({distance*100:.1f}cm from old)'
+                )
+                self.prev_landmarks_3d[landmark_name] = new_pos.copy()
+                self.prev_landmark_times[landmark_name] = now_sec
+                self.reseed_candidates.pop(landmark_name, None)
+                return prev_pos  # still freeze this frame; next frame uses new baseline
+        else:
+            # New / inconsistent reading — start a fresh candidate.
+            self.reseed_candidates[landmark_name] = {'pos': new_pos.copy(), 'count': 1}
+
+        self.get_logger().warn(
+            f'JUMP REJECTED on {landmark_name}: {distance*100:.1f}cm '
+            f'(>{allowed*100:.1f}cm) — keeping previous'
+        )
+        return prev_pos
 
     def update_arm_length(self, sh_3d, el_3d, wr_3d):
         """Accumulate arm-length samples and latch the scale on convergence.
@@ -350,8 +483,12 @@ class WristDetector(Node):
             el_3d: Right elbow 3D position, camera frame (numpy array)
             wr_3d: Right wrist 3D position, camera frame (numpy array)
         """
-        length = np.linalg.norm(el_3d - sh_3d) + np.linalg.norm(wr_3d - el_3d)
-        if not (0.3 < length < 1.2):
+        upper = np.linalg.norm(el_3d - sh_3d)
+        fore = np.linalg.norm(wr_3d - el_3d)
+        length = upper + fore
+        lo, hi = getattr(self, 'arm_length_range', (.3, 1.2))
+        segment_lo, segment_hi = getattr(self, 'arm_segment_range', (0., 1.2))
+        if not (lo < length < hi and segment_lo < upper < segment_hi and segment_lo < fore < segment_hi):
             return  # implausible arm length — depth artifact
 
         self.arm_length_samples.append(length)
@@ -409,10 +546,127 @@ class WristDetector(Node):
             self.prev_axes[axis_name] = new_axis.copy()
             return new_axis
 
+    def _hand_orientation_6d(self, rgb, depth, landmarks, display, stamp):
+        """Associate the hand with the right Pose wrist, reconstruct the palm from aligned depth."""
+        self.hand_reason = 'show right wrist and open palm'
+        self.hand_rpy = None
+        self.hand_wrist_camera, self.hand_wrist_pixel = None, None
+        if landmarks is None or landmarks[16].visibility < .5 or self.last_valid_R is None:
+            return False
+        self.hand_gesture, self.hand_gesture_score = None, 0.
+        recognition = None
+        height, width = depth.shape[:2]
+        roi = (0,0,width,height)
+        hand_rgb = rgb
+        if getattr(self, 'use_hand_roi', False):
+            roi = hand_roi(landmarks,width,height)
+            x,y,rw,rh = roi
+            hand_rgb = cv2.resize(rgb[y:y+rh,x:x+rw], (256,256), interpolation=cv2.INTER_LINEAR)
+        if self.gesture_recognizer is not None:
+            capture_ms = int(stamp*1000)
+            if capture_ms <= self.hand_capture_ms:
+                self.hand_reason = 'hand frame out of order'; return False
+            self.hand_capture_ms = capture_ms
+            recognition = self.gesture_recognizer.recognize_for_video(
+                mp.Image(image_format=mp.ImageFormat.SRGB, data=np.ascontiguousarray(hand_rgb)), capture_ms)
+            from mediapipe.framework.formats import landmark_pb2
+            result = SimpleNamespace(
+                multi_hand_landmarks=[landmark_pb2.NormalizedLandmarkList(landmark=[landmark_pb2.NormalizedLandmark(x=v.x,y=v.y,z=v.z) for v in h]) for h in recognition.hand_landmarks],
+                multi_hand_world_landmarks=[landmark_pb2.LandmarkList(landmark=[landmark_pb2.Landmark(x=v.x,y=v.y,z=v.z) for v in h]) for h in recognition.hand_world_landmarks])
+        else:
+            result = self.hand_6d.process(hand_rgb)
+        if not result.multi_hand_landmarks: return False
+        if getattr(self, 'use_hand_roi', False):
+            x,y,rw,rh = roi
+            for detected in result.multi_hand_landmarks:
+                for landmark in detected.landmark:
+                    landmark.x = (x+landmark.x*rw)/width
+                    landmark.y = (y+landmark.y*rh)/height
+                    landmark.z *= rw/width
+        wrist = np.array([landmarks[16].x*width, landmarks[16].y*height])
+        candidates = sorted((np.linalg.norm(np.array([h.landmark[0].x*width,h.landmark[0].y*height])-wrist), i)
+                            for i,h in enumerate(result.multi_hand_landmarks))
+        if candidates[0][0] > .08*min(width,height):
+            self.hand_reason = 'hand does not match right wrist'; return False
+        if len(candidates)>1 and candidates[1][0]-candidates[0][0] < .02*min(width,height):
+            self.hand_reason = 'separate hands for tracking'; return False
+        hand = result.multi_hand_landmarks[candidates[0][1]]
+        if recognition is not None and len(recognition.gestures) > candidates[0][1]:
+            categories = recognition.gestures[candidates[0][1]]
+            if categories and categories[0].category_name in ('Open_Palm','Closed_Fist') and categories[0].score >= .75:
+                self.hand_gesture = categories[0].category_name
+                self.hand_gesture_score = float(categories[0].score)
+        self.mp_drawing.draw_landmarks(display,hand,mp.solutions.hands.HAND_CONNECTIONS)
+        points=[]
+        if self.hand_geometry_source == 'model':
+            # The hand model supplies metric 3D geometry already rotated into image axes.
+            # Use ZED depth for the wrist translation; tiny MCP depth patches are unreliable
+            # when a hand turns sideways. Never switch geometry sources within a session.
+            worlds = result.multi_hand_world_landmarks
+            if not worlds or len(worlds) <= candidates[0][1]:
+                self.hand_reason = '3D hand geometry unavailable'; return False
+            world = worlds[candidates[0][1]].landmark
+            if self.gesture_recognizer is not None and fingers_open([[v.x,v.y,v.z] for v in world]):
+                # Open fingers can be clear in 3D even when the palm faces sideways
+                # and the canned classifier reports None or another open-hand gesture.
+                self.hand_gesture = 'Open_Palm'
+                self.hand_gesture_score = 1.  # geometry gate, not a classifier probability
+            u, v = int(hand.landmark[0].x*width), int(hand.landmark[0].y*height)
+            if not (1 <= u < width-1 and 1 <= v < height-1): return False
+            distance = self.get_depth_at_pixel(depth,u,v,window_size=5)
+            if distance is None or not np.isfinite(distance):
+                self.hand_reason = 'wrist depth unavailable'; return False
+            origin = self.deproject_pixel_to_3d(u,v,distance)
+            self.hand_wrist_camera, self.hand_wrist_pixel = origin.copy(), (u,v)
+            w0 = np.array([world[0].x,world[0].y,world[0].z])
+            points = [origin + np.array([world[i].x,world[i].y,world[i].z])-w0 for i in (0,5,9,13,17)]
+        else:
+            for i in (0,5,9,13,17):
+                lm=hand.landmark[i];u,v=int(lm.x*width),int(lm.y*height)
+                if not (1 <= u < width-1 and 1 <= v < height-1): return False
+                distance=self.get_depth_at_pixel(depth,u,v,window_size=3)
+                if distance is None or not np.isfinite(distance):
+                    self.hand_reason='palm depth unavailable'; return False
+                points.append(self.deproject_pixel_to_3d(u,v,distance))
+        try:
+            raw=tool_orientation(points,self.last_valid_R)
+            if self.gesture_recognizer is not None:
+                raw=self.gesture_orientation_lock.update(raw,self.hand_gesture,stamp,anchor=self.orientation_filter.q)
+            if self.gesture_recognizer is not None and self.gesture_orientation_lock.held is not None and self.orientation_filter.q is not None:
+                q=self.orientation_filter.hold(stamp)
+            else:
+                q=self.orientation_filter.update(raw,stamp)
+            camera_hand=palm_rotation(points)
+        except ValueError as e:
+            self.hand_reason=str(e); return False
+        self.hand_quat=Quaternion(x=float(q[0]),y=float(q[1]),z=float(q[2]),w=float(q[3]))
+        r=quaternion_matrix(q)
+        self.hand_rpy=np.degrees([np.arctan2(r[2,1],r[2,2]),
+                                np.arctan2(-r[2,0],np.hypot(r[2,1],r[2,2])),
+                                np.arctan2(r[1,0],r[0,0])])
+        start=self.project_3d_to_pixel(points[0])
+        if start:
+            for i,color in enumerate(((0,0,255),(0,255,0),(255,0,0))):
+                end=self.project_3d_to_pixel(points[0]+.12*camera_hand[:,i])
+                if end: cv2.arrowedLine(display,start,end,color,2)
+        self.hand_reason='6D hand tracked'
+        return True
+
     def synced_callback(self, color_msg, depth_msg):
         """Process synchronized color and depth images with body frame persistence."""
         try:
             # Convert ROS Images to OpenCV format
+            wrist_fresh = False
+            hand_fresh = self.orientation_mode != 'full_6d'
+            if self.orientation_mode == 'full_6d':
+                self.hand_reason = 'show right wrist and palm'
+                self.hand_rpy = None
+                self.hand_gesture, self.hand_gesture_score = None, 0.
+            capture_ns = color_msg.header.stamp.sec*10**9 + color_msg.header.stamp.nanosec
+            if self.require_fresh_tracking:
+                age = (self.get_clock().now().nanoseconds-capture_ns)*1e-9
+                if capture_ns <= self.last_capture_ns or not 0 <= age <= getattr(self, 'max_capture_age', .30): return
+                self.last_capture_ns = capture_ns
             cv_image = self.bridge.imgmsg_to_cv2(color_msg, "bgr8")
             
             # Handle different depth encodings
@@ -434,15 +688,14 @@ class WristDetector(Node):
             
             # Reset rejection flag for this frame
             self.body_landmark_rejected = False
+
+            # Single timestamp for all velocity gates this frame
+            now_sec = capture_ns*1e-9 if self.require_fresh_tracking else self.get_clock().now().nanoseconds*1e-9
             
             if results.pose_landmarks:
                 self.detection_count += 1
                 landmarks = results.pose_landmarks.landmark
-
-                # Shoulder of the current frame only (for arm-length estimation);
-                # never pair a stale shoulder with the current wrist
-                self.current_r_sh_3d = None
-
+                
                 # Draw landmarks if requested
                 if self.show_all_landmarks:
                     self.mp_drawing.draw_landmarks(
@@ -458,8 +711,18 @@ class WristDetector(Node):
                 vis_sh = l_shoulder.visibility > 0.5 and r_shoulder.visibility > 0.5
                 vis_hp = l_hip.visibility > 0.5 and r_hip.visibility > 0.5
                 vis_ak = l_ankle.visibility > 0.5 and r_ankle.visibility > 0.5
-                
-                if vis_sh and self.fx is not None:
+                if self.body_frame_mode == 'shoulders':
+                    # Fixed operator camera: shoulder line and camera up define the frame.
+                    # Hidden hips/ankles must not veto otherwise valid shoulder tracking.
+                    vis_hp, vis_ak = False, False
+
+                # The body is near-static: only recompute the frame at a low rate. Between
+                # updates the last held frame is reused for the wrist (computed every frame).
+                update_axes = (self.last_axes_update_time is None or
+                               (now_sec - self.last_axes_update_time) >= self.axes_update_period)
+
+                if update_axes and vis_sh and self.fx is not None:
+                    self.last_axes_update_time = now_sec
                     # Basic points for all levels
                     sh_l_px = (int(l_shoulder.x * width), int(l_shoulder.y * height))
                     sh_r_px = (int(r_shoulder.x * width), int(r_shoulder.y * height))
@@ -467,10 +730,11 @@ class WristDetector(Node):
                     d_sh_r = self.get_depth_at_pixel(depth_image, sh_r_px[0], sh_r_px[1])
                     
                     if d_sh_l and d_sh_r:
-                        l_sh_3d = self.apply_jump_filter('l_sh', self.deproject_pixel_to_3d(sh_l_px[0], sh_l_px[1], d_sh_l))
-                        r_sh_3d = self.apply_jump_filter('r_sh', self.deproject_pixel_to_3d(sh_r_px[0], sh_r_px[1], d_sh_r))
-                        self.current_r_sh_3d = r_sh_3d
-
+                        l_sh_3d = self.apply_jump_filter('l_sh', self.deproject_pixel_to_3d(sh_l_px[0], sh_l_px[1], d_sh_l), now_sec)
+                        r_sh_3d = self.apply_jump_filter('r_sh', self.deproject_pixel_to_3d(sh_r_px[0], sh_r_px[1], d_sh_r), now_sec)
+                        
+                        if self.require_fresh_tracking and not .20 < np.linalg.norm(l_sh_3d-r_sh_3d) < .75:
+                            self.body_landmark_rejected = True
                         # Initialize vectors
                         up_vec = np.array([0.0, -1.0, 0.0]) # Default up (camera frame)
                         torso_center = (l_sh_3d + r_sh_3d) / 2
@@ -489,10 +753,10 @@ class WristDetector(Node):
                             d_ak_r = self.get_depth_at_pixel(depth_image, ak_r_px[0], ak_r_px[1])
                             
                             if all([d_hp_l, d_hp_r, d_ak_l, d_ak_r]):
-                                l_hp_3d = self.apply_jump_filter('l_hp', self.deproject_pixel_to_3d(hp_l_px[0], hp_l_px[1], d_hp_l))
-                                r_hp_3d = self.apply_jump_filter('r_hp', self.deproject_pixel_to_3d(hp_r_px[0], hp_r_px[1], d_hp_r))
-                                l_ak_3d = self.apply_jump_filter('l_ak', self.deproject_pixel_to_3d(ak_l_px[0], ak_l_px[1], d_ak_l))
-                                r_ak_3d = self.apply_jump_filter('r_ak', self.deproject_pixel_to_3d(ak_r_px[0], ak_r_px[1], d_ak_r))
+                                l_hp_3d = self.apply_jump_filter('l_hp', self.deproject_pixel_to_3d(hp_l_px[0], hp_l_px[1], d_hp_l), now_sec)
+                                r_hp_3d = self.apply_jump_filter('r_hp', self.deproject_pixel_to_3d(hp_r_px[0], hp_r_px[1], d_hp_r), now_sec)
+                                l_ak_3d = self.apply_jump_filter('l_ak', self.deproject_pixel_to_3d(ak_l_px[0], ak_l_px[1], d_ak_l), now_sec)
+                                r_ak_3d = self.apply_jump_filter('r_ak', self.deproject_pixel_to_3d(ak_r_px[0], ak_r_px[1], d_ak_r), now_sec)
                                 
                                 torso_center = (l_sh_3d + r_sh_3d + l_hp_3d + r_hp_3d) / 4
                                 up_vec = (l_sh_3d + r_sh_3d)/2 - (l_ak_3d + r_ak_3d)/2
@@ -506,8 +770,8 @@ class WristDetector(Node):
                             d_hp_r = self.get_depth_at_pixel(depth_image, hp_r_px[0], hp_r_px[1])
                             
                             if d_hp_l and d_hp_r:
-                                l_hp_3d = self.apply_jump_filter('l_hp', self.deproject_pixel_to_3d(hp_l_px[0], hp_l_px[1], d_hp_l))
-                                r_hp_3d = self.apply_jump_filter('r_hp', self.deproject_pixel_to_3d(hp_r_px[0], hp_r_px[1], d_hp_r))
+                                l_hp_3d = self.apply_jump_filter('l_hp', self.deproject_pixel_to_3d(hp_l_px[0], hp_l_px[1], d_hp_l), now_sec)
+                                r_hp_3d = self.apply_jump_filter('r_hp', self.deproject_pixel_to_3d(hp_r_px[0], hp_r_px[1], d_hp_r), now_sec)
                                 torso_center = (l_sh_3d + r_sh_3d + l_hp_3d + r_hp_3d) / 4
                                 up_vec = (l_sh_3d + r_sh_3d)/2 - (l_hp_3d + r_hp_3d)/2
                                 best_level = "TORSO"
@@ -538,7 +802,11 @@ class WristDetector(Node):
                             self.filtered_axis_z = self.apply_ema(axis_z, self.filtered_axis_z, self.alpha_axes)
                             
                             self.last_valid_origin = self.filtered_origin.copy()
+                            self.last_body_time = now_sec
                             self.last_valid_R = np.column_stack([self.filtered_axis_z, -self.filtered_axis_x, self.filtered_axis_y])
+                            if self.orientation_mode == 'full_6d':
+                                # Position and orientation must use the same orthonormal body frame.
+                                self.last_valid_R = proper_rotation(self.last_valid_R)
                             
                             if self.frame_count % 60 == 0:
                                 self.get_logger().info(f'Body tracking ACTIVE (Level: {best_level})')
@@ -546,49 +814,72 @@ class WristDetector(Node):
                             if self.frame_count % 30 == 0:
                                 self.get_logger().warn('Body jump detected - FREEZING axes update for this frame.')
                 
+                if self.orientation_mode == 'full_6d':
+                    hand_fresh = self._hand_orientation_6d(rgb_image,depth_image,landmarks,
+                        display_image,capture_ns*1e-9)
                 # 2. Process Wrist independently using last valid body frame
                 right_wrist = landmarks[self.mp_pose.PoseLandmark.RIGHT_WRIST.value]
                 if right_wrist.visibility > 0.5 and self.last_valid_origin is not None:
                     w_x, w_y = int(right_wrist.x * width), int(right_wrist.y * height)
+                    if self.orientation_mode == 'full_6d' and self.hand_wrist_pixel is not None:
+                        # The hand's precise wrist also supplies position, avoiding two
+                        # independent landmark estimates for one synchronized 6D pose.
+                        w_x, w_y = self.hand_wrist_pixel
                     cv2.circle(display_image, (w_x, w_y), self.wrist_radius, self.wrist_color, -1)
                     
                     w_depth = self.get_depth_at_pixel(depth_image, w_x, w_y)
                     if w_depth is not None and 0.1 < w_depth < 10.0:
                         w_3d_cam = self.deproject_pixel_to_3d(w_x, w_y, w_depth)
                         if w_3d_cam is not None:
-                            # Online arm-length estimation: needs shoulder, elbow,
-                            # and wrist from the same frame. The elbow is not
-                            # jump-filtered (that would freeze the body frame on
-                            # elbow noise); the median window rejects outliers.
-                            if (self.online_scale_estimation and self.online_scale is None
-                                    and self.current_r_sh_3d is not None):
-                                r_elbow = landmarks[self.mp_pose.PoseLandmark.RIGHT_ELBOW.value]
-                                if r_elbow.visibility > 0.5:
-                                    e_x, e_y = int(r_elbow.x * width), int(r_elbow.y * height)
-                                    e_depth = self.get_depth_at_pixel(depth_image, e_x, e_y)
-                                    if e_depth is not None and 0.1 < e_depth < 10.0:
-                                        e_3d_cam = self.deproject_pixel_to_3d(e_x, e_y, e_depth)
-                                        if e_3d_cam is not None:
-                                            self.update_arm_length(
-                                                self.current_r_sh_3d, e_3d_cam, w_3d_cam)
-
+                            if self.online_scale_estimation and self.online_scale is None:
+                                shoulder, elbow = landmarks[12], landmarks[14]
+                                if shoulder.visibility > 0.5 and elbow.visibility > 0.5:
+                                    sx, sy = int(shoulder.x * width), int(shoulder.y * height)
+                                    ex, ey = int(elbow.x * width), int(elbow.y * height)
+                                    sd = self.get_depth_at_pixel(depth_image, sx, sy)
+                                    ed = self.get_depth_at_pixel(depth_image, ex, ey)
+                                    if sd is not None and ed is not None and 0.1 < sd < 10 and 0.1 < ed < 10:
+                                        sh = self.deproject_pixel_to_3d(sx, sy, sd)
+                                        stable_sh = self.prev_landmarks_3d.get('r_sh')
+                                        # Do not calibrate limb length from a rejected shoulder/background depth.
+                                        consistent = (not self.body_landmark_rejected and stable_sh is not None and
+                                                      np.linalg.norm(sh-stable_sh) < .08)
+                                        if self.orientation_mode != 'full_6d' or consistent:
+                                            self.update_arm_length(sh, self.deproject_pixel_to_3d(ex, ey, ed), w_3d_cam)
                             w_in_body_raw = self.last_valid_R.T @ (w_3d_cam - self.last_valid_origin)
-                            
-                            # Jump filter: reject jumped values from EMA entirely
+
+                            # Velocity-gated rejection: the wrist can move fast, so the
+                            # budget scales with the frame interval (clamped) instead of a
+                            # flat 40cm that lets body-frame-induced shifts through.
                             wrist_jumped = False
                             if self.prev_wrist_in_body is not None:
+                                w_dt = max(now_sec - (self.prev_wrist_time or now_sec), 1e-3)
+                                w_allowed = np.clip(self.max_wrist_velocity * w_dt,
+                                                    self.min_wrist_jump_threshold,
+                                                    self.wrist_jump_threshold)
                                 wrist_delta = np.linalg.norm(w_in_body_raw - self.prev_wrist_in_body)
-                                if wrist_delta >= self.wrist_jump_threshold:
+                                if wrist_delta >= w_allowed:
+                                    self.reject_count_wrist += 1
+                                    # Re-seed after a sustained run so we don't freeze forever.
+                                    if self.reject_count_wrist >= self.max_consecutive_rejections:
+                                        self.prev_wrist_in_body = w_in_body_raw.copy()
+                                        self.prev_wrist_time = now_sec
+                                        self.reject_count_wrist = 0
                                     wrist_jumped = True
                                     if self.frame_count % 15 == 0:
                                         self.get_logger().warn(
-                                            f'Wrist jump rejected: {wrist_delta*100:.1f}cm — keeping filtered')
+                                            f'Wrist jump rejected: {wrist_delta*100:.1f}cm '
+                                            f'(>{w_allowed*100:.1f}cm) — keeping filtered')
                                 else:
                                     self.prev_wrist_in_body = w_in_body_raw.copy()
+                                    self.prev_wrist_time = now_sec
+                                    self.reject_count_wrist = 0
                             else:
                                 self.prev_wrist_in_body = w_in_body_raw.copy()
-                            
+                                self.prev_wrist_time = now_sec
+
                             if not wrist_jumped:
+                                wrist_fresh = True
                                 self.filtered_wrist_in_body = self.apply_ema(
                                     w_in_body_raw, self.filtered_wrist_in_body, self.alpha_wrist)
                 
@@ -602,12 +893,30 @@ class WristDetector(Node):
                                 cv2.arrowedLine(display_image, o_px, e_px, color, 3)
                                 cv2.putText(display_image, label, (e_px[0]+5, e_px[1]), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
                 
-            # ALWAYS publish last valid wrist (persists through occlusion and jumps)
-            if self.filtered_wrist_in_body is not None:
-                scale = self.online_scale if self.online_scale is not None else self.scale_factor
-                wrist_final = self.filtered_wrist_in_body * scale + self.shoulder_offset
+            # In full 6D mode the quaternion comes from the same RGB-D pair and body frame.
+            # Legacy roll behavior is preserved; FR3 full pose requires a fresh palm.
+            body_fresh = (self.last_body_time is not None and
+                          0 <= now_sec - self.last_body_time <= self.body_frame_timeout)
+            scale_ready = not self.online_scale_estimation or self.online_scale is not None
+            current_scale = self.online_scale if self.online_scale is not None else self.scale_factor
+            if self.filtered_wrist_in_body is not None and scale_ready and hand_fresh and (
+                    not self.require_fresh_tracking or (wrist_fresh and body_fresh and hand_fresh)):
+                # Hard slew-rate limit on the published target: bounds the change per
+                # frame so NOTHING upstream (a body-frame wobble, a depth spike that
+                # slipped the gates) can ever snap the commanded pose. This is the final
+                # smoothness/robustness guarantee, decoupled from body-frame quality.
+                if self.published_wrist_in_body is None:
+                    self.published_wrist_in_body = self.filtered_wrist_in_body.copy()
+                else:
+                    step = self.filtered_wrist_in_body - self.published_wrist_in_body
+                    step_norm = np.linalg.norm(step)
+                    if step_norm > self.max_wrist_step:
+                        step *= self.max_wrist_step / step_norm
+                    self.published_wrist_in_body = self.published_wrist_in_body + step
+
+                wrist_final = self.published_wrist_in_body * current_scale + self.shoulder_offset
                 
-                stamp = self.get_clock().now().to_msg()
+                stamp = color_msg.header.stamp if self.require_fresh_tracking else self.get_clock().now().to_msg()
                 
                 pose_msg = PoseStamped()
                 pose_msg.header.stamp = stamp
@@ -615,6 +924,13 @@ class WristDetector(Node):
                 pose_msg.pose.position.x, pose_msg.pose.position.y, pose_msg.pose.position.z = wrist_final
                 pose_msg.pose.orientation = self.hand_quat
                 self.wrist_pose_pub.publish(pose_msg)
+                if self.teleop_sample_pub is not None and self.orientation_mode == 'full_6d':
+                    ns = stamp.sec*10**9 + stamp.nanosec
+                    q = self.hand_quat
+                    packet = dict(version=2,orientation_mode='full_6d',stamp_ns=ns,orientation_stamp_ns=ns,
+                                  frame=self.output_frame,p=[float(v) for v in wrist_final],q=[q.x,q.y,q.z,q.w],
+                                  gesture=self.hand_gesture,gesture_score=self.hand_gesture_score)
+                    self.teleop_sample_pub.publish(String(data=json.dumps(packet,allow_nan=False)))
                 
                 tf_msg = TransformStamped()
                 tf_msg.header.stamp = stamp
@@ -626,11 +942,44 @@ class WristDetector(Node):
                 self.tf_broadcaster.sendTransform(tf_msg)
                 
                 if self.frame_count % 30 == 0:
-                    self.get_logger().info(f'Wrist in Body: {self.filtered_wrist_in_body}')
+                    self.get_logger().info(f'Wrist in Body: {self.published_wrist_in_body}')
             
+            if self.overlay_pub is not None:
+                tracking = wrist_fresh and body_fresh and scale_ready and hand_fresh
+                self.get_logger().info('6D status: ' + (self.hand_reason if not hand_fresh else ('wrist/body unavailable' if not tracking else 'tracking')), throttle_duration_sec=2.) if self.orientation_mode == 'full_6d' else None
+                label = ('6D WRIST + HAND TRACKING' if self.orientation_mode == 'full_6d' else 'WRIST TRACKING') if tracking else 'TRACKING PAUSED'
+                if self.orientation_mode == 'full_6d' and not hand_fresh:
+                    label = '6D: ' + self.hand_reason
+                if not scale_ready:
+                    label = (f'ARM SCALE {len(self.arm_length_samples)}/90: SHOW SHOULDER, ELBOW, WRIST'
+                             if len(self.arm_length_samples) < 90 else 'ARM SCALE: DEPTH UNSTABLE - FACE CAMERA')
+                cv2.putText(display_image, label, (8, 22), cv2.FONT_HERSHEY_SIMPLEX,
+                            0.48, (40, 220, 40) if tracking else (30, 30, 255), 1)
+                if self.online_scale is not None:
+                    cv2.putText(display_image, f'Arm {self.robot_reach / self.online_scale:.2f} m -> FR3 {self.robot_reach:.3f} m | scale {self.online_scale:.3f}',
+                                (8, 42), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (255, 255, 255), 1)
+                if self.gesture_recognizer is not None:
+                    cv2.putText(display_image, 'Grip: ' + (self.hand_gesture or 'uncertain'), (8,82),
+                                cv2.FONT_HERSHEY_SIMPLEX,.43,(255,255,255),1)
+                if self.hand_rpy is not None:
+                    cv2.putText(display_image, 'Hand R/P/Y [deg]: ' + ' '.join(f'{v:+.0f}' for v in self.hand_rpy),
+                                (8, 62), cv2.FONT_HERSHEY_SIMPLEX, .43, (255,255,255), 1)
+                if tracking and self.published_wrist_in_body is not None:
+                    xyz = self.published_wrist_in_body * current_scale + self.shoulder_offset
+                    cv2.putText(display_image, 'FR3 reference [m]: ' + ' '.join(f'{v:+.2f}' for v in xyz),
+                                (8, height - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
+                # array('B') bypasses ROS's per-byte Python validation (~100 ms per frame).
+                overlay = Image()
+                overlay.height, overlay.width = display_image.shape[:2]
+                overlay.encoding = 'bgr8'
+                overlay.step = overlay.width * 3
+                overlay.data = array('B', np.ascontiguousarray(display_image).tobytes())
+                overlay.header = color_msg.header
+                self.overlay_pub.publish(overlay)
             self.frame_count += 1
-            cv2.imshow('Right Wrist Detection', display_image)
-            cv2.waitKey(1)
+            if self.visualize:
+                cv2.imshow('Right Wrist Detection', display_image)
+                cv2.waitKey(1)
             
         except Exception as e:
             self.get_logger().error(f'Error processing image: {str(e)}')
@@ -638,9 +987,11 @@ class WristDetector(Node):
     def destroy_node(self):
         """Clean up resources when node is destroyed."""
         self.get_logger().info('Shutting down wrist detector...')
-        cv2.destroyAllWindows()
+        if self.visualize: cv2.destroyAllWindows()
         self.pose.close()
-        super().destroy_node()
+        if self.hand_6d is not None: self.hand_6d.close()
+        if self.gesture_recognizer is not None: self.gesture_recognizer.close()
+        return super().destroy_node()
 
 
 def main(args=None):

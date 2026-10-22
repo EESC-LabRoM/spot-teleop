@@ -310,6 +310,7 @@ class Sam2TrackerNode(Node):
         # A small deadband skips the warp when the roll is negligible.
         self.declare_parameter('hand_deroll_enabled', True)
         self.declare_parameter('hand_deroll_min_deg', 3.0)   # deadband; below this = no warp
+        self.declare_parameter('show_deroll_debug', False)   # pop the "Hand Upright (de-rolled)" cv2 window
         self.declare_parameter('roll_reference_frame', 'body')  # gravity-up reference for the roll angle
         self.declare_parameter('active_tracking_interval', 0.2)
         self.declare_parameter('tracking_lost_confirm_frames', 5)
@@ -399,6 +400,7 @@ class Sam2TrackerNode(Node):
         self.publish_segmentation_mask = self.get_parameter('publish_segmentation_mask').value
         self._hand_deroll_enabled = bool(self.get_parameter('hand_deroll_enabled').value)
         self._hand_deroll_min_deg = float(self.get_parameter('hand_deroll_min_deg').value)
+        self._show_deroll_debug = bool(self.get_parameter('show_deroll_debug').value)
         self._roll_reference_frame = str(self.get_parameter('roll_reference_frame').value)
         self._mask_dilation_px = int(self.get_parameter('mask_dilation_px').value)
         self._mask_dilation_kernel = (
@@ -1188,6 +1190,10 @@ class Sam2TrackerNode(Node):
         applied correction angle + reference frame are overlaid so the de-roll can
         be validated visually (objects should stay upright as the wrist rolls)."""
         if not self.visualize:
+            return
+        # The "Hand Upright (de-rolled)" validation window is off unless explicitly
+        # requested; the de-roll *processing* still runs regardless.
+        if name == "Hand Upright (de-rolled)" and not self._show_deroll_debug:
             return
         if roll_angle is not None:
             txt = f"roll={roll_angle:+.1f} deg  ref={self._roll_reference_frame}"

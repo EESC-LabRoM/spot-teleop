@@ -115,7 +115,7 @@ def launch_setup(context, *args, **kwargs):
         "static_mapper.esdf_slice_height": 0.5,
         "input_qos": "SENSOR_DATA",
         # Limpeza
-        "map_clearing_radius_m": 5.0,  # Limpa o que ficar muito longe pra liberar RAM
+        "map_clearing_radius_m": 2.0,  # Limpa o que ficar muito longe pra liberar RAM
         "map_clearing_frame_id": "body",
         # Visualização
         "layer_visualization_exclusion_height_m": 100.0,
@@ -125,7 +125,7 @@ def launch_setup(context, *args, **kwargs):
         # --- AQUI TÁ O PULO DO GATO PRA NÃO CRASHAR ---
         # Não integra nada além de 4.5 metros.
         # Pra manipulação vc precisa do que tá na sua cara, não na parede do fundo.
-        "static_mapper.projective_integrator_max_integration_distance_m": 4.5,
+        "static_mapper.projective_integrator_max_integration_distance_m": 2.5,
         # Truncation: 6 voxels * 2cm = 12cm, com margem acima de occupied_region_half_width_m.
         "static_mapper.projective_integrator_truncation_distance_vox": 6.0,
         "dynamic_mapper.projective_integrator_truncation_distance_vox": 6.0,

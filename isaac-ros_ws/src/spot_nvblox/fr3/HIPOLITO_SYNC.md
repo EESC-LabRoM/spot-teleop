@@ -1,0 +1,1 @@
+/home/murilo/zed_lite/nvblox/HIPOLITO_SYNC.md

@@ -1,0 +1,12 @@
+{
+  "before": {
+    "valid_continuous_turn_samples": 11,
+    "false_jump_rejections": 6,
+    "maximum_published_angle_step_deg": 91.631
+  },
+  "after": {
+    "valid_continuous_turn_samples": 17,
+    "false_jump_rejections": 0,
+    "maximum_published_angle_step_deg": 15.0
+  }
+}
