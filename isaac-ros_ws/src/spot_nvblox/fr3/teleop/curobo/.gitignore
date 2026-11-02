@@ -1,0 +1,7 @@
+preview_logs/
+__pycache__/
+joystick_logs/
+live_zed/logs*/
+live_zed/backup/
+*.bak*
+*.nvblx
