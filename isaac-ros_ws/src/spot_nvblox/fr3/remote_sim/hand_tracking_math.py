@@ -64,23 +64,49 @@ def fused_wrist_depth(measurements, world_z, limits=(.3, 3.)):
     return None,0
 
 
-def finger_distance_signals(points):
-    """G1 main grip.py idea: normalized wrist-tip extension, median of three fingers.
+def palm_depth_sites(pixels,world_points):
+    """Current wrist/MCP pixels plus interior palm sites, with matching model Z."""
+    pixels=np.asarray(pixels,float);world_points=np.asarray(world_points,float)
+    if pixels.shape!=(21,2) or world_points.shape!=(21,3):raise ValueError('invalid hand landmarks')
+    ids=(0,5,9,13,17)
+    sites=[pixels[i] for i in ids];z=[world_points[i,2] for i in ids]
+    for group in ((0,5,9),(0,9,13),(0,13,17),(5,9,13,17)):
+        sites.append(pixels[list(group)].mean(0));z.append(float(world_points[list(group),2].mean()))
+    if not np.all(np.isfinite(np.r_[np.asarray(sites).reshape(-1),z])):raise ValueError('invalid hand depth sites')
+    return np.asarray(sites),z
 
-    Uses the observed bone-chain lengths rather than G1/Dex5 dimensions. Pinch is
-    diagnostic only for the Franka parallel gripper. Ambiguous geometry yields no
-    gripper command. Reference: EESC-LabRoM/G1_teleop, main 181e736, dex_hand/grip.py.
+
+def finger_distance_signals(points):
+    """Vote from four fingers using extension AND joint bend; thumb is optional.
+
+    Normalized finger-chain geometry follows G1's grip idea. Current measured
+    landmarks only: ambiguous/pointing poses do not create a gripper intent.
     """
     p=np.asarray(points,float)
     if p.shape!=(21,3) or not np.all(np.isfinite(p)):return None
     chains=((0,1,2,3,4),(0,5,6,7,8),(0,9,10,11,12),(0,13,14,15,16),(0,17,18,19,20))
     lengths=np.array([np.linalg.norm(np.diff(p[list(chain)],axis=0),axis=1).sum() for chain in chains])
-    if np.any(lengths<.04) or np.any(lengths>.35):return None
-    extension=np.linalg.norm(p[[4,8,12,16,20]]-p[0],axis=1)/lengths
+    valid=(lengths>.035)&(lengths<.4)
+    if np.count_nonzero(valid[1:])<3:return None
+    extension=np.linalg.norm(p[[4,8,12,16,20]]-p[0],axis=1)/np.maximum(lengths,1e-9)
     closure=np.clip((.90-extension)/(.90-.65),0.,1.)
-    grip=float(np.median(closure[2:]))
-    pinch=float(np.clip((.40-np.linalg.norm(p[4]-p[8])/lengths[2])/(.40-.08),0.,1.))
+    opened=[];folded=[]
+    for finger,chain in enumerate(chains[1:],1):
+        _,mcp,pip,dip,tip=chain
+        bones=np.diff(p[[mcp,pip,dip,tip]],axis=0)
+        norms=np.linalg.norm(bones,axis=1)
+        if not valid[finger] or np.any(norms<.003):continue
+        pip_cos=float(bones[0]@bones[1]/(norms[0]*norms[1]))
+        dip_cos=float(bones[1]@bones[2]/(norms[1]*norms[2]))
+        reach=np.linalg.norm(p[tip]-p[mcp])/norms.sum()
+        opened.append(bool(extension[finger]>.78 and reach>.8 and pip_cos>.65 and dip_cos>.5))
+        folded.append(bool(extension[finger]<.75 and (pip_cos<.5 or reach<.65)))
+    if len(opened)<3:return None
     gesture=None
-    if grip<.10 and closure[1]<.25:gesture='Open_Palm'
-    elif grip>.85 and closure[1]>.65:gesture='Closed_Fist'
-    return dict(grip=grip,pinch=pinch,gesture=gesture)
+    if sum(opened)>=3:gesture='Open_Palm'
+    elif sum(folded)>=3 and not any(opened):gesture='Closed_Fist'
+    grip=float(np.median(closure[2:][valid[2:]]))
+    pinch=None
+    if valid[0] and valid[2]:
+        pinch=float(np.clip((.40-np.linalg.norm(p[4]-p[8])/lengths[2])/(.40-.08),0.,1.))
+    return dict(grip=grip,pinch=pinch,gesture=gesture,open_fingers=sum(opened),closed_fingers=sum(folded))

@@ -30,7 +30,7 @@ def main():
     def sample(m):
         try:
             d=json.loads(m.data)
-            if d.get('version') != 2 or d.get('orientation_mode') != 'full_6d': return
+            if d.get('version') not in (2,3) or d.get('orientation_mode') != 'full_6d': return
             sock.sendto(json.dumps(d,allow_nan=False).encode(),('127.0.0.1',a.port))
         except (ValueError,TypeError,OSError): pass
     if a.orientation_mode == 'full_6d':

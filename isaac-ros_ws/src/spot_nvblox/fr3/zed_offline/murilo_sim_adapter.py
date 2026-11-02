@@ -18,7 +18,7 @@ import numpy as np
 
 FR3 = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(FR3 / 'remote_sim'), str(FR3 / 'teleop/curobo')]
-from command_guard import ARM, validate  # noqa: E402
+from command_guard import ARM, LOW, HIGH, validate  # noqa: E402
 from goal_math import tcp_to_hand  # noqa: E402
 
 
@@ -193,10 +193,63 @@ def instrument_native(source, filename):
                     and [ast.unparse(a) for a in node.value.args] == ['joint_cmd']):
                 count += 1
                 return ast.copy_location(ast.parse(
-                    'offline_sink(self, joint_cmd, bool(is_feasible), cu_js)').body[0], node)
+                    'offline_sink(self, joint_cmd, bool(is_feasible), cu_js, mpc_result, fk_current)').body[0], node)
             return self.generic_visit(node)
 
     tree = Hook().visit(tree)
     if count != 1:
         raise ValueError(f'native publish interface changed: {count}')
     return ast.fix_missing_locations(tree)
+
+
+def validate_initial_state(data):
+    """Strict measured seven-joint seed; physical state is only used at reset."""
+    if not isinstance(data, dict) or data.get('names') != ARM:
+        raise ValueError('initial joint names/order')
+    if not isinstance(data.get('q'), list) or any(isinstance(value, bool) for value in data['q']):
+        raise ValueError('malformed initial joints')
+    q = np.asarray(data.get('q'), float)
+    if q.shape != (7,) or not np.all(np.isfinite(q)) or np.any(q < LOW) or np.any(q > HIGH):
+        raise ValueError('invalid/out-of-limit initial joints')
+    provenance = data.get('provenance', {})
+    captured, stamp = int(data.get('captured_ns', 0)), int(data.get('stamp_ns', 0))
+    if not provenance or not provenance.get('topic') or not 0 <= (captured-stamp)*1e-9 < .2 or stamp <= 0:
+        raise ValueError('initial state provenance/freshness at acquisition')
+    return q.tolist()
+
+
+def interior_target(position, settings, margin=.02):
+    lo, hi = np.array(settings['workspace_min']), np.array(settings['workspace_max'])
+    if np.any(hi-lo <= 2*margin):
+        raise ValueError('workspace has no approach interior')
+    return np.clip(position, lo+margin, hi-margin)
+
+
+def cartesian_guard(measured_p, measured_q, target_p, target_q, settings, approach=False):
+    """Guard native one-period command FK, including approach from outside the box."""
+    p, target = np.asarray(measured_p), np.asarray(target_p)
+    lo, hi = np.array(settings['workspace_min']), np.array(settings['workspace_max'])
+    violation = lambda x: np.maximum(lo-x, 0)+np.maximum(x-hi, 0)
+    if approach:
+        if np.any(violation(target) > violation(p)+1e-5):
+            raise ValueError('approach moves farther outside workspace')
+    elif np.any(target < lo) or np.any(target > hi):
+        raise ValueError('native target outside workspace')
+    delta = target-p
+    if (np.linalg.norm(delta[:2]) > settings['linear_speed']*settings['speed_scale']*.02+1e-5
+            or abs(delta[2]) > settings['vertical_speed']*settings['speed_scale']*.02+1e-5
+            or np.linalg.norm(delta) > settings['max_step']+1e-5):
+        raise ValueError('native Cartesian translation speed/step limit')
+    angle = 2*math.acos(min(1., abs(float(np.dot(measured_q, target_q)))))
+    if angle > min(math.radians(settings['angular_speed_deg'])*settings['rot_scale']*.02,
+                   math.radians(settings['max_slew_deg']))+1e-5:
+        raise ValueError('native Cartesian rotation speed limit')
+
+
+def validate_run_outcome(accepted, movement, source_s, wall_s, sim_s, lateness_s):
+    if accepted <= 0 or movement <= .0001:
+        raise ValueError('no positive native/measured motion')
+    if not .9 <= sim_s/wall_s <= 1.1:
+        raise ValueError('simulation real-time factor outside [0.9,1.1]')
+    if not .9 <= source_s/wall_s <= 1.1 or lateness_s > .1:
+        raise ValueError('1x source scheduling tolerance exceeded')

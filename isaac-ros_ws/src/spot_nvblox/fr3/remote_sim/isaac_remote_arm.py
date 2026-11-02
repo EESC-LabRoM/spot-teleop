@@ -1,10 +1,13 @@
 # Adapted from Murilo franka_ros_arm.py for the equivalent remote workcell.
 # All control/state topics use /fr3_sim in DDS 188; no hardware driver.
-# CPU physics advances between rendered snapshots; latest JPEG only, no trace/video accumulation.
+# GPU PhysX advances between rendered snapshots; latest JPEG only, no trace/video accumulation.
 import argparse, json, math, os, threading, time
 HERE = os.path.dirname(os.path.abspath(__file__))
 ap = argparse.ArgumentParser()
 ap.add_argument("--out", required=True)
+ap.add_argument("--physics-hz",type=int,default=60,choices=[60,120,200],help="GPU physics step frequency; 60 Hz avoids wall-time lag for one arm")
+ap.add_argument("--arm-drive-damping-scale",type=float,default=1.,help="Simulation-only arm servo damping multiplier; never applies to hardware")
+ap.add_argument("--physics-device",default="cuda:0",choices=["cuda:0","cpu"])
 ap.add_argument("--stage", default=os.path.join(HERE, "remote_workcell.usda"))
 ap.add_argument("--seconds", type=float, default=18.0, help="sim seconds to record after the first /fr3_sim/goal")
 ap.add_argument("--wait", type=float, default=900.0, help="wall seconds to wait for the first /fr3_sim/goal")
@@ -37,16 +40,18 @@ ap.add_argument("--track-object", default="", help="log this object's pose (trac
 ap.add_argument("--capture-only", action="store_true", help="exit after the capture (no ROS wait, no ZED streams)")
 ap.add_argument("--capture-res", type=int, nargs=2, default=[1280, 720])
 ap.add_argument("--ext-dir", default="/workspace/zed-isaac-sim-5.1.0/IsaacSimZED@110.1.1+isaac-sim-600.0.13b03659.local.manylinux_2_35_x86_64.release/exts")
-a = ap.parse_args(); a.out = os.path.abspath(a.out); os.makedirs(a.out, exist_ok=True)
+a = ap.parse_args();
+if not .1 <= a.arm_drive_damping_scale <= 1.:ap.error("arm drive damping scale must be in [0.1,1]")
+a.out = os.path.abspath(a.out); os.makedirs(a.out, exist_ok=True)
 
 from isaacsim import SimulationApp
-app = SimulationApp({"headless": True, "renderer": "RayTracedLighting", "width": a.video_res[0], "height": a.video_res[1], "disable_viewport_updates": True, "anti_aliasing": 2, "multi_gpu": False, "active_gpu": 0, "physics_gpu": 0})
+app = SimulationApp({"headless": True, "limit_cpu_threads": 4, "renderer": "RayTracedLighting", "width": a.video_res[0], "height": a.video_res[1], "disable_viewport_updates": True, "anti_aliasing": 2, "multi_gpu": False, "active_gpu": 0, "physics_gpu": 0})
 import numpy as np, omni.usd, omni.timeline, omni.kit.app, warp as wp
 from pxr import Gf, Usd, UsdGeom, UsdPhysics, Vt
 from isaacsim.core.utils.stage import is_stage_loading
 from isaacsim.core.simulation_manager import SimulationManager, SimulationEvent
 
-DT, CTRL_EVERY = 1.0 / 200.0, 4                      # PhysX 200 Hz; one app update = 4 physics steps = the node's 20 ms
+DT, CTRL_EVERY = 1.0 / a.physics_hz, max(1,round(a.physics_hz/50))                      # PhysX 200 Hz; one app update = 4 physics steps = the node's 20 ms
 TCP = 0.1034
 RETRACT = [0.0, -1.3, 0.0, -2.5, 0.0, 1.0, 0.0]      # franka.yml retract_config (arm joints)
 omni.kit.app.get_app().get_extension_manager().set_extension_enabled_immediate("isaacsim.core.rendering_manager", True)
@@ -127,6 +132,14 @@ trail.CreateWrapAttr("nonperiodic"); trail.CreateDisplayColorAttr([Gf.Vec3f(0.30
 trail.CreatePointsAttr(Vt.Vec3fArray([Gf.Vec3f(0, 0, -5), Gf.Vec3f(0, 0, -5.001)])); trail.CreateCurveVertexCountsAttr([2])
 trail.CreateWidthsAttr([0.006, 0.006]); trail.SetWidthsInterpolation(UsdGeom.Tokens.vertex)   # authored now: attributes
                                                      # created after RTX's first sync keep defaults (a 1 m thick tube)
+# Visual ruler uses the measured articulation pose, never the requested goal.
+tool_rulers=[]
+for name,color,length,axis in [('forward',(1.,.35,.02),.14,2),('side',(.05,.35,1.),.075,0)]:
+    line=UsdGeom.BasisCurves.Define(stage,'/World/review_tool_'+name)
+    line.CreateTypeAttr('linear');line.CreateWrapAttr('nonperiodic');line.CreateDisplayColorAttr([Gf.Vec3f(*color)])
+    line.CreatePointsAttr(Vt.Vec3fArray([Gf.Vec3f(0,0,-5),Gf.Vec3f(0,0,-5.001)]));line.CreateCurveVertexCountsAttr([2])
+    line.CreateWidthsAttr([.008,.008]);line.SetWidthsInterpolation(UsdGeom.Tokens.vertex)
+    tool_rulers.append((line,length,axis))
 TRAIL_N = int(3.0 / (CTRL_EVERY * DT))
 cam = UsdGeom.Camera.Define(stage, "/World/mpc_view_cam"); cam.CreateFocalLengthAttr(float(a.view[6]))
 cam.CreateHorizontalApertureAttr(20.955); cam.CreateVerticalApertureAttr(20.955 * a.video_res[1] / a.video_res[0])
@@ -150,14 +163,17 @@ import rclpy
 from rosgraph_msgs.msg import Clock
 from sensor_msgs.msg import JointState as JointStateMsg
 from geometry_msgs.msg import PoseStamped
-from std_msgs.msg import Float32
+from std_msgs.msg import Float32,Empty,String
+from home_pose import HOME_Q
+from simulation_recording import FrameRecorder
+recorder=FrameRecorder()
 rclpy.init(); node = rclpy.create_node("isaac_franka")
 tcp_pub = node.create_publisher(PoseStamped, "/fr3_sim/tcp", 10)
 clock_pub = node.create_publisher(Clock, "/clock", 10)
 js_pub = node.create_publisher(JointStateMsg, "/fr3_sim/joint_states", 10)
 obj_pub = node.create_publisher(PoseStamped, "/target_object/pose", 10)       # --track-object: its rigid body in fr3_link0, sim stamps
 lock = threading.Lock()
-R = {"cmd": None, "cmd_n": 0, "cmd_new": False, "pose": None, "pose_n": 0, "grip": None, "grip_new": False}
+R = {"cmd": None, "cmd_n": 0, "cmd_new": False, "pose": None, "pose_n": 0, "grip": None, "grip_new": False,"reset":False,"records":[]}
 def on_cmd(m):
     with lock: R["cmd"], R["cmd_n"], R["cmd_new"] = m, R["cmd_n"] + 1, True
 def on_pose(m):
@@ -167,6 +183,12 @@ node.create_subscription(PoseStamped, "/fr3_sim/goal", on_pose, 10)
 def on_grip(m):                                      # /fr3_sim/gripper_width: target of EACH finger joint, m (0.04 open, 0 closed)
     with lock: R["grip"], R["grip_new"] = float(min(max(m.data, 0.0), 0.04)), True
 node.create_subscription(Float32, "/fr3_sim/gripper_width", on_grip, 10)
+def on_reset(_):
+    with lock:R["reset"]=True
+node.create_subscription(Empty,"/fr3_sim/reset",on_reset,10)
+def on_record(m):
+    with lock:R["records"].append(m.data)
+node.create_subscription(String,"/fr3_sim/record",on_record,10)
 threading.Thread(target=rclpy.spin, args=(node,), daemon=True).start()
 def stamp_s(h): return h.stamp.sec + h.stamp.nanosec * 1e-9
 def quat_xyzw_to_R(x, y, z, w):
@@ -194,13 +216,17 @@ def on_pre_step(dt, context):
         q = art.get_dof_positions().numpy()[0].astype(np.float32).copy()
         pre = next(n for n in names if n.endswith("_joint1"))[:-len("joint1")]   # "fr3_" (lab arm) or "panda_"
         a2d = np.array([names.index(f"{pre}joint{j + 1}") for j in range(7)])
-        q[a2d] = RETRACT
+        q[a2d] = HOME_Q
         for i_, n_ in enumerate(names):
             if "finger" in n_: q[i_] = 0.04
         z = np.zeros_like(q)
         art.set_dof_positions(wp.array(q[None], dtype=wp.float32, device=dev), idx)
         art.set_dof_velocities(wp.array(z[None], dtype=wp.float32, device=dev), idx)
         art.set_dof_position_targets(wp.array(q[None], dtype=wp.float32, device=dev), idx)
+        damping=art.get_dof_dampings().numpy().copy()
+        damping[0,a2d]*=a.arm_drive_damping_scale
+        # Drive properties are host metadata even when dynamics and state tensors use CUDA.
+        art.set_dof_dampings(wp.array(damping,dtype=wp.float32,device="cpu"),wp.array([0],dtype=wp.uint32,device="cpu"))
         rt = art.get_root_transforms().numpy()[0]
         S.update(art=art, dev=dev, idx=idx, names=names, a2d=a2d, tgt=q.copy(), vtgt=z.copy(), hand=links.index(f"{pre}hand"),
                  root_p=rt[:3].copy(), root_R=quat_xyzw_to_R(*rt[3:7]), cmd_q=q[a2d].copy(), cmd_qd=z[a2d].copy(),
@@ -216,6 +242,8 @@ def on_pre_step(dt, context):
         if a.track_object:
             rb = next(str(p_.GetPath()) for p_ in Usd.PrimRange(stage.GetPrimAtPath(f"/World/{a.track_object}")) if p_.HasAPI(UsdPhysics.RigidBodyAPI))
             S["rb"] = view.create_rigid_body_view(rb); print("[arm] tracking rigid body", rb, flush=True)
+        print("[arm] physics tensor device:", str(dev),flush=True)
+        if a.physics_device.startswith("cuda") and not dev.is_cuda:raise RuntimeError("GPU physics required; refusing CPU tensor fallback")
         print("[arm] dofs", names, "| root", rt.tolist(), "| gains", S["gains"], flush=True)
         return
     art = S["art"]
@@ -223,6 +251,20 @@ def on_pre_step(dt, context):
         m, new, cmd_n = R["cmd"], R["cmd_new"], R["cmd_n"]; R["cmd_new"] = False
         pose, pose_n = R["pose"], R["pose_n"]
         grip, grip_new = R["grip"], R["grip_new"]; R["grip_new"] = False
+        reset=R["reset"];R["reset"]=False
+        commands=R["records"][:];R["records"].clear()
+        if reset:R["cmd"]=None;R["cmd_new"]=False;R["grip_new"]=False;R["pose"]=None
+    for command in commands:
+        try:recorder.handle_command(command,time.monotonic())
+        except Exception as error:print("[remote] record error",str(error),flush=True)
+    if reset:
+        q=S["tgt"].copy();q[S["a2d"]]=HOME_Q;q[S["fi"]]=.04;zero=np.zeros_like(q)
+        art.set_dof_positions(wp.array(q[None],dtype=wp.float32,device=S["dev"]),S["idx"])
+        art.set_dof_velocities(wp.array(zero[None],dtype=wp.float32,device=S["dev"]),S["idx"])
+        art.set_dof_position_targets(wp.array(q[None],dtype=wp.float32,device=S["dev"]),S["idx"])
+        art.set_dof_velocity_targets(wp.array(zero[None],dtype=wp.float32,device=S["dev"]),S["idx"])
+        S["tgt"],S["vtgt"]=q,zero;S["trail"]=[];m=None;new=False;grip_new=False;pose=None
+
     if grip_new:
         for i_ in S["fi"]: S["tgt"][i_] = grip
     if (new and m is not None) or grip_new:                        # latest command -> drive targets (by joint name)
@@ -255,11 +297,7 @@ def on_pre_step(dt, context):
         p = np.array([pose.pose.position.x, pose.pose.position.y, pose.pose.position.z])
         o = pose.pose.orientation; Rt = quat_xyzw_to_R(o.x, o.y, o.z, o.w)
         tip_w = S["root_p"] + S["root_R"] @ (p)
-        mk_op.Set(Gf.Vec3d(*tip_w.tolist()))
         S["trail"] = (S["trail"] + [Gf.Vec3f(*tip_w.tolist())])[-TRAIL_N:]
-        if len(S["trail"]) >= 2:
-            trail.GetPointsAttr().Set(Vt.Vec3fArray(S["trail"])); trail.GetCurveVertexCountsAttr().Set([len(S["trail"])])
-            trail.GetWidthsAttr().Set([0.006] * len(S["trail"]))
         if S["rec"]:
             q = art.get_dof_positions().numpy()[0]; qd = art.get_dof_velocities().numpy()[0]
             lt = art.get_link_transforms().numpy()[0][S["hand"]]
@@ -311,7 +349,12 @@ def grasp_capture():
     json.dump(summ, open(os.path.join(cdir, "summary.json"), "w"), indent=1)
     print("[arm] grasp capture:", json.dumps({c: summ[c]["pixels"] for c in CAPCAMS}), flush=True)
 
-SimulationManager.setup_simulation(dt=DT, device="cpu")
+SimulationManager.setup_simulation(dt=DT, device=a.physics_device)
+gpu_scenes=[dict(gpu_dynamics=scene.get_enabled_gpu_dynamics(),broadphase=scene.get_broadphase_type()) for scene in SimulationManager.get_physics_scenes()]
+print("[remote] physics backend:",str(SimulationManager.get_device()),json.dumps(gpu_scenes),flush=True)
+if a.physics_device.startswith("cuda") and not all(scene['gpu_dynamics'] and scene['broadphase']=='GPU' for scene in gpu_scenes):
+    raise RuntimeError("GPU PhysX required; CPU fallback refused")
+SimulationManager.enable_fabric(True)
 cb = SimulationManager.register_callback(on_pre_step, event=SimulationEvent.PHYSICS_PRE_STEP)
 tl = omni.timeline.get_timeline_interface(); tl.play()
 
@@ -370,27 +413,51 @@ print("[arm] objects:", {k: len(v) for k, v in M0.items()}, "triangles", flush=T
 SimulationManager.deregister_callback(cb)
 tl.set_auto_update(False);tl.commit_silently()
 def advance_physics(count):
+    budget_start=time.monotonic()
     for _ in range(count):
         on_pre_step(DT,None)
         SimulationManager.step(steps=1)
+        # Never hide the renderer behind a multi-second catch-up batch when
+        # physics cannot keep up with wall time on this host.
+        if time.monotonic()-budget_start>=.02:break
 
 # Live loop: bounded latest JPEG only; no unbounded frame directory or trace buffers.
 wall0,n0,updates,last_shot = time.monotonic(),S["n"],0,0.
 performance_at,performance_n,performance_frames,last_report=time.monotonic(),S["n"],0,0.
+physics_wall,render_wall=0.,0.
+import omni.physxfabric
+fabric_interface=omni.physxfabric.get_physx_fabric_interface()
 print("[remote] ready: /fr3_sim/* only; latest view.jpg",flush=True)
 while app.is_running() and time.monotonic()-wall0 < a.wait:
     # Rendering must not set the rate of physics. Catch up wall time with physics-only steps.
     now=time.monotonic()
     deficit=(now-wall0)-(S["n"]-n0)*DT
-    if deficit>DT:advance_physics(min(100,max(1,int(deficit/DT))))
-    if not a.no_video and now-last_shot >= 1./a.fps:
+    if deficit>DT:
+        before=time.monotonic();advance_physics(min(100,max(1,int(deficit/DT))));physics_wall+=time.monotonic()-before
+    if not a.no_video and (now-last_shot >= 1./a.fps or recorder.should_capture(now)):
+        before=time.monotonic()
+        # Manual PhysX steps default to update_fabric=False. The renderer must
+        # explicitly receive the new transforms when timeline auto-update is off.
+        fabric_interface.update(SimulationManager.get_simulation_time(),DT)
+        if S['art'] is not None:
+            transform=S['art'].get_link_transforms().numpy()[0][S['hand']]
+            rotation=quat_xyzw_to_R(*transform[3:7]);tip=transform[:3]+rotation@np.array([0.,0.,TCP])
+            for ruler,length,axis in tool_rulers:
+                ruler.GetPointsAttr().Set(Vt.Vec3fArray([Gf.Vec3f(*tip.tolist()),Gf.Vec3f(*(tip+length*rotation[:,axis]).tolist())]))
+        if S["trail"]:
+            mk_op.Set(Gf.Vec3d(*S["trail"][-1]))
+        if len(S["trail"])>=2:
+            trail.GetPointsAttr().Set(Vt.Vec3fArray(S["trail"]));trail.GetCurveVertexCountsAttr().Set([len(S["trail"])])
+            trail.GetWidthsAttr().Set([.006]*len(S["trail"]))
         app.update()  # Continuous captureOnPlay avoids Replicator waiting on a manually advanced physics clock.
         im=annot.get_data();im=im.get("data") if isinstance(im,dict) else im
         if im is not None and getattr(im,"size",0):
             tmp=os.path.join(a.out,"view.tmp.jpg")
             Image.fromarray(np.asarray(im)[...,:3]).save(tmp,quality=80)
             os.replace(tmp,os.path.join(a.out,"view.jpg"))
+            if recorder.should_capture(time.monotonic()):recorder.record_frame(np.asarray(im)[...,:3],S["n"]*DT,now_mono=time.monotonic())
         performance_frames+=1
+        render_wall+=time.monotonic()-before
         # Start the frame interval AFTER rendering; otherwise a slow render makes
         # every iteration render again and starves the physics-only iterations.
         last_shot=time.monotonic()
@@ -402,12 +469,13 @@ while app.is_running() and time.monotonic()-wall0 < a.wait:
     report_now=time.monotonic()
     if report_now-last_report>=2.:
         elapsed=report_now-performance_at
-        stats=dict(physics_hz=(S["n"]-performance_n)/max(elapsed,1e-6),
+        stats=dict(backend="isaac_physx",physics_device=str(SimulationManager.get_device()),tensor_device=str(S.get("dev")),physical_gpu=os.environ.get("FR3_PHYSICAL_GPU"),gpu_scenes=gpu_scenes,arm_drive_damping_scale=a.arm_drive_damping_scale,configured_physics_hz=a.physics_hz,physics_hz=(S["n"]-performance_n)/max(elapsed,1e-6),
                    realtime_factor=(S["n"]-performance_n)*DT/max(elapsed,1e-6),
-                   render_fps=performance_frames/max(elapsed,1e-6),at=time.time())
+                   render_fps=performance_frames/max(elapsed,1e-6),physics_wall_s=physics_wall,render_wall_s=render_wall,at=time.time())
         path=os.path.join(a.out,"performance.tmp.json")
         with open(path,"w") as f:json.dump(stats,f)
         os.replace(path,os.path.join(a.out,"performance.json"))
         performance_at,performance_n,performance_frames,last_report=report_now,S["n"],0,report_now
+        physics_wall,render_wall=0.,0.
         print('[remote] '+json.dumps(stats),flush=True)
-tl.stop();app.close()
+recorder.stop();tl.stop();app.close()

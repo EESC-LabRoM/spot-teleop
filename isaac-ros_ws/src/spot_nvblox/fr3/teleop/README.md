@@ -52,7 +52,7 @@ See [HAND_ROBUSTNESS.md](HAND_ROBUSTNESS.md) for the raw-orientation gate correc
 
 ## FR3 forward direction
 
-The operator forward/backward translation axis is reversed relative to Spot: default `zed_forward_sign: -1.0` maps positive operator body x displacement to negative FR3 base x displacement, as requested for approaching the table. Pulling the hand back moves the other way. Left/right, up/down, relative orientation, joystick mapping and safety/speed limits are unchanged. This startup-only parameter accepts -1 or +1 and cannot be flipped during a running session. Neutral anchoring still prevents a jump at Start. The direction has synthetic regression coverage; the physical table direction needs confirmation when the robot is available.
+The operator forward/backward translation axis is reversed relative to Spot: default `zed_forward_sign: +1.0` (changed 10-22 after the physical trial): moving the hand forward moves the FR3 toward the table; pulling it back moves away. `-1.0` restores the old reversed mapping. Left/right, up/down, relative orientation, joystick mapping and safety/speed limits are unchanged. This startup-only parameter accepts -1 or +1 and cannot be flipped during a running session. Neutral anchoring still prevents a jump at Start. The direction has synthetic regression coverage; the physical table direction needs confirmation when the robot is available.
 
 
 ## Laboratory hybrid tracking (22 October 2026)

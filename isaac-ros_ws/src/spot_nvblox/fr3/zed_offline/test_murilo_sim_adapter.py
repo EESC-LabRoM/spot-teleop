@@ -75,7 +75,7 @@ def test_bad_state_and_malformed_output_hold():
 def test_native_hook_exactly_once_and_no_unverified_publish():
     tree = instrument_native('self.cmd_pub.publish(joint_cmd)', 'fixture')
     import ast
-    assert ast.unparse(tree) == 'offline_sink(self, joint_cmd, bool(is_feasible), cu_js)'
+    assert ast.unparse(tree) == 'offline_sink(self, joint_cmd, bool(is_feasible), cu_js, mpc_result, fk_current)'
     with pytest.raises(ValueError):
         instrument_native('pass', 'fixture')
 
@@ -158,3 +158,55 @@ def test_measured_simulator_feedback_moves_and_hold_tracks_measurement():
         assert adapter.convert(trajectory(target), **flags) == (ARM, after[:7], [0.]*7)
     finally:
         arm.close()
+
+
+def test_initial_state_strict_validation_and_approach_cartesian_limits():
+    from murilo_sim_adapter import validate_initial_state, interior_target, cartesian_guard
+    seed = dict(names=ARM, q=Q, captured_ns=10000000000, stamp_ns=9990000000,
+                provenance=dict(topic='/franka/joint_states', domain=77))
+    assert validate_initial_state(seed) == Q
+    for change in (dict(names=ARM[::-1]), dict(q=[float('nan')]*7), dict(q=[9.]*7),
+                   dict(q=[0.]*6), dict(provenance={}), dict(stamp_ns=0)):
+        with pytest.raises(ValueError):
+            validate_initial_state(dict(seed, **change))
+    settings = dict(workspace_min=[.35,-.35,.15], workspace_max=[.65,.35,.45],
+                    linear_speed=.6, vertical_speed=.4, speed_scale=.5, rot_scale=.5,
+                    angular_speed_deg=90., max_step=.02, max_slew_deg=4.)
+    np.testing.assert_allclose(interior_target([.308,0.,.48], settings), [.37,0.,.43])
+    cartesian_guard([.308,0.,.48], [0.,0.,0.,1.], [.309,0.,.479], [0.,0.,0.,1.], settings, approach=True)
+    cartesian_guard([.4,0.,.3], [0.,0.,0.,1.], [.401,0.,.301], [0.,0.,0.,1.], settings)
+    for target, approach in (([.307,0.,.481],True), ([.309,0.,.479],False), ([.4,0.,.4],True)):
+        with pytest.raises(ValueError):
+            cartesian_guard([.308,0.,.48], [0.,0.,0.,1.], target, [0.,0.,0.,1.], settings, approach=approach)
+
+
+def test_separate_physics_process_positive_motion_and_realtime(tmp_path):
+    from murilo_sim_physics import PhysicsProcess
+    from home_pose import HOME_Q
+    from murilo_sim_adapter import validate_run_outcome
+    with pytest.raises(ValueError):
+        PhysicsProcess([float('nan')]*7, {}, tmp_path)
+    arm = PhysicsProcess(HOME_Q, {}, tmp_path)
+    try:
+        first = arm.read()
+        target = list(HOME_Q)
+        target[0] += .003
+        start = time.monotonic()
+        while time.monotonic()-start < 2.:
+            arm.set_targets(ARM, target, [0.]*7)
+            time.sleep(.02)
+        last = arm.read()
+        wall = last[1]-first[1]
+        sim = last[2]-first[2]
+        movement = np.linalg.norm(np.array(last[21:24])-first[21:24])
+        assert last[3] > first[3]+.001
+        assert movement > .0001
+        assert .9 <= sim/wall <= 1.1
+        validate_run_outcome(1, movement, wall, wall, sim, .01)
+        with pytest.raises(ValueError, match='real-time'):
+            validate_run_outcome(1, movement, wall, wall, .5*wall, .01)
+    finally:
+        arm.close()
+    summary = json.loads((tmp_path/'physics_summary.json').read_text())
+    assert summary['error'] is None
+    assert summary['max_joint_v'] > 0 and summary['max_joint_a'] <= 10.05

@@ -32,7 +32,9 @@ from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
 from rcl_interfaces.srv import SetParameters
 from sensor_msgs.msg import Joy
 from std_msgs.msg import Bool, Float32MultiArray, String
-from std_srvs.srv import Trigger
+from std_srvs.srv import Trigger, SetBool
+from controller_manager_msgs.srv import SwitchController
+from curobo_start import prepare as prepare_curobo
 from tf2_ros import Buffer, TransformListener
 
 import remote_pad
@@ -94,11 +96,14 @@ class Dash(Node):
         self.padmap = None                                # the teleop's actual bindings (for the dashboard's pad check)
         self.create_subscription(String, "/teleop/pad_map", self._on_padmap, LATCHED)
         self.zed_command_lock = threading.Lock()
+        self.zed_cancel = threading.Event()
         self.zed_start_cli = self.create_client(Trigger, "/teleop/zed_start")
         self.zed_home_cli = self.create_client(Trigger, "/teleop/home")
         self.zed_engage_cli = self.create_client(Trigger, "/teleop/zed_engage")
         self.zed_stop_cli = self.create_client(Trigger, "/teleop/stop")
         self.speed_cli = self.create_client(SetParameters, "/fr3_joy_teleop/set_parameters")
+        self.curobo_enable_cli=self.create_client(SetBool,'/fr3_curobo/enable')
+        self.curobo_switch_cli=self.create_client(SwitchController,'/controller_manager/switch_controller')
         self.create_timer(0.05, self._tick)
         if self.joy: threading.Thread(target=self._joydev, daemon=True).start()
         self.get_logger().info(f"dashboard on :{self.port}, waiting for /robot_description")
@@ -136,10 +141,10 @@ class Dash(Node):
     def set_teleop_param(self, name, value):
         """Set one of the two teleop parameters the dashboard may touch: speed_scale (float, the teleop rejects > 1) or pad_test (bool,
         which only makes the teleop ignore the pad). Returns (ok, message)."""
-        if name not in ("speed_scale", "rot_scale", "pad_test", "grasp_force", "input_source"): return False, "parameter not allowed"
+        if name not in ("speed_scale", "rot_scale", "pad_test", "grasp_force", "input_source", "zed_review_exercise"): return False, "parameter not allowed"
         if not self.speed_cli.wait_for_service(timeout_sec=1.0): return False, "teleop is not running"
         if name == "input_source" and value not in ("joystick", "zed"): return False, "invalid source"
-        pv = (ParameterValue(type=ParameterType.PARAMETER_STRING, string_value=value) if name == "input_source" else ParameterValue(type=ParameterType.PARAMETER_BOOL, bool_value=bool(value)) if name == "pad_test"
+        pv = (ParameterValue(type=ParameterType.PARAMETER_STRING, string_value=value) if name in ("input_source","zed_review_exercise") else ParameterValue(type=ParameterType.PARAMETER_BOOL, bool_value=bool(value)) if name == "pad_test"
               else ParameterValue(type=ParameterType.PARAMETER_DOUBLE, double_value=float(value)))
         req = SetParameters.Request(); req.parameters = [Parameter(name=name, value=pv)]
         done = threading.Event(); res = []
@@ -148,8 +153,40 @@ class Dash(Node):
         r = res[0].results[0]; return bool(r.successful), r.reason or "ok"
 
     def control_zed(self, action):
-        with self.zed_command_lock:
+        if action=='disengage':
+            self.zed_cancel.set()
             return self._control_zed(action)
+        with self.zed_command_lock:
+            if action in ('start','engage','recalibrate'):self.zed_cancel.clear()
+            return self._control_zed(action)
+
+    def _curobo_rpc(self,client,request,timeout=3.):
+        if not client.wait_for_service(timeout_sec=1.):return None
+        done=threading.Event();box=[]
+        def finished(future):
+            try:box.append(future.result())
+            except Exception:box.append(None)
+            finally:done.set()
+        client.call_async(request).add_done_callback(finished)
+        if not done.wait(timeout) or not box:return None
+        return box[0]
+
+    def _curobo_enable(self,enabled):
+        request=SetBool.Request();request.data=bool(enabled)
+        result=self._curobo_rpc(self.curobo_enable_cli,request)
+        return (bool(result.success),result.message) if result else (False,'No answer from cuRobo output bridge')
+
+    def _prepare_curobo(self):
+        with self.lock:
+            if self.engaged:return False,'Stop before preparing cuRobo'
+        def status():
+            with urlopen('http://127.0.0.1:8784/status',timeout=2.) as response:return json.load(response)
+        def switch(activate,deactivate):
+            request=SwitchController.Request();request.activate_controllers=activate;request.deactivate_controllers=deactivate;request.strictness=2;request.activate_asap=True;request.timeout.sec=2
+            result=self._curobo_rpc(self.curobo_switch_cli,request)
+            return bool(result and result.ok)
+        try:return prepare_curobo(status,switch,lambda:self._curobo_enable(True),lambda:self._curobo_enable(False),cancelled=self.zed_cancel.is_set)
+        except Exception as error:return False,'cuRobo preparation failed: '+str(error)
 
     def _control_zed(self, action):
         if action=="recalibrate":
@@ -160,12 +197,18 @@ class Dash(Node):
                 control.sendto(b'{"action":"reset_person","version":1}',('127.0.0.1',47815))
             return self._control_zed("start")
         if action not in ("start", "engage", "disengage", "home"): return False, "invalid action"
+        if action=='start' and (not self.zed_status or time.monotonic()-self.zed_status_at>2.):return False,'Teleop status absent/stale'
         if action == "engage":
             with self.lock:
                 if self.input_source != "zed": return False, "Select ZED3 first"
                 if self.engaged: return False, "Already active"
                 if not self.zed_status or self.zed_status.get("reason"):
                     return False, (self.zed_status or {}).get("reason") or "Tracking unavailable"
+        if action=='start' and (self.zed_status or {}).get('control_backend')=='curobo':
+            if self.zed_status.get('start_reason'):return False,self.zed_status['start_reason']
+            ok,message=self._prepare_curobo()
+            if not ok:return False,message
+        if action=='start' and self.zed_cancel.is_set():return False,'Start cancelled'
         client = getattr(self, {"start": "zed_start_cli", "engage": "zed_engage_cli", "disengage": "zed_stop_cli", "home": "zed_home_cli"}[action])
         if not client.wait_for_service(timeout_sec=1): return False, "Teleop unavailable"
         done = threading.Event(); result = []
@@ -176,6 +219,8 @@ class Dash(Node):
         future.add_done_callback(finished)
         if not done.wait(2) or not result or result[0] is None:
             return False, "No response; check the active status before retrying"
+        if action=='start' and self.zed_cancel.is_set():return self._control_zed('disengage')
+        if action in ('disengage','home') and (self.zed_status or {}).get('control_backend')=='curobo':self._curobo_enable(False)
         return bool(result[0].success), result[0].message
 
     def set_speed(self, scale, name="speed_scale"): return self.set_teleop_param(name, scale)
@@ -240,7 +285,7 @@ def make_handler(node):
             path = urlparse(self.path).path
             host = (self.headers.get("Host") or "").split(":")[0]; origin = self.headers.get("Origin")
             same = origin is None or (urlparse(origin).hostname or "") == host
-            if path not in ("/speed", "/padtest", "/grip", "/input-source", "/zed-control") or not same or self.headers.get("X-Dashboard") != "1" or "json" not in (self.headers.get("Content-Type") or ""):
+            if path not in ("/speed", "/padtest", "/grip", "/input-source", "/zed-control", "/zed-profile") or not same or self.headers.get("X-Dashboard") != "1" or "json" not in (self.headers.get("Content-Type") or ""):
                 return self._send(403, b"forbidden", "text/plain")
             if path == "/zed-control":
                 # Start is an explicit motion-enable action; preserve local/proxy trust.
@@ -259,6 +304,13 @@ def make_handler(node):
                 try: ok, msg = node.control_zed(action)
                 except Exception: ok, msg = False, "Teleop request failed"
                 return self._send(200 if ok else 409, json.dumps(dict(ok=ok, message=msg)).encode(), "application/json")
+            if path == "/zed-profile":
+                try:
+                    profile=json.loads(self.rfile.read(min(int(self.headers.get("Content-Length") or 0),200)))["profile"]
+                    if profile not in ('full_6d', 'translation', 'horizontal', 'height', 'reach', 'roll', 'pitch', 'yaw', 'gripper', 'cross', 'neutral'):raise ValueError('Unknown exercise')
+                except Exception:return self._send(400,b"bad request","text/plain")
+                ok,msg=node.set_teleop_param("zed_review_exercise",profile)
+                return self._send(200 if ok else 409,json.dumps(dict(ok=ok,message=msg)).encode(),"application/json")
             if path == "/input-source":
                 try:
                     source = json.loads(self.rfile.read(min(int(self.headers.get("Content-Length") or 0), 200)))["source"]

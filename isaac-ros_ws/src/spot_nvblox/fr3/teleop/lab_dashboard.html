@@ -18,8 +18,12 @@ h2 { margin:22px 0 10px; font-size:15px; font-weight:650; }
 .pill.on { color:var(--live); } .pill.warn { color:var(--warn); } .pill.bad { color:var(--bad); }
 .top { display:grid; grid-template-columns:1fr; gap:14px; align-items:start; }
 .main-column { min-width:0; }
-#zedstatus { white-space:normal; overflow-wrap:anywhere; border-radius:6px; }
-#trackingdetail { margin-top:8px; overflow-wrap:anywhere; }
+#zedstatus { display:block; white-space:normal; overflow-wrap:anywhere; border-radius:6px; height:2.7em; line-height:1.3em; overflow:hidden; }
+#trackingdetail { margin-top:8px; overflow-wrap:anywhere; height:2.6em; line-height:1.3em; overflow:hidden; }
+/* fixed-height status lines: changing text must never move the buttons (10-27) */
+#inputnote { height:3.9em; line-height:1.3em; overflow:hidden; }
+#zedgesture { display:inline-block; min-width:9em; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; vertical-align:bottom; }
+#curobostatus { display:block; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 #zedactivate, #zedhome, #zedstop, #zedrecalibrate { padding:7px 10px; border:1px solid var(--line); border-radius:6px; cursor:pointer; }
 #zedactivate { background:var(--live); color:#0b0f14; font-weight:650; }
 #zedstop { background:#542a2a; color:var(--fg); }
@@ -93,29 +97,34 @@ details summary { cursor:pointer; color:var(--muted); font-size:13px; }
   </div>
 
 <h2>Cameras</h2>
-<section class="grid three">
+<section class="grid">
   <figure id="cam1"><div class="frame"><img alt="zed1 live"><div class="offline">Stream unavailable. Retrying…</div></div>
     <figcaption><div><div class="name">Camera 1 · front</div><div class="sub">zed1 · 33874668</div></div><button type="button" data-cam="cam1">Reconnect</button></figcaption></figure>
   <figure id="cam2"><div class="frame"><img alt="zed2 live"><div class="offline">Stream unavailable. Retrying…</div></div>
     <figcaption><div><div class="name">Camera 2 · top</div><div class="sub">zed2 · 39498278</div></div><button type="button" data-cam="cam2">Reconnect</button></figcaption></figure>
   <figure id="cam3"><div class="frame"><img alt="zed3 live"><div class="offline">Wrist tracking stream unavailable. Retrying…</div></div>
     <figcaption><div><div class="name">Camera 3 · operator wrist</div><div class="sub">zed3 · 34046618</div></div><button type="button" data-cam="cam3">Reconnect</button></figcaption></figure>
+  <figure id="cam4"><div class="frame" style="aspect-ratio:4/3"><img alt="RealSense do punho da Franka"><div class="offline">RealSense indisponível. Tentando novamente…</div></div>
+    <figcaption><div><div class="name">RealSense · visão do robô</div><div class="sub">D435i · punho · 138422074833</div></div><button type="button" data-cam="cam4">Reconnect</button></figcaption></figure>
 </section>
 
   </div>
   <div class="side">
+    <div class="card"><h3>cuRobo · joystick</h3><div id="curobostatus" class="pill warn">Conferindo planejador…</div></div>
     <div class="card"><h3>ZED3 · 6D wrist teleoperation</h3>
+      <canvas id="zedmini" title="Camera 3 (operator hand), mirrored here next to Start" style="display:block;width:100%;aspect-ratio:16/9;margin:6px 0 4px;border-radius:6px;background:#000"></canvas>
+      <div style="display:flex;flex-wrap:wrap;gap:8px;margin:6px 0 8px">
+        <button type="button" id="zedactivate">Start teleop ZED</button>
+        <button type="button" id="zedrecalibrate">Nova pessoa / recalibrar</button>
+        <button type="button" id="zedhome">Home</button>
+        <button type="button" id="zedstop">Parar / abortar Home</button>
+        <button type="button" id="tojoystick">Voltar ao joystick</button>
+      </div>
       <div class="row"><span id="zedstatus" class="pill warn">waiting for tracking</span></div>
       <div class="k" id="trackingdetail">Aguardando diagnóstico da mão</div>
       <div class="row"><span class="k">Garra por gesto</span><span id="zedgesture">–</span></div>
       <div class="row" style="margin-top:8px"><label for="inputsource">Control input</label>
         <select id="inputsource"><option value="joystick">Joystick</option><option value="zed">ZED3 wrist · 6D</option></select></div>
-      <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:10px">
-        <button type="button" id="zedactivate">Start teleop ZED</button>
-        <button type="button" id="zedrecalibrate">Nova pessoa / recalibrar</button>
-        <button type="button" id="zedhome">Home</button>
-        <button type="button" id="zedstop">Parar / abortar Home</button>
-      </div>
       <div class="k" id="inputnote">Clique Start teleop ZED. Mostre ombro, cotovelo e punho direitos até calibrar a escala; depois mantenha a mão parada para iniciar. Ao concluir a calibração, o controle é habilitado automaticamente.</div>
       <div class="k" style="margin-top:6px">A posição e a orientação atuais são a referência. Estenda o braço para aproximar o robô da mesa; recue para afastar. Gire a mão para orientar a garra. Palma aberta abre a garra; punho fechado fecha. Mantenha o gesto por um instante. Home encerra a teleoperação e retorna à posição inicial.</div>
       <div class="k" style="margin-top:6px">Perda curta: pausa e retoma com a mão estável, sem salto. Após 5 s: desarma e exige novo Start. Controle direto, sem desvio de obstáculos cuRobo/PF.</div>
@@ -176,11 +185,11 @@ details summary { cursor:pointer; color:var(--muted); font-size:13px; }
 // ---- camera streams (web_video_server on :8787) ---------------------------------------------------------------------
 const HTTPS = location.protocol === 'https:';                  // via nexus:8443: cameras and the robot panel come through this server
 const STREAM_BASE = 'http://' + location.hostname + ':8787/stream?topic=';
-const cams = { cam1: '/zed1/zed_node/left/image_rect_color', cam2: '/zed2/zed_node/left/image_rect_color', cam3: '/fr3_operator/wrist_overlay',
+const cams = { cam1: '/zed1/zed_node/left/image_rect_color', cam2: '/zed2/zed_node/left/image_rect_color', cam3: '/fr3_operator/wrist_overlay', cam4: '/fr3_realsense/color/image_rect',
                seg1: '/franka_seg_zed1/overlay', seg2: '/franka_seg_zed2/overlay' };
 function startCam(key) {
   const fig = document.getElementById(key), img = fig.querySelector('img'), frame = fig.querySelector('.frame');
-  if (HTTPS || key === 'cam3') {     // one JPEG at a time through the tunnel, next one only after this one arrived (streams would starve the remote pad)
+  if (HTTPS || key === 'cam3' || key === 'cam4') {     // one JPEG at a time through the tunnel, next one only after this one arrived (streams would starve the remote pad)
     const gen = fig.dataset.gen = String(+(fig.dataset.gen || 0) + 1);       // Reconnect starts a new chain; the old one stops
     // While the remote pad is enabled the relay link is the pad's: only front + top, small and slower (measured 10-20: 5 full-size
     // pollers -> pad round trip p95 334 ms, max 440 ms, and the pad server blocks above 400 ms).
@@ -190,6 +199,7 @@ function startCam(key) {
     const next = () => {
       if (fig.dataset.gen !== gen) return;
       if (lean() && !keep) { fig.querySelector('.offline').textContent = 'Paused while the remote PS4 is on (keeps the link fast).'; frame.classList.add('down'); return setTimeout(next, 1000); }
+      if (key === 'cam4' && !HTTPS) { img.src = 'http://' + location.hostname + ':8785/snapshot?_=' + Date.now(); return; }
       if (key === 'cam3' && !HTTPS) { img.src = 'http://' + location.hostname + ':8786/snapshot?_=' + Date.now(); return; }
       img.src = 'snap?topic=' + cams[key] + (lean() ? '&width=320&height=180&quality=45' : '&width=480&height=270&quality=60') + '&_=' + Date.now();
     };
@@ -205,6 +215,36 @@ Object.keys(cams).forEach(startCam);
 document.getElementById('robotdash').href = HTTPS ? 'fr3/' : 'http://' + location.hostname + ':8088/';
 </script>
 
+<script>
+(async function curoboStatus(){
+ const element=document.getElementById('curobostatus');
+ if(location.protocol==='https:'){element.textContent='Status cuRobo no painel local :8788';return;}
+ try {
+  const response=await fetch('http://'+location.hostname+':8784/status',{cache:'no-store',signal:AbortSignal.timeout(1500)});
+  if(!response.ok)throw new Error('status unavailable');
+  const state=await response.json();
+  element.textContent=state.armed ? (state.reason==='active' ? 'cuRobo ativo · seguindo controle' : state.command_ready ? 'cuRobo pronto · Start no joystick' : 'cuRobo aguardando · '+(state.packet_reason||state.reason)) : 'cuRobo desarmado · '+(state.packet_reason||state.reason);
+  element.className='pill '+(state.armed&&state.command_ready?'on':'warn');
+ } catch(error){element.textContent='cuRobo indisponível';element.className='pill warn';}
+ setTimeout(curoboStatus,700);
+})();
+</script>
+
+<script>
+// Mirror the Camera 3 frame (operator hand overlay) into the ZED card, next to Start: draws the same <img>, no second stream.
+(function zedMini(){
+ const c=document.getElementById('zedmini'); if(!c)return; const ctx=c.getContext('2d');
+ function draw(){
+  const im=document.querySelector('#cam3 img');
+  if(im&&im.complete&&im.naturalWidth){
+   if(c.width!==im.naturalWidth||c.height!==im.naturalHeight){c.width=im.naturalWidth;c.height=im.naturalHeight;}
+   try{ctx.drawImage(im,0,0);}catch(e){}
+  }
+  requestAnimationFrame(draw);
+ }
+ requestAnimationFrame(draw);
+})();
+</script>
 <script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"}}</script>
 <script type="module">
 import * as THREE from 'three';
@@ -378,6 +418,18 @@ $('zedactivate').onclick = () => zedControl('start');
 $('zedstop').onclick = () => zedControl('disengage');
 $('zedhome').onclick = () => zedControl('home');
 $('zedrecalibrate').onclick = () => zedControl('recalibrate');
+// Stop ZED following (the arm holds), then hand control back to the gamepad: Start on the pad engages it.
+$('tojoystick').onclick = async () => {
+  const b = $('tojoystick'); b.disabled = true;
+  try {
+    await zedControl('disengage');
+    const [ok,j] = await post('input-source', {source:'joystick'});
+    if (ok) $('inputsource').value = 'joystick';
+    $('inputnote').textContent = ok ? 'Joystick selecionado. Aperte Start no controle para dirigir (Back desengaja).'
+                                    : (j.message || 'Não foi possível voltar ao joystick');
+  } catch(e) { $('inputnote').textContent = 'Não foi possível voltar ao joystick: ' + e.message; }
+  finally { b.disabled = false; }
+};
 let sourceBusy = false;
 $('inputsource').onchange = async () => {
   sourceBusy = true; $('inputsource').disabled = true;
@@ -421,9 +473,9 @@ function connect() {
     const backendReady = !!d.zed;
     $('zedrecalibrate').disabled = !backendReady || zedControlBusy || !!d.zed?.home_running;
     $('trackingdetail').textContent = !backendReady ? 'Backend de teleoperação indisponível. A imagem pode continuar funcionando.' : [d.zed.controller_reason, d.zed.reason, d.zed.diagnostics?.reason].filter(Boolean).join(' · ') + (d.zed.diagnostics ? ` · ${d.zed.diagnostics.fps || 0} Hz · ${d.zed.diagnostics.capture_age_ms || 0} ms` : '');
-    $('zedactivate').disabled = !backendReady || !!d.zed?.controller_reason || zedControlBusy || (d.engaged && d.input_source === 'zed') || ['calibrating'].includes(d.zed?.phase) || !!d.zed?.home_running;
+    $('zedactivate').disabled = !backendReady || !!d.zed?.start_reason || zedControlBusy || (d.engaged && d.input_source === 'zed') || ['calibrating'].includes(d.zed?.phase) || !!d.zed?.home_running;
     $('zedhome').disabled = !backendReady || !!d.zed?.controller_reason || zedControlBusy || !!d.zed?.home_running;
-    pill('zedstatus', d.zed?.home_running ? 'Home em andamento' : (d.zed?.home_result || (d.zed?.controller_reason ? 'Controlador do robô indisponível · Start/Home bloqueados' : d.zed?.note) || 'Backend de teleoperação indisponível'), d.engaged && d.zed?.phase === 'active' ? 'on' : 'warn');
+    pill('zedstatus', d.zed?.home_running ? 'Home em andamento' : (d.zed?.home_result || (d.zed?.controller_reason ? d.zed.controller_reason : d.zed?.note) || 'Backend de teleoperação indisponível'), d.engaged && d.zed?.phase === 'active' ? 'on' : 'warn');
     if (d.zed?.home_result) $('inputnote').textContent = d.zed.home_result;
     else if (d.zed?.phase === 'calibrating') {
       const t = d.zed?.diagnostics;
@@ -432,7 +484,7 @@ function connect() {
     else if (d.zed?.phase === 'paused' || d.zed?.phase === 'active') {
       const t=d.zed?.diagnostics;
       $('inputnote').textContent=d.zed.note+(t ? ` · ${t.fps || 0} Hz · ${t.capture_age_ms || 0} ms`+(t.arm_scale ? ` · braço ${t.arm_length_m.toFixed(2)} m · escala ${t.arm_scale.toFixed(2)}` : '') : '');
-    }
+    } 
     if ($('zedgesture')) $('zedgesture').textContent = ({Open_Palm:'Palma aberta',Closed_Fist:'Punho fechado'}[d.zed?.gesture] || 'Sem gesto confiável') + (d.zed?.gripper_command ? ' · pedido: ' + (d.zed.gripper_command === 'Closed_Fist' ? 'fechar' : 'abrir') : '');
     drawPad(d.pad); drawSpeed(d.speed);
   };

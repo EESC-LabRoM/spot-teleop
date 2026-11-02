@@ -30,7 +30,7 @@ for p in pathlib.Path('/proc').iterdir():
  if not p.name.isdigit(): continue
  try:
   a=(p/'cmdline').read_bytes().decode().rstrip('\\0').split('\\0')
-  if len(a)>1 and a[0].endswith('python3') and pathlib.Path(a[1]).name in ('fr3_joy_teleop.py','fr3_input_teleop.py','fr3_input_teleop_nobox.py','fr3_web_dashboard.py'):
+  if len(a)>1 and a[0].endswith('python3') and pathlib.Path(a[1]).name in ('fr3_joy_teleop.py','fr3_input_teleop.py','fr3_input_teleop_nobox.py','fr3_input_teleop_review.py','fr3_web_dashboard.py'):
    out.append(dict(pid=int(p.name),args=a))
  except (OSError,UnicodeError): pass
 print(json.dumps(out))'''
@@ -89,7 +89,7 @@ def main():
         plans=[]
         for p in current:
             args=p['args'].copy()
-            args[1]=DEST+'/'+('fr3_web_dashboard.py' if Path(args[1]).name=='fr3_web_dashboard.py' else ('fr3_input_teleop_nobox.py' if Path(args[1]).name=='fr3_input_teleop_nobox.py' else 'fr3_input_teleop.py'))
+            args[1]=DEST+'/'+('fr3_web_dashboard.py' if Path(args[1]).name=='fr3_web_dashboard.py' else (Path(args[1]).name if Path(args[1]).name in ('fr3_input_teleop_nobox.py','fr3_input_teleop_review.py') else 'fr3_input_teleop.py'))
             plans.append((p,args))
     print(json.dumps([{'pid':p['pid'],'script':args[1],'log':log_path(args)} for p,args in plans],indent=2))
     if not (a.apply or a.restore or a.refresh): print('Dry run. Pass --apply to install.'); return

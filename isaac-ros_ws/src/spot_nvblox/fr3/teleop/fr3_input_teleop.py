@@ -126,8 +126,13 @@ class Fr3JoyTeleop(Node):
         self.zed_calibration_port=int(P("zed_calibration_port",0))
         self.zed_diagnostics=None;self.zed_diag_received=0.
         if not 0.35<=self.zed_recovery_timeout<=30 or not 0<=self.zed_calibration_port<=65535:raise ValueError("invalid ZED recovery/calibration settings")
+        self.zed_mapping_profile = str(P('zed_mapping_profile', 'legacy'))
+        if self.zed_mapping_profile not in ('legacy','review'):raise ValueError('Unknown ZED mapping')
+        self.zed_gripper_enabled = bool(P('zed_gripper_enabled', True))
+        self.zed_review_exercise = str(P('zed_review_exercise','full_6d'))
+        if self.zed_review_exercise not in ('full_6d', 'translation', 'horizontal', 'height', 'reach', 'roll', 'pitch', 'yaw', 'gripper', 'cross', 'neutral'):raise ValueError('Unknown review exercise')
         self.zed_scale = float(P("zed_scale", 1.0))  # wrist detector already scales human -> FR3
-        self.zed_forward_sign = float(P("zed_forward_sign", -1.0))
+        self.zed_forward_sign = float(P("zed_forward_sign", 1.0))   # +1: hand forward = robot toward the table (user, 10-22)
         if self.zed_forward_sign not in (-1., 1.): raise ValueError("zed_forward_sign must be -1 or +1")
         if not (0 < self.zed_timeout <= 1 and 0 < self.zed_scale <= 2):
             raise ValueError("invalid ZED timeout/speed/scale")
@@ -141,6 +146,7 @@ class Fr3JoyTeleop(Node):
         self.zed_stable, self.zed_stable_stamp = [], -1
         self.zed_loss_sample=None
         self.roll_received = 0.0
+        self.zed_position_only_protocol=False;self.zed_orientation_valid=True;self.zed_rotation_pending=False;self.zed_recovery_pair=None
         self.zed_require_roll = bool(P("zed_require_roll", True))
         self.home_script = str(P("home_script", str(Path(__file__).with_name("fr3_home_safe.py"))))
         self.ctrl_active, self.ctrl_checked = False, 0.0
@@ -175,6 +181,9 @@ class Fr3JoyTeleop(Node):
         ctrl = P("controller", "cartesian_impedance_target_controller").rstrip("/")
         self.ctrl = ctrl
         self.pub = self.create_publisher(PoseStamped, f"/{ctrl}/equilibrium_pose", 1)
+        self.mpc_routed=self.pub.topic_name.startswith('/fr3_curobo/')
+        self.curobo_status=None;self.curobo_status_at=0.
+        self.create_subscription(String,'/fr3_curobo/status',self._on_curobo_status,1)
         self.engaged_pub = self.create_publisher(Bool, "/teleop/engaged", 1)
         self.scale_pub = self.create_publisher(Float32MultiArray, "/teleop/speed_scale",
                                                QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL, reliability=ReliabilityPolicy.RELIABLE))
@@ -238,9 +247,14 @@ class Fr3JoyTeleop(Node):
         for p in params:
             if p.name == "input_source" and p.value not in ("joystick", "zed"):
                 return SetParametersResult(successful=False, reason="input_source must be joystick or zed")
-            if p.name.startswith("zed_") or p.name in ("controller", "home_script"):
+            if p.name=='zed_review_exercise':
+                if p.value not in ('full_6d', 'translation', 'horizontal', 'height', 'reach', 'roll', 'pitch', 'yaw', 'gripper', 'cross', 'neutral'):return SetParametersResult(successful=False,reason='Unknown exercise')
+                if self.engaged or self.zed_phase!='idle' or self._home_running():return SetParametersResult(successful=False,reason='Stop before changing exercise')
+            if (p.name.startswith("zed_") and p.name!='zed_review_exercise') or p.name in ("controller", "home_script"):
                 return SetParametersResult(successful=False, reason="startup-only parameter")
         for p in params:
+            if p.name=='zed_review_exercise':
+                self.zed_review_exercise=str(p.value);self.zed_anchor=None
             if p.name == "input_source" and p.value != self.input_source:
                 self.disengage()
                 self.input_source = str(p.value)
@@ -272,20 +286,31 @@ class Fr3JoyTeleop(Node):
 
     # ---- input -------------------------------------------------------------------------------------------------------
     def _zed_status(self):
+        controller_reason=self._zed_controller_ready()
+        if controller_reason is None and self.zed_note==getattr(self,'zed_controller_note',None):
+            self.zed_note="ZED ativa" if self.zed_phase=="active" else "Controle parado · clique Start teleop ZED"
+            self.zed_controller_note=None
         self.zed_status_pub.publish(String(data=json.dumps(dict(
-            tracking=bool(self._zed_live()), reason=self._zed_ready(), controller_reason=self._zed_controller_ready(), orientation_mode=self.zed_orientation_mode,
+            tracking=bool(self._zed_live()), reason=self._zed_ready(), controller_reason=controller_reason, start_reason=self._zed_start_ready(), orientation_mode=self.zed_orientation_mode, control_backend="curobo" if self.mpc_routed else "cartesian", mapping_profile=self.zed_mapping_profile, exercise_profile=self.zed_review_exercise, translation_gain=self.zed_scale,
             diagnostics=self.zed_diagnostics if time.monotonic()-self.zed_diag_received<1. else None,
+            orientation_valid=bool(self._zed_live() and self.zed_orientation_valid),
             phase=self.zed_phase, note=self.zed_note, home_running=self._home_running(), home_result=self.home_result,
             gesture=self.zed_gesture if self._zed_live() else None, gripper_command=self.grip_last,
             stability=min(1., (self.zed_stable[-1][0]-self.zed_stable[0][0])/.65) if len(self.zed_stable)>1 else 0.,
             age_ms=round((time.monotonic() - self.zed_received)*1000) if self.zed_received else None))))
 
     def _check_controller(self):
-        if self.cm_future is not None and not self.cm_future.done(): return
+        if self.cm_future is not None and not self.cm_future.done():
+            # A request lost to a discovery race would otherwise stay pending forever and the gate would never confirm.
+            if time.monotonic() - getattr(self, 'cm_sent', 0.0) < 2.0: return
+            try: self.cm_client.remove_pending_request(self.cm_future)
+            except Exception: pass
+            self.cm_future = None
         if not self.cm_client.service_is_ready():
             self.ctrl_active = False
             return
         self.cm_future = self.cm_client.call_async(ListControllers.Request())
+        self.cm_sent = time.monotonic()
         def done(f):
             try:
                 self.ctrl_active = any(c.name == self.ctrl and c.state == "active" for c in f.result().controller)
@@ -307,23 +332,32 @@ class Fr3JoyTeleop(Node):
                         self.zed_diagnostics=d.get("diagnostics",{})
                         self.zed_diag_received=time.monotonic()
                     continue  # Diagnostic messages never renew the motion watchdog.
+                position_protocol=d.get('version')==3 and self.zed_orientation_mode=='full_6d'
+                orientation_valid=True
                 if self.zed_orientation_mode == "full_6d":
-                    if d.get("version") != 2 or d.get("orientation_mode") != "full_6d": continue
-                    if int(d["orientation_stamp_ns"]) != int(d["stamp_ns"]): raise ValueError("unpaired orientation")
+                    if d.get("version") not in (2,3) or d.get("orientation_mode") != "full_6d": continue
+                    if position_protocol:
+                        if d.get('position_valid') is not True:raise ValueError('invalid wrist')
+                        if type(d.get('orientation_valid')) is not bool:raise ValueError('orientation validity missing')
+                        orientation_valid=d['orientation_valid']
+                    if orientation_valid and int(d["orientation_stamp_ns"]) != int(d["stamp_ns"]): raise ValueError("unpaired orientation")
                 elif d.get("version") != 1: continue
-                if len(d["p"]) != 3 or len(d["q"]) != 4: raise ValueError("pose shape")
+                # The placeholder below is internal only: validity remains false and no TF is fabricated.
+                quat=d['q'] if orientation_valid else (self.zed_sample[1].tolist() if self.zed_sample is not None else [0.,0.,0.,1.])
+                if len(d["p"]) != 3 or len(quat) != 4: raise ValueError("pose shape")
                 stamp = int(d["stamp_ns"])
                 m = PoseStamped(); m.header.frame_id = str(d["frame"])
                 m.header.stamp.sec, m.header.stamp.nanosec = divmod(stamp, 10**9)
                 m.pose.position.x, m.pose.position.y, m.pose.position.z = map(float, d["p"])
-                m.pose.orientation.x, m.pose.orientation.y, m.pose.orientation.z, m.pose.orientation.w = map(float, d["q"])
-                roll_age = (self.get_clock().now().nanoseconds - int(d["orientation_stamp_ns"] if self.zed_orientation_mode == "full_6d" else d["roll_stamp_ns"])) * 1e-9
-                if 0 <= roll_age < self.zed_timeout:
-                    self.roll_received = time.monotonic() - roll_age
+                m.pose.orientation.x, m.pose.orientation.y, m.pose.orientation.z, m.pose.orientation.w = map(float, quat)
+                roll_age = (self.get_clock().now().nanoseconds - int(d["orientation_stamp_ns"] if self.zed_orientation_mode == "full_6d" else d["roll_stamp_ns"])) * 1e-9 if orientation_valid else None
                 previous_stamp = self.zed_stamp
                 self._on_zed(m)
                 if self.zed_sample is not None and self.zed_stamp == stamp and stamp > previous_stamp:
-                    gesture = d.get("gesture")
+                    self.zed_position_only_protocol=position_protocol
+                    self.zed_orientation_valid=orientation_valid
+                    if orientation_valid and 0<=roll_age<self.zed_timeout:self.roll_received=time.monotonic()-roll_age
+                    gesture = d.get("gesture")  # finger confidence is independent of palm orientation
                     score = float(d.get("gesture_score",0.))
                     self.zed_gesture = gesture if gesture in ("Open_Palm","Closed_Fist") and math.isfinite(score) and score >= .75 else None
                     self.zed_gesture_stamp = stamp
@@ -347,19 +381,34 @@ class Fr3JoyTeleop(Node):
     def _zed_live(self):
         now = time.monotonic()
         return (self.zed_sample is not None and now - self.zed_received < self.zed_timeout and
-                (not self.zed_require_roll or now - self.roll_received < self.zed_timeout))
+                (self.zed_position_only_protocol or not self.zed_require_roll or now - self.roll_received < self.zed_timeout))
 
     def _zed_ready(self):
         if not self._zed_live(): return "ZED wrist/hand tracking absent or stale"
         return self._zed_controller_ready()
 
+    def _on_curobo_status(self,message):
+        try:self.curobo_status=json.loads(message.data);self.curobo_status_at=time.monotonic()
+        except (ValueError,TypeError):self.curobo_status=None
+
     def _zed_controller_ready(self):
+        if self.mpc_routed:
+            if self.curobo_status is None or time.monotonic()-self.curobo_status_at>.6:return 'cuRobo bridge absent/stale'
+            status=self.curobo_status
+            if status.get('mode_ready') and status.get('command_ready'):return None
+            return status.get('packet_reason') or status.get('ready_reason') or ('cuRobo output disarmed' if not status.get('armed') else status.get('reason') or 'cuRobo controller path not ready')
         if not self.ctrl_active or time.monotonic() - self.ctrl_checked > 1.5:
             return "Cartesian impedance controller not confirmed active"
         if self.pub.get_subscription_count() < 1: return "controller has no pose subscription"
         if len(self.get_publishers_info_by_topic(f"/{self.ctrl}/equilibrium_pose")) != 1:
             return "another publisher is commanding the controller"
         return None
+
+    def _zed_start_ready(self):
+        if not self.mpc_routed:return self._zed_controller_ready()
+        if self.curobo_status is None or time.monotonic()-self.curobo_status_at>.6:return 'cuRobo bridge absent/stale'
+        from curobo_start import start_reason
+        return start_reason(self.curobo_status)
 
     def _clear_input(self):                           # a vanished pad must not leave its last stick values behind
         with self.lock: self.axes, self.buttons = {}, {}
@@ -494,17 +543,28 @@ class Fr3JoyTeleop(Node):
 
     def _stable_zed(self, now):
         if not self._zed_live():
-            if self.zed_stable and now-self.zed_stable[-1][0]>.8:self.zed_stable=[]
+            if self.zed_stable and now-self.zed_stable[-1][0]>2.0:self.zed_stable=[]
             return False
         if self.zed_stamp <= self.zed_stable_stamp: return False
         self.zed_stable_stamp = self.zed_stamp
         p, q = self.zed_sample
-        if self.zed_stable and (now-self.zed_stable[-1][0] > .8 or
-                any(np.linalg.norm(p-a[1]) > .04 or qangle(q,a[2]) > math.radians(12)
+        if self.zed_stable and (now-self.zed_stable[-1][0] > 2.0 or
+                any(np.linalg.norm(p-a[1]) > .04 or (not self.zed_position_only_protocol and self.zed_orientation_valid and qangle(q,a[2]) > math.radians(12))
                     for a in self.zed_stable)):
             self.zed_stable = []
         self.zed_stable.append((now, p.copy(), q.copy()))
         return len(self.zed_stable) >= 4 and now-self.zed_stable[0][0] >= .65
+
+    def _recover_moving_zed(self):
+        """Two fresh, consistent wrists can re-anchor without requiring a stationary hand."""
+        if not self._zed_live():return False
+        stamp=self.zed_stamp;p=self.zed_sample[0]
+        previous=self.zed_recovery_pair
+        if previous is not None and stamp<=previous[0]:return False
+        self.zed_recovery_pair=(stamp,p.copy())
+        if previous is None:return False
+        dt=(stamp-previous[0])*1e-9
+        return 0<dt<=.5 and np.linalg.norm(p-previous[1])<=.03+2.*dt
 
     def _advance_zed_start(self, now):
         if self.zed_phase != "calibrating": return
@@ -527,6 +587,9 @@ class Fr3JoyTeleop(Node):
         return self.engage()
 
     def engage(self):
+        if self.mpc_routed:
+            why=self._zed_controller_ready()
+            if why:return False,why
         if self.input_source == "zed":
             why = self._zed_ready()
             if why: return False, why
@@ -550,9 +613,11 @@ class Fr3JoyTeleop(Node):
                     return False, "ZED tracking changed during engage"
                 zp, zq = self.zed_sample
                 self.zed_anchor = (p.copy(), q.copy(), zp.copy(), zq.copy())
+                self.zed_rotation_pending=not self.zed_orientation_valid
         if self.input_source == "zed":
             self.zed_phase, self.zed_note = "active", "ZED ativa · translação e rotação 6D"
             self.zed_loss_since = None
+            self.zed_recovery_pair=None
             self.zed_loss_sample=None
         self._publish(); self.engaged_pub.publish(Bool(data=True))
         self.get_logger().info(f"engaged at {np.round(p, 3).tolist()}"); return True, "engaged"
@@ -572,6 +637,7 @@ class Fr3JoyTeleop(Node):
         rs.success, rs.message = r; return rs
 
     def _zed_gripper(self, now):
+        if not self.zed_gripper_enabled:return
         if not self.engaged or self.zed_phase != "active" or not self._zed_live():
             self.grip_candidate, self.grip_frames = None, 0
             return
@@ -644,14 +710,15 @@ class Fr3JoyTeleop(Node):
         if self.input_source == "zed":
             why = self._zed_controller_ready()
             if why:
-                self.disengage(); self.zed_note = why
+                self.disengage(); self.zed_note = why; self.zed_controller_note = why
                 return
             # A brief dropout freezes commands immediately; never extrapolate a stale hand.
             if not self._zed_live() and self.zed_loss_since is None:
-                self.zed_loss_since = min(self.zed_received, self.roll_received) if self.zed_require_roll else self.zed_received
+                self.zed_loss_since = min(self.zed_received, self.roll_received) if self.zed_require_roll and not self.zed_position_only_protocol else self.zed_received
                 self.zed_loss_sample=(self.zed_sample[0].copy(),self.zed_sample[1].copy()) if self.zed_sample is not None else None
                 self.zed_stable, self.zed_stable_stamp = [], self.zed_stamp
-                self.zed_phase, self.zed_note = "paused", "Pausado · mostre a mão parada para retomar"
+                self.zed_recovery_pair=None
+                self.zed_phase, self.zed_note = "paused", ("Pausado · aguardando punho atual para retomar" if self.zed_position_only_protocol else "Pausado · mostre a mão parada para retomar")
                 self.grip_candidate, self.grip_frames = None, 0
             if self.zed_loss_since is not None:
                 if now-self.zed_loss_since > self.zed_recovery_timeout:
@@ -660,15 +727,22 @@ class Fr3JoyTeleop(Node):
                     return
                 if self._zed_live() and now-self.zed_loss_since<.8 and self.zed_loss_sample is not None:
                     p0,q0=self.zed_loss_sample;p1,q1=self.zed_sample
-                    if np.linalg.norm(p1-p0)<.04 and qangle(q1,q0)<math.radians(12):
+                    if np.linalg.norm(p1-p0)<.04 and (not self.zed_orientation_valid or qangle(q1,q0)<math.radians(12)):
                         self.zed_loss_since=None;self.zed_loss_sample=None
                         self.zed_phase,self.zed_note="active","ZED ativa · perda breve recuperada"
                         return  # Fresh nearby sample; preserve the original hand/robot reference.
-                if not self._stable_zed(now): return
+                if self.zed_position_only_protocol:
+                    if not self._recover_moving_zed():return
+                elif not self._stable_zed(now):return
                 # Re-anchor to actual TCP and current hand; discard movement made while invisible.
                 ok, why = self.engage_zed()
                 if not ok:
-                    self.disengage(); self.zed_note = why
+                    if why.startswith("TCP outside workspace"):
+                        # Keep holding while the measured arm settles back inside.
+                        # The existing recovery timeout still ends a persistent violation.
+                        self.zed_note="Pausado · aguardando TCP dentro do limite de alcance"
+                    else:
+                        self.disengage(); self.zed_note = why
                 return
         with self.lock:
             if self.input_source == "zed":
@@ -680,7 +754,20 @@ class Fr3JoyTeleop(Node):
                 # translation convention. This is not a reflection of the SO(3) frame.
                 delta = delta*np.array([self.zed_forward_sign, 1., 1.])
                 self.tgt_p = ap + self.zed_scale * delta
-                if self.zed_orientation_mode == "full_6d":
+                if self.zed_mapping_profile=='review':
+                    from cartesian_review import target as reviewed_target
+                    self.tgt_p,review_q=reviewed_target(ap,aq,zp0,zq0,zp,zq,[self.zed_scale]*3,{'roll':1.6,'pitch':1.2,'yaw':1.2}.get(self.zed_review_exercise,1.),self.zed_review_exercise)
+                if self.zed_position_only_protocol and not self.zed_orientation_valid:
+                    self.tgt_q=self.cmd_q.copy();self.zed_rotation_pending=True
+                    self.zed_note="ZED ativa · seguindo punho, giro mantido"
+                elif self.zed_position_only_protocol and self.zed_rotation_pending:
+                    self.zed_anchor=(ap, self.cmd_q.copy(), zp0, zq.copy())
+                    self.tgt_q=self.cmd_q.copy();self.zed_rotation_pending=False
+                    self.zed_note="ZED ativa · orientação recuperada sem salto"
+                elif self.zed_mapping_profile=='review':
+                    self.tgt_q=review_q;self.zed_note='ZED ativa · mapeamento revisado · '+self.zed_review_exercise
+                elif self.zed_orientation_mode == "full_6d":
+                    self.zed_note="ZED ativa · translação e rotação 6D"
                     # Both measured hand orientations are in base axes. Apply their
                     # spatial rotation on the LEFT of the robot's anchored orientation.
                     self.tgt_q = qmul(qmul(zq, zq0 * np.array([-1, -1, -1, 1])), aq)
@@ -689,6 +776,9 @@ class Fr3JoyTeleop(Node):
                 self.tgt_q /= np.linalg.norm(self.tgt_q)
                 v, w = np.zeros(3), np.zeros(3)
             raw = self.tgt_p + v * dt; self.tgt_p = np.clip(raw, self.box_lo, self.box_hi)
+            if self.input_source=="zed" and self.zed_position_only_protocol:
+                ap,aq,zp0,zq0=self.zed_anchor
+                self.zed_anchor=(ap+self.tgt_p-raw,aq,zp0,zq0)
             hit = "".join(a for a, c in zip("xyz", raw != self.tgt_p) if c)
             if hit: self.get_logger().info(f"workspace box clamps {hit} at {np.round(self.tgt_p, 3).tolist()} "
                                            f"(box {self.box_lo.tolist()} .. {self.box_hi.tolist()})", throttle_duration_sec=2.0)

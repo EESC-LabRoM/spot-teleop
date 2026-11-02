@@ -22,3 +22,31 @@ class FingerDistanceTests(unittest.TestCase):
         self.assertAlmostEqual(a['grip'],b['grip']);self.assertEqual(a['gesture'],b['gesture'])
     def test_degenerate_geometry_is_not_a_command(self):
         self.assertIsNone(finger_distance_signals(np.zeros((21,3))))
+
+    def test_hidden_thumb_does_not_disable_four_open_fingers(self):
+        p=self.hand();p[1:5]=0.
+        self.assertEqual(finger_distance_signals(p)['gesture'],'Open_Palm')
+        p=self.hand((1,2,3,4));p[1:5]=0.
+        self.assertEqual(finger_distance_signals(p)['gesture'],'Closed_Fist')
+
+    def test_pointing_and_victory_are_neither_open_palm_nor_fist(self):
+        self.assertIsNone(finger_distance_signals(self.hand((2,3,4)))['gesture'])
+        self.assertIsNone(finger_distance_signals(self.hand((3,4)))['gesture'])
+
+    def test_relaxed_open_fingers_do_not_require_perfectly_straight_chains(self):
+        p=self.hand()
+        import math
+        for finger in range(1,5):
+            mcp=1+finger*4
+            p[mcp+1]=p[mcp]+[.03,0,0]
+            p[mcp+2]=p[mcp+1]+[.03*math.cos(.5),.03*math.sin(.5),0]
+            p[mcp+3]=p[mcp+2]+[.03*math.cos(.8),.03*math.sin(.8),0]
+        self.assertEqual(finger_distance_signals(p)['gesture'],'Open_Palm')
+
+    def test_three_open_fingers_survive_one_missing_finger(self):
+        p=self.hand();p[17:21]=0.
+        self.assertEqual(finger_distance_signals(p)['gesture'],'Open_Palm')
+
+    def test_two_visible_fingers_cannot_decide_gripper_intent(self):
+        p=self.hand();p[13:21]=0.
+        self.assertIsNone(finger_distance_signals(p))

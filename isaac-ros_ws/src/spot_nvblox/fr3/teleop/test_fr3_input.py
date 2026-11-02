@@ -15,7 +15,7 @@ import fr3_input_teleop as T
 class InputTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        rclpy.init(domain_id=191, args=['--ros-args', '-p', 'zed_orientation_mode:=roll', '-p', 'zed_port:=47814', '-p', 'joy_device:=""',
+        rclpy.init(domain_id=191, args=['--ros-args', '-p', 'zed_orientation_mode:=roll', '-p', 'zed_forward_sign:=-1.0', '-p', 'zed_port:=47814', '-p', 'joy_device:=""',
                                      '-p', 'remote_joy_topic:=/joy_remote'])
 
     @classmethod
@@ -355,5 +355,138 @@ class InputTests(unittest.TestCase):
         self.n.set_parameters([Parameter('input_source', value='joystick')]); self.assertTrue(self.n.engage()[0])
         self.n.axes = {1:-1.}; p = self.n.cmd_p.copy(); self.tick()
         self.assertGreater(self.n.cmd_p[0],p[0])
+
+    def packet3(self, x=.2, q=None, age=0., stamp=None):
+        self.n.zed_orientation_mode='full_6d'
+        stamp=stamp or self.n.get_clock().now().nanoseconds-int(age*1e9)
+        d=dict(version=3,orientation_mode='full_6d',frame='fr3_link0',stamp_ns=stamp,
+            position_valid=True,orientation_valid=q is not None,orientation_stamp_ns=stamp if q is not None else None,
+            p=[x,0.,.4],q=q,gesture='Closed_Fist',gesture_score=1.)
+        with socket.socket(socket.AF_INET,socket.SOCK_DGRAM) as sender:
+            sender.sendto(json.dumps(d).encode(),('127.0.0.1',47814))
+        self.n._receive_zed()
+        return stamp
+
+    def test_position_only_holds_rotation_but_preserves_confident_finger_gesture(self):
+        self.n._gripper=Mock()
+        self.packet3();self.assertTrue(self.n._zed_live());self.assertEqual(self.n.zed_gesture,'Closed_Fist')
+        self.n._gripper.assert_not_called()
+        self.assertEqual(self.n.roll_received,0.)
+        self.assertTrue(self.n.engage()[0]);p=self.n.cmd_p.copy();q=self.n.cmd_q.copy()
+        self.packet3(x=.23);self.tick()
+        self.assertGreater(np.linalg.norm(self.n.cmd_p-p),0.)
+        self.assertLess(T.qangle(self.n.cmd_q,q),1e-7)
+        self.assertTrue(self.n.engaged);self.assertEqual(self.n.zed_phase,'active')
+
+    def test_orientation_loss_holds_then_returns_without_jump(self):
+        self.packet3(q=[0.,0.,0.,1.]);self.assertTrue(self.n.engage()[0])
+        self.packet3(q=T.qexp(np.array([0.,.2,0.])).tolist());self.tick()
+        q=self.n.cmd_q.copy()
+        self.packet3(x=.22);self.tick()
+        self.assertLess(T.qangle(self.n.cmd_q,q),1e-7)
+        self.assertTrue(self.n.zed_rotation_pending)
+        p=self.n.tgt_p.copy()
+        self.packet3(x=.22,q=T.qexp(np.array([.4,.3,0.])).tolist());self.tick()
+        self.assertLess(T.qangle(self.n.cmd_q,q),1e-7)
+        np.testing.assert_allclose(self.n.tgt_p,p)
+        self.assertFalse(self.n.zed_rotation_pending)
+        self.packet3(x=.22,q=T.qexp(np.array([.4,.35,0.])).tolist());self.tick()
+        self.assertGreater(T.qangle(self.n.cmd_q,q),1e-5)
+
+    def test_position_only_stale_and_replay_do_not_renew_watchdog(self):
+        stamp=self.packet3();received=self.n.zed_received
+        self.packet3(stamp=stamp);self.assertEqual(received,self.n.zed_received)
+        self.packet3(age=2.);self.assertFalse(self.n._zed_live())
+        self.n._publish.assert_not_called()
+
+    def test_position_only_loss_still_pauses_robot(self):
+        self.packet3();self.assertTrue(self.n.engage()[0]);self.n._publish.reset_mock()
+        self.n.zed_received-=1.;self.tick()
+        self.assertEqual(self.n.zed_phase,'paused');self.n._publish.assert_not_called()
+
+    def test_moving_recovery_uses_two_fresh_wrists_without_stationary_window(self):
+        self.packet3(age=.30);self.assertTrue(self.n.engage()[0]);self.n._publish.reset_mock()
+        self.n.zed_received-=1.;self.tick();self.assertEqual(self.n.zed_phase,'paused')
+        self.packet3(x=.28,age=.15);self.tick()
+        self.assertEqual(self.n.zed_phase,'paused');self.n._publish.assert_not_called()
+        self.packet3(x=.33);self.tick()
+        self.assertTrue(self.n.engaged);self.assertEqual(self.n.zed_phase,'active')
+        # Resume anchors at the actual TCP; movement made while invisible is discarded.
+        np.testing.assert_allclose(self.n.cmd_p,[.4,0.,.4])
+        self.n._publish.assert_called_once()
+
+    def test_recovery_replayed_wrist_cannot_resume(self):
+        self.packet3();self.assertTrue(self.n.engage()[0]);self.n.zed_received-=1.;self.tick()
+        stamp=self.packet3(x=.28);self.tick();self.n._publish.reset_mock()
+        self.packet3(x=.28,stamp=stamp);self.tick()
+        self.assertEqual(self.n.zed_phase,'paused');self.n._publish.assert_not_called()
+
+    def test_inconsistent_recovery_wrists_do_not_resume(self):
+        self.packet3(age=.30);self.assertTrue(self.n.engage()[0]);self.n.zed_received-=1.;self.tick()
+        self.packet3(x=.28,age=.10);self.tick();self.n._publish.reset_mock()
+        self.packet3(x=1.1);self.tick()
+        self.assertEqual(self.n.zed_phase,'paused');self.n._publish.assert_not_called()
+
+    def test_workspace_saturation_removes_unreachable_hand_travel(self):
+        self.n.use_box=True
+        self.packet3();self.assertTrue(self.n.engage()[0])
+        self.packet3(x=1.0);self.tick()
+        ap,_,zp0,_=self.n.zed_anchor
+        at_edge=ap+self.n.zed_scale*(np.array([1.,0.,.4])-zp0)*np.array([self.n.zed_forward_sign,1.,1.])
+        self.assertAlmostEqual(at_edge[0],self.n.box_lo[0])
+        self.packet3(x=.95);self.tick()
+        ap,_,zp0,_=self.n.zed_anchor
+        reversed_target=ap+self.n.zed_scale*(self.n.zed_sample[0]-zp0)*np.array([self.n.zed_forward_sign,1.,1.])
+        self.assertGreater(reversed_target[0],self.n.box_lo[0])
+
+    def test_recovery_waits_for_workspace_settling_without_publishing(self):
+        self.packet3(age=.30);self.assertTrue(self.n.engage()[0])
+        self.n.zed_received-=1.;self.tick()
+        self.packet3(x=.28,age=.15);self.tick();self.n._publish.reset_mock()
+        real_engage=self.n.engage_zed
+        self.n.engage_zed=lambda:(False,'TCP outside workspace; reposition with joystick before ZED engage')
+        self.packet3(x=.33);self.tick()
+        self.assertTrue(self.n.engaged);self.assertEqual(self.n.zed_phase,'paused')
+        self.n._publish.assert_not_called()
+        self.n.engage_zed=real_engage
+        self.packet3(x=.34);self.tick()
+        self.assertEqual(self.n.zed_phase,'active');self.n._publish.assert_called_once()
+
+    def test_review_depth_translation_changes_height_without_forward_motion(self):
+        self.n.zed_mapping_profile='review'
+        self.engage()
+        self.sample(x=.23)
+        self.tick()
+        np.testing.assert_allclose(self.n.tgt_p,[.4,0.,.378],atol=1e-6)
+
+    def test_review_exercise_changes_only_while_stopped(self):
+        result=self.n.set_parameters([Parameter('zed_review_exercise',value='roll')])[0]
+        self.assertTrue(result.successful);self.assertEqual(self.n.zed_review_exercise,'roll')
+        self.engage()
+        result=self.n.set_parameters([Parameter('zed_review_exercise',value='height')])[0]
+        self.assertFalse(result.successful);self.assertEqual(self.n.zed_review_exercise,'roll')
+
+    def test_unknown_review_exercise_is_rejected(self):
+        self.assertFalse(self.n.set_parameters([Parameter('zed_review_exercise',value='unknown')])[0].successful)
+
+    def test_initial_review_test_can_disable_gesture_gripper(self):
+        self.engage();self.n.zed_gripper_enabled=False
+        self.n.zed_gesture='Closed_Fist';self.n._gripper=Mock()
+        self.n._zed_gripper(time.monotonic())
+        self.n._gripper.assert_not_called()
+
+    def test_curobo_joystick_cannot_engage_without_ready_bridge(self):
+        self.n.set_parameters([Parameter('input_source',value='joystick')]);self.n.mpc_routed=True
+        self.assertFalse(self.n.engage()[0]);self.n._publish.assert_not_called()
+
+    def test_curobo_joystick_uses_fresh_ready_bridge(self):
+        self.n.set_parameters([Parameter('input_source',value='joystick')]);self.n.mpc_routed=True
+        self.n.curobo_status=dict(mode_ready=True,command_ready=True);self.n.curobo_status_at=time.monotonic()
+        self.assertTrue(self.n.engage()[0]);self.n._publish.assert_called_once()
+
+    def test_curobo_stale_bridge_cannot_engage(self):
+        self.n.set_parameters([Parameter('input_source',value='joystick')]);self.n.mpc_routed=True
+        self.n.curobo_status=dict(mode_ready=True,command_ready=True);self.n.curobo_status_at=time.monotonic()-1.
+        self.assertFalse(self.n.engage()[0]);self.n._publish.assert_not_called()
 
 if __name__ == '__main__': unittest.main(verbosity=2)
