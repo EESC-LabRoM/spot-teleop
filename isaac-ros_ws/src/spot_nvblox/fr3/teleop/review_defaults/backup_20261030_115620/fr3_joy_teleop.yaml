@@ -1,0 +1,58 @@
+# fr3_joy_teleop.py parameters. Mapping, speeds and follower limits are Paiva's (oopsie_dataset
+# src/fr3_teleop/config/teleop.yaml): 8BitDo Ultimate 2C in Bluetooth/DInput mode, raw joydev numbering
+# (axes 0/1 left stick, 2/3 right stick, 4 RT, 5 LT; A 0, B 1, Y 4, LB 6, RB 7, Back 10, Start 11).
+# Their 2.4 GHz dongle mode uses a different XInput map.
+fr3_joy_teleop:
+  ros__parameters:
+    input_source: joystick             # GOOD 2026-10-22: pad is the live source; zed tracking is dead
+    zed_calibration_port: 47815
+    zed_recovery_timeout: 5.0
+    base_frame: fr3_link0
+    tool_frame: fr3_hand_tcp           # the pad moves the fingertip TCP
+    control_frame: fr3_hand_tcp        # the controller's O_T_EE frame: fr3_hand_tcp on the real FR3 (hand set in Desk), fr3_link8 in Gazebo
+    controller: cartesian_impedance_target_controller   # fr3_lab_controllers (franka_ros2 example without its demo motion + clip)
+    gripper_ns: /franka_gripper
+    rate: 50.0
+    joy_device: ""                 # "" = sensor_msgs/Joy on /joy; /dev/input/jsN = read the pad directly
+    axis_x: "-1"                   # left stick vertical -> +x forward
+    axis_y: "-0"                   # left stick horizontal -> +y left
+    axis_z: "-5"                   # LT -> down
+    z_up_button: 6                 # LB -> up
+    axis_roll: "2"                 # right stick horizontal (tool frame)
+    axis_pitch: "-3"               # right stick vertical (tool frame)
+    axis_yaw: "-4"                 # RT -> yaw clockwise (tool frame)
+    yaw_ccw_button: 7              # RB -> yaw counter-clockwise
+    close_button: 0                # A
+    open_button: 1                 # B
+    engage_button: 11              # Start
+    disengage_button: 10           # Back
+    home_button: 3                 # X (DInput numbering; the XInput map uses 2): hold home_hold_seconds to send the arm home (fr3_home.py), Back aborts
+    home_hold_seconds: 2.0
+    trigger_rest: -1.0
+    trigger_deadzone: 0.06
+    deadzone: 0.08
+    curve: 1.2
+    linear_speed: 0.60               # GOOD 2026-10-22: matches real-teleop LIN default
+    vertical_speed: 0.40             # GOOD 2026-10-22: matches real-teleop VERT default
+    angular_speed_deg: 90.0          # GOOD 2026-10-22: rotation unlocked (ROT=1); matches real-teleop ANG_DEG
+    input_timeout: 0.0             # theirs: watchdog off
+    remote_joy_topic: "/joy_remote"   # ours: also listen to the dashboard's browser pad (remote_pad:=true); idle unless that dashboard publishes. remote_timeout 0.25 s
+    max_step: 0.02                 # GOOD 2026-10-22: matches real-teleop MAX_STEP
+    max_slew_deg: 4.0               # GOOD 2026-10-22: matches real-teleop MAX_SLEW
+    follower_time_constant: 0.04   # s (theirs)
+    timeout: 0.3                   # s without robot state -> hold (theirs)
+    max_lead: 0.06                 # ours: the target stays within 6 cm of the commanded pose
+    max_error: 0.08                # leash: published pose within 8 cm of the arm (the controller clips the error at 2 cm)
+    max_rot_error_deg: 30.0          # GOOD 2026-10-22: matches real-teleop LEASH_ROT
+    use_workspace_box: true          # GOOD 2026-10-22: healthy box ON (was missing; launcher also passes WS_BOX=true)
+    speed_scale: 0.5                 # GOOD 2026-10-22: matches real-teleop SPD0
+    rot_scale: 0.5                   # GOOD 2026-10-22: matches real-teleop ROT0
+    workspace_min: [0.10, -0.70, 0.03]   # healthy box from the real FR3 limits: reach 0.855 m, q1 +-166 deg, table top + margin
+    workspace_max: [0.80, 0.70, 1.00]   # x max = reach - leash margin; z max = shoulder 0.333 + links - margin
+    grasp_width: 0.0               # theirs
+    grasp_force: 20.0
+    grasp_epsilon: 0.08
+    gripper_speed: 0.1
+    max_width: 0.08
+# Controller gains (set on cartesian_impedance_example_controller, not here): theirs are translational 1000 N/m,
+# rotational 75 Nm/rad (fr3_control compliance_param.cfg). franka_ros2's defaults are 150 / 10.

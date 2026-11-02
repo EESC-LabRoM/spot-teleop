@@ -1,0 +1,25 @@
+{
+  "mapping": "review",
+  "default_exercise": "full_6d",
+  "translation_gain": 1.0,
+  "rotation_gains": {
+    "roll": 1.6,
+    "pitch": 1.2,
+    "yaw": 1.2
+  },
+  "profiles": [
+    "full_6d",
+    "translation",
+    "horizontal",
+    "height",
+    "reach",
+    "roll",
+    "pitch",
+    "yaw",
+    "gripper",
+    "cross",
+    "neutral"
+  ],
+  "backup": "/home/hipolito/spot-teleop/isaac-ros_ws/src/spot_nvblox/fr3/teleop/review_defaults/backup_20261030_115620",
+  "hardware_activated": false
+}

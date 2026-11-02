@@ -1,0 +1,520 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<title>FR3 Lab Live</title>
+<style>
+:root { --bg:#0f1214; --surface:#171b1e; --line:#2a3137; --fg:#e8e6e1; --muted:#8e959b; --live:#5fd39a; --warn:#e8b86d; --bad:#e8776d; --accent:#6aa7ff; color-scheme: dark; }
+* { box-sizing: border-box; }
+body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  padding:16px max(16px, env(safe-area-inset-right, 0px)) 28px max(16px, env(safe-area-inset-left, 0px)); }
+header { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:8px 16px; margin-bottom:14px; }
+h1 { margin:0; font-size:20px; font-weight:650; }
+h2 { margin:22px 0 10px; font-size:15px; font-weight:650; }
+.pills { display:flex; flex-wrap:wrap; gap:6px; }
+.pill { border:1px solid var(--line); border-radius:999px; padding:2px 10px; font-size:13px; color:var(--muted); font-variant-numeric:tabular-nums; background:var(--surface); }
+.pill.on { color:var(--live); } .pill.warn { color:var(--warn); } .pill.bad { color:var(--bad); }
+.top { display:grid; grid-template-columns:1fr; gap:14px; }
+@media (min-width:1100px) { .top { grid-template-columns:minmax(0,1fr) 340px; } }
+#view { position:relative; height:min(68vh,720px); min-height:360px; background:#10151c; border:1px solid var(--line); border-radius:8px; overflow:hidden; }
+#view canvas { display:block; width:100%; height:100%; }
+.tools { position:absolute; left:8px; top:8px; right:8px; display:flex; flex-wrap:wrap; gap:6px; pointer-events:none; }
+.tools > * { pointer-events:auto; }
+.tools label, .tools button { background:rgba(16,21,28,.86); border:1px solid var(--line); border-radius:6px; padding:2px 8px; font:inherit; font-size:13px; color:var(--fg); cursor:pointer; user-select:none; }
+.hint { position:absolute; left:8px; bottom:6px; color:var(--muted); font-size:12px; background:rgba(16,21,28,.86); border-radius:6px; padding:2px 8px; }
+.side { display:flex; flex-direction:column; gap:12px; min-width:0; }
+.card { background:var(--surface); border:1px solid var(--line); border-radius:8px; padding:10px 12px; }
+.card h3 { margin:0 0 6px; font-size:14px; font-weight:650; }
+.row { display:flex; justify-content:space-between; gap:10px; font-variant-numeric:tabular-nums; }
+.k { color:var(--muted); font-size:13px; }
+input[type=range] { width:100%; accent-color:var(--accent); }
+.bar { position:relative; height:5px; background:#232b33; border-radius:3px; margin:1px 0 5px; }
+.bar i { position:absolute; top:0; height:100%; background:var(--accent); border-radius:3px; }
+.bar b { position:absolute; left:50%; top:-2px; width:1px; height:9px; background:#3a4452; }
+.btns { display:flex; flex-wrap:wrap; gap:4px; margin-top:4px; }
+.btn { font-size:11px; border:1px solid var(--line); border-radius:4px; padding:0 5px; color:var(--muted); }
+.btn.down { background:var(--accent); color:#0b0f14; border-color:var(--accent); }
+.grid { display:grid; grid-template-columns:1fr; gap:14px; }
+@media (min-width:700px) { .grid { grid-template-columns:1fr 1fr; } }
+@media (min-width:1100px) { .grid.three { grid-template-columns:repeat(3, minmax(0,1fr)); } }
+figure { margin:0; background:var(--surface); border:1px solid var(--line); border-radius:8px; overflow:hidden; min-width:0; }
+.frame { position:relative; aspect-ratio:16/9; background:#000; }
+.frame img { position:absolute; inset:0; width:100%; height:100%; object-fit:contain; }
+.frame .offline { position:absolute; inset:0; display:none; align-items:center; justify-content:center; color:var(--warn); padding:12px; text-align:center; }
+.frame.down .offline { display:flex; }
+figcaption { display:flex; flex-wrap:wrap; justify-content:space-between; align-items:center; gap:4px 10px; padding:8px 12px; border-top:1px solid var(--line); }
+.name { font-weight:600; } .sub { color:var(--muted); font-size:12px; }
+a { color:var(--accent); }
+details summary { cursor:pointer; color:var(--muted); font-size:13px; }
+.rk { list-style:none; margin:6px 0; padding:0; font-size:13px; } .rk li { padding:1px 0; display:flex; gap:6px; }
+.rk .s { width:1.2em; text-align:center; font-weight:700; } .rk .ok .s { color:var(--live); } .rk .bad .s { color:var(--bad); } .rk .warn .s, .rk .wait .s { color:var(--warn); }
+.rk .t { flex:1; } .rk .d { color:var(--muted); text-align:right; max-width:55%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+#rviz { width:100%; max-width:320px; height:auto; display:block; margin:4px 0; }
+#ren { font:inherit; color:var(--fg); background:#1f262c; border:1px solid var(--line); border-radius:6px; padding:3px 10px; cursor:pointer; }
+#ren:disabled { opacity:.5; cursor:default; } #ren.armed { background:var(--bad); color:#0b0f14; border-color:var(--bad); }
+#rbanner { position:absolute; left:8px; bottom:30px; z-index:5; padding:4px 10px; border-radius:6px; font-size:13px; font-weight:600; color:#0b0f14; background:var(--bad); max-width:calc(100% - 16px); }
+#rbanner.ok { background:var(--live); } #rbanner.warn, #rbanner.wait { background:var(--warn); } #rbanner.live { background:#e0483a; color:#fff; animation:rp 1s infinite; }
+@keyframes rp { 50% { opacity:.65; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>FR3 lab · live</h1>
+  <div class="pills">
+    <span class="pill" id="pRobot">robot: connecting…</span>
+    <span class="pill" id="pEng">teleop –</span>
+    <span class="pill" id="pPad">pad –</span>
+    <span class="pill" id="pMap">map: connecting…</span>
+  </div>
+</header>
+
+<section class="top">
+  <div id="view">
+    <div class="tools">
+      <label><input type="checkbox" id="crop" checked> workspace only</label>
+      <label><input type="checkbox" id="lit" checked> shading</label>
+      <label><input type="checkbox" id="height"> colour by height</label>
+      <label><input type="checkbox" id="showMap" checked> map</label>
+      <label><input type="checkbox" id="showRobot" checked> robot</label>
+      <label><input type="checkbox" id="wire"> wireframe</label>
+      <button type="button" id="reset">reset view</button>
+    </div>
+    <div id="rbanner" hidden></div>
+    <div class="hint">drag: rotate · right-drag: pan · wheel: zoom · grid 10 cm · blue = commanded, orange = measured hand</div>
+  </div>
+
+  <div class="side">
+    <div class="card" id="rcard"><h3>Remote PS4 (this browser) <span id="rbadge" class="pill">–</span></h3>
+      <div id="rinsecure" class="k" hidden>The browser only exposes a gamepad on an https page. Open this dashboard at
+        <a href="https://nexus.tail0994ab.ts.net:8443/">https://nexus.tail0994ab.ts.net:8443</a> to drive with your PS4.</div>
+      <div id="rbody" hidden>
+        <ul class="rk" id="rcheck"></ul>
+        <canvas id="rviz" width="320" height="104"></canvas>
+        <div class="btns" id="rbtns"></div>
+        <div class="row" style="margin-top:6px"><span class="k">round trip</span><span id="rrtt">–</span></div>
+        <div class="k" id="rmsg" style="margin:4px 0;min-height:1.4em"></div>
+        <button type="button" id="ren" disabled>Enable remote control</button> <span class="k">Esc = disable</span>
+        <details id="rdet" style="margin-top:8px"><summary>What the browser sees / troubleshooting</summary>
+          <pre id="rall" class="k" style="white-space:pre-wrap;margin:6px 0"></pre>
+          <div class="k">The browser lists a pad only after you press a button <b>while this tab is focused</b> (click the page first). Close other tabs that may hold the pad, and quit Steam / DS4Windows / Remote Play. Chrome or Edge, USB or Bluetooth; a non-standard mapping is refused.</div>
+        </details>
+        <div class="k" style="margin-top:6px">Options = engage, Share = disengage, left stick = x/y, right stick = roll/pitch, L1/L2 = up/down, R1/R2 = yaw, Cross/Circle = close/open gripper.</div>
+      </div>
+    </div>
+    <div class="card"><h3>Robot</h3>
+      <div class="row"><span class="k">hand (mm, base frame)</span><span id="tcp">–</span></div>
+      <div class="row"><span class="k">target − hand</span><span id="lag">–</span></div>
+      <div class="row"><span class="k">map</span><span id="mapstats">–</span></div>
+    </div>
+    <div class="card"><h3>ZED3 · 6D wrist teleoperation</h3>
+      <div class="row"><span id="zedstatus" class="pill warn">waiting for tracking</span></div>
+      <div class="row"><span class="k">Garra por gesto</span><span id="zedgesture">–</span></div>
+      <div class="row" style="margin-top:8px"><label for="inputsource">Control input</label>
+        <select id="inputsource"><option value="joystick">Joystick</option><option value="zed">ZED3 wrist · 6D</option></select></div>
+      <div style="display:flex;gap:8px;margin-top:10px">
+        <button type="button" id="zedactivate">Start teleop ZED</button>
+        <button type="button" id="zedhome">Home</button>
+        <button type="button" id="zedstop">Parar / abortar Home</button>
+      </div>
+      <div class="k" id="inputnote">Clique Start teleop ZED. Mostre ombro, cotovelo e punho direitos até calibrar a escala; depois mantenha a mão parada para iniciar. Ao concluir a calibração, o controle é habilitado automaticamente.</div>
+      <div class="k" style="margin-top:6px">A posição e a orientação atuais são a referência. Estenda o braço para aproximar o robô da mesa; recue para afastar. Gire a mão para orientar a garra. Palma aberta abre a garra; punho fechado fecha. Mantenha o gesto por um instante. Home encerra a teleoperação e retorna à posição inicial.</div>
+      <div class="k" style="margin-top:6px">Perda curta: pausa e retoma com a mão estável, sem salto. Após 5 s: desarma e exige novo Start. Controle direto, sem desvio de obstáculos cuRobo/PF.</div>
+    </div>
+    <div class="card"><h3>Teleop speed</h3>
+      <div class="row"><span class="k">translation</span><b id="spv">–</b></div>
+      <input type="range" id="sp" min="5" max="100" step="5" value="100" disabled>
+      <div class="k" id="spnote">waiting for the teleop</div>
+      <div class="row" style="margin-top:6px"><span class="k">rotation</span><b id="rpv">–</b></div>
+      <input type="range" id="rp" min="5" max="100" step="5" value="100" disabled>
+      <div class="k" id="rpnote">waiting for the teleop</div>
+    </div>
+    <div class="card"><h3>Gripper force</h3>
+      <div class="row"><span class="k">grasp force (next close)</span><b id="gfv">–</b></div>
+      <input type="range" id="gf" min="5" max="70" step="5" value="20" disabled>
+      <div class="k" id="gfnote">waiting for the teleop</div>
+      <div class="k" style="margin-top:4px">Holding something? Press close again to re-grasp with the new force. Franka Hand: up to 70 N.</div>
+    </div>
+    <div class="card"><h3>Pad <span class="k" id="layout"></span></h3>
+      <details><summary>sticks and buttons</summary><div id="pad"></div></details>
+      <div class="k" style="margin-top:6px">Lab pad (8BitDo) check: <a id="robotdash" target="_blank" rel="noopener">robot panel</a></div>
+    </div>
+  </div>
+</section>
+
+<h2>Cameras</h2>
+<section class="grid three">
+  <figure id="cam1"><div class="frame"><img alt="zed1 live"><div class="offline">Stream unavailable. Retrying…</div></div>
+    <figcaption><div><div class="name">Camera 1 · front</div><div class="sub">zed1 · 33874668</div></div><button type="button" data-cam="cam1">Reconnect</button></figcaption></figure>
+  <figure id="cam2"><div class="frame"><img alt="zed2 live"><div class="offline">Stream unavailable. Retrying…</div></div>
+    <figcaption><div><div class="name">Camera 2 · top</div><div class="sub">zed2 · 39498278</div></div><button type="button" data-cam="cam2">Reconnect</button></figcaption></figure>
+  <figure id="cam3"><div class="frame"><img alt="zed3 live"><div class="offline">Wrist tracking stream unavailable. Retrying…</div></div>
+    <figcaption><div><div class="name">Camera 3 · operator wrist</div><div class="sub">zed3 · 34046618</div></div><button type="button" data-cam="cam3">Reconnect</button></figcaption></figure>
+</section>
+
+<h2>Robot segmentation (cuRobo RobotSegmenter) · red = removed from the depth nvblox sees</h2>
+<section class="grid">
+  <figure id="seg1"><div class="frame"><img alt="zed1 robot mask"><div class="offline">No segmenter output. Retrying…</div></div>
+    <figcaption><div><div class="name">Camera 1 · segmented</div><div class="sub">/franka_seg_zed1/overlay</div></div><button type="button" data-cam="seg1">Reconnect</button></figcaption></figure>
+  <figure id="seg2"><div class="frame"><img alt="zed2 robot mask"><div class="offline">No segmenter output. Retrying…</div></div>
+    <figcaption><div><div class="name">Camera 2 · segmented</div><div class="sub">/franka_seg_zed2/overlay</div></div><button type="button" data-cam="seg2">Reconnect</button></figcaption></figure>
+</section>
+
+<script>
+// ---- camera streams (web_video_server on :8787) ---------------------------------------------------------------------
+const HTTPS = location.protocol === 'https:';                  // via nexus:8443: cameras and the robot panel come through this server
+const STREAM_BASE = 'http://' + location.hostname + ':8787/stream?topic=';
+const cams = { cam1: '/zed1/zed_node/left/image_rect_color', cam2: '/zed2/zed_node/left/image_rect_color', cam3: '/fr3_operator/wrist_overlay',
+               seg1: '/franka_seg_zed1/overlay', seg2: '/franka_seg_zed2/overlay' };
+function startCam(key) {
+  const fig = document.getElementById(key), img = fig.querySelector('img'), frame = fig.querySelector('.frame');
+  if (HTTPS || key === 'cam3') {     // one JPEG at a time through the tunnel, next one only after this one arrived (streams would starve the remote pad)
+    const gen = fig.dataset.gen = String(+(fig.dataset.gen || 0) + 1);       // Reconnect starts a new chain; the old one stops
+    // While the remote pad is enabled the relay link is the pad's: only front + top, small and slower (measured 10-20: 5 full-size
+    // pollers -> pad round trip p95 334 ms, max 440 ms, and the pad server blocks above 400 ms).
+    const lean = () => window.remotePadOn && window.remotePadOn(), keep = key === 'cam1' || key === 'cam2';
+    img.onload = () => { frame.classList.remove('down'); setTimeout(next, lean() ? 300 : (key === 'cam3' ? 20 : 150)); };
+    img.onerror = () => { frame.classList.add('down'); setTimeout(next, 4000); };
+    const next = () => {
+      if (fig.dataset.gen !== gen) return;
+      if (lean() && !keep) { fig.querySelector('.offline').textContent = 'Paused while the remote PS4 is on (keeps the link fast).'; frame.classList.add('down'); return setTimeout(next, 1000); }
+      img.src = 'snap?topic=' + cams[key] + (lean() ? '&width=320&height=180&quality=45' : '&width=480&height=270&quality=60') + '&_=' + Date.now();
+    };
+    return next();
+  }
+  img.onload = () => frame.classList.remove('down');
+  img.onerror = () => { frame.classList.add('down'); setTimeout(() => startCam(key), 4000); };
+  // topic unencoded (web_video_server does not decode %2F); 480x270 q60 keeps the encoder cheap on the lab PC
+  img.src = STREAM_BASE + cams[key] + '&width=480&height=270&quality=60&_=' + Date.now();
+}
+document.querySelectorAll('button[data-cam]').forEach(b => b.addEventListener('click', () => startCam(b.dataset.cam)));
+Object.keys(cams).forEach(startCam);
+document.getElementById('robotdash').href = HTTPS ? 'fr3/' : 'http://' + location.hostname + ':8088/';
+</script>
+
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"}}</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { ColladaLoader } from 'three/addons/loaders/ColladaLoader.js';
+const $ = id => document.getElementById(id);
+const pill = (id, text, cls) => { $(id).textContent = text; $(id).className = 'pill ' + (cls || ''); };
+
+// ---- 3D scene ---------------------------------------------------------------------------------------------------------
+const view = $('view');
+THREE.Object3D.DEFAULT_UP.set(0, 0, 1);                       // ROS: z up
+const scene = new THREE.Scene(); scene.background = new THREE.Color(0x10151c);
+const cam = new THREE.PerspectiveCamera(45, 1, 0.02, 50); cam.up.set(0, 0, 1);
+const HOME = { pos: [1.7, -1.4, 1.2], target: [0.45, 0, 0.2] };
+cam.position.set(...HOME.pos);
+const ren = new THREE.WebGLRenderer({ antialias: true }); ren.setPixelRatio(Math.min(devicePixelRatio, 2)); view.prepend(ren.domElement);
+const ctl = new OrbitControls(cam, ren.domElement); ctl.target.set(...HOME.target); ctl.update();
+scene.add(new THREE.HemisphereLight(0xffffff, 0x556070, 1.4));
+const sun = new THREE.DirectionalLight(0xffffff, 1.6); sun.position.set(2, -1.5, 3); scene.add(sun);
+const grid = new THREE.GridHelper(3, 30, 0x3a4452, 0x232b36); grid.rotation.x = Math.PI / 2; scene.add(grid);
+scene.add(new THREE.AxesHelper(0.2));
+function resize() { const w = view.clientWidth, h = view.clientHeight; ren.setSize(w, h, false); cam.aspect = w / h; cam.updateProjectionMatrix(); }
+addEventListener('resize', resize); resize();
+(function loop() { requestAnimationFrame(loop); ctl.update(); ren.render(scene, cam); })();
+$('reset').onclick = () => { cam.position.set(...HOME.pos); ctl.target.set(...HOME.target); ctl.update(); };
+
+// ---- nvblox mesh (mesh.bin from this server) ---------------------------------------------------------------------------
+const BOX = { min: [-0.5, -1.0, -0.1], max: [1.3, 1.0, 1.3] };
+const mapMat = new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.FrontSide });   // front faces only, like rviz: walls seen from behind vanish
+const SRGB2LIN = new Float32Array(256).map((_, i) => { const c = i / 255; return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); });
+const LIGHT = new THREE.Vector3(0.4, -0.3, 0.87).normalize();
+function mapColours(g, pos, rgba, nv) {   // nvblox colours are sRGB bytes; three.js expects linear (else washed out). Shading baked in, unlit like rviz
+  const n = g.getAttribute('normal').array, c = new Float32Array(nv * 3), hc = $('height').checked ? heightColours(pos, nv) : null, lit = $('lit').checked;
+  for (let i = 0; i < nv; i++) {
+    const k = lit ? 0.72 + 0.28 * Math.abs(n[3 * i] * LIGHT.x + n[3 * i + 1] * LIGHT.y + n[3 * i + 2] * LIGHT.z) : 1;
+    for (let j = 0; j < 3; j++) c[3 * i + j] = k * (hc ? hc[3 * i + j] : SRGB2LIN[rgba[4 * i + j]]);
+  }
+  return new THREE.BufferAttribute(c, 3);
+}
+const mapMesh = new THREE.Mesh(new THREE.BufferGeometry(), mapMat); scene.add(mapMesh);
+let raw = null, ver = -1;
+function heightColours(pos, n) {
+  const c = new Float32Array(n * 3), col = new THREE.Color();
+  for (let i = 0; i < n; i++) { const t = Math.min(1, Math.max(0, (pos[3 * i + 2] + 0.05) / 0.85)); col.setHSL(0.66 - 0.66 * t, 0.85, 0.5); c.set([col.r, col.g, col.b], 3 * i); }   // setHSL gives linear values already
+  return c;
+}
+function weldNormals(g, pos, nv) {   // nvblox sends each 8x8x8-voxel block with its own copy of the border vertices, so computeVertexNormals leaves a lighting step at every block seam (blocky look): average the normals of coincident vertices
+  const n = g.getAttribute('normal').array, at = new Map(), grp = new Int32Array(nv);
+  for (let i = 0; i < nv; i++) {
+    const k = Math.round(pos[3 * i] * 1e4) + ',' + Math.round(pos[3 * i + 1] * 1e4) + ',' + Math.round(pos[3 * i + 2] * 1e4);
+    let j = at.get(k); if (j === undefined) { j = at.size; at.set(k, j); } grp[i] = j;
+  }
+  const s = new Float32Array(3 * at.size);
+  for (let i = 0; i < nv; i++) { const j = 3 * grp[i]; s[j] += n[3 * i]; s[j + 1] += n[3 * i + 1]; s[j + 2] += n[3 * i + 2]; }
+  for (let i = 0; i < nv; i++) {
+    const j = 3 * grp[i], l = Math.hypot(s[j], s[j + 1], s[j + 2]) || 1;
+    n[3 * i] = s[j] / l; n[3 * i + 1] = s[j + 1] / l; n[3 * i + 2] = s[j + 2] / l;
+  }
+}
+function rebuild() {
+  if (!raw) return;
+  const { pos, rgba, idx, nv } = raw; let tri = idx;
+  if ($('crop').checked) {
+    const keep = [];
+    for (let t = 0; t < idx.length; t += 3) {
+      const i = 3 * idx[t], x = pos[i], y = pos[i + 1], z = pos[i + 2];
+      if (x >= BOX.min[0] && x <= BOX.max[0] && y >= BOX.min[1] && y <= BOX.max[1] && z >= BOX.min[2] && z <= BOX.max[2]) keep.push(idx[t], idx[t + 1], idx[t + 2]);
+    }
+    tri = new Uint32Array(keep);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  g.setIndex(new THREE.BufferAttribute(tri, 1)); g.computeVertexNormals(); weldNormals(g, pos, nv);
+  g.setAttribute('color', mapColours(g, pos, rgba, nv));
+  mapMesh.geometry.dispose(); mapMesh.geometry = g;
+  mapMat.wireframe = $('wire').checked;
+  $('mapstats').textContent = `${(tri.length / 3).toLocaleString()} triangles`;
+}
+for (const id of ['crop', 'lit', 'height', 'wire']) $(id).onchange = rebuild;
+$('showMap').onchange = () => { mapMesh.visible = $('showMap').checked; };
+let mapT = 0;
+const SLOW = location.protocol === 'https:';                   // via nexus:8443 = DERP relay: the ~1.3 MB map every second starves the pad
+async function poll() {
+  if (SLOW && window.remotePadOn && window.remotePadOn()) { pill('pMap', 'map paused (remote PS4 on)', 'warn'); return setTimeout(poll, 1000); }
+  try {
+    const r = await fetch('mesh.bin?v=' + ver, { cache: 'no-store' });
+    if (r.status === 200) {
+      const buf = await r.arrayBuffer(), h = new Uint32Array(buf, 0, 3), nv = h[1], nt = h[2]; let o = 12;
+      const pos = new Float32Array(buf, o, nv * 3); o += nv * 12;
+      const rgba = new Uint8Array(buf, o, nv * 4); o += nv * 4;
+      raw = { pos, rgba, idx: new Uint32Array(buf, o, nt * 3), nv }; ver = h[0]; mapT = Date.now(); rebuild();
+    }
+    if (r.ok) pill('pMap', 'map live', 'on'); else pill('pMap', 'map: server error ' + r.status, 'warn');
+  } catch (e) { pill('pMap', 'map: unreachable', 'bad'); }
+  setTimeout(poll, SLOW ? 5000 : 1000);
+}
+poll();
+
+// ---- live robot: meshes + poses from the FR3 dashboard (passed through by this server) ---------------------------------
+const robot = new THREE.Group(); scene.add(robot); const linkGroups = {};
+$('showRobot').onchange = () => { robot.visible = cmdF.visible = tcpF.visible = $('showRobot').checked; };
+function frame(color) {
+  const g = new THREE.Group(); g.add(new THREE.AxesHelper(0.06));
+  g.add(new THREE.Mesh(new THREE.SphereGeometry(0.012, 16, 12), new THREE.MeshBasicMaterial({ color }))); g.visible = false; scene.add(g); return g;
+}
+const cmdF = frame(0x2f6fdb), tcpF = frame(0xe8801c);
+function setPose(o, p) { o.position.set(p[0], p[1], p[2]); o.quaternion.set(p[3], p[4], p[5], p[6]); o.visible = $('showRobot').checked; }
+async function loadRobot() {
+  let cfg;
+  for (;;) { try { cfg = await (await fetch('config')).json(); if (cfg.visuals.length) break; } catch (e) {} await new Promise(r => setTimeout(r, 2000)); }
+  const loader = new ColladaLoader();
+  const mat = new THREE.MeshStandardMaterial({ color: 0xdfe5ee, roughness: 0.55, metalness: 0.1, transparent: true, opacity: 0.55 });
+  await Promise.all(cfg.visuals.map(v => new Promise(res => {
+    loader.load('mesh/' + v.mesh, c => {
+      const m = c.scene; m.rotation.set(0, 0, 0);
+      m.traverse(o => { if (o.isMesh) o.material = Array.isArray(o.material) ? o.material.map(() => mat) : mat; });
+      const holder = new THREE.Group(); holder.add(m);
+      holder.position.set(...v.xyz); holder.quaternion.setFromEuler(new THREE.Euler(v.rpy[0], v.rpy[1], v.rpy[2], 'ZYX')); holder.scale.set(...v.scale);
+      const lg = linkGroups[v.link] || (linkGroups[v.link] = (() => { const g = new THREE.Group(); g.visible = false; robot.add(g); return g; })());
+      lg.add(holder); res();
+    }, undefined, () => res());
+  })));
+}
+loadRobot();
+
+// ---- side panel ---------------------------------------------------------------------------------------------------------
+const LAYOUTS = {
+  xinput: { btn: ['A','B','X','Y','LB','RB','Back','Start','Guide','L3','R3'], ax: ['LX','LY','LT','RX','RY','RT','Dpad X','Dpad Y'], trig: [2, 5] },
+  dinput: { btn: ['A','B','C','X','Y','Z','LB','RB','LT','RT','Back','Start','Guide','L3','R3','?'], ax: ['LX','LY','RX','RY','RT','LT','Dpad X','Dpad Y'], trig: [4, 5] },
+};
+function drawPad(p) {
+  if (!p || !p.ok) { $('pad').innerHTML = '<span class="k">no pad on the lab PC</span>'; $('layout').textContent = ''; pill('pPad', 'local pad: none', 'warn'); return; }
+  const N = LAYOUTS[p.layout] || LAYOUTS.xinput; $('layout').textContent = p.layout === 'dinput' ? '· Bluetooth' : '· USB'; pill('pPad', 'local pad ok', 'on');
+  let h = '';
+  N.ax.forEach((nm, i) => {
+    const trig = N.trig.includes(i), v = p.axes[i] ?? (trig ? -1 : 0), t = (v + 1) / 2, lo = trig ? 0 : Math.min(0.5, t), w = trig ? t : Math.abs(t - 0.5);
+    h += `<div class="row"><span class="k">${nm}</span><span>${v.toFixed(2)}</span></div><div class="bar"><b></b><i style="left:${lo * 100}%;width:${w * 100}%"></i></div>`;
+  });
+  $('pad').innerHTML = h + '<div class="btns">' + N.btn.map((nm, i) => `<span class="btn ${p.buttons[i] ? 'down' : ''}">${nm}</span>`).join('') + '</div>';
+}
+async function post(path, body) {
+  const r = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Dashboard': '1' }, body: JSON.stringify(body) });
+  const j = await r.json().catch(() => ({})); return [r.ok, j];
+}
+const busy = {}, timers = {};
+function slider(id, vid, nid, fmt, send) {
+  $(id).addEventListener('input', () => {
+    busy[id] = true; $(vid).textContent = fmt($(id).value); clearTimeout(timers[id]);
+    timers[id] = setTimeout(async () => {
+      try { const [ok, j] = await send(Number($(id).value)); $(nid).textContent = ok ? 'applied' : 'not applied: ' + (j.message || 'error'); }
+      catch (e) { $(nid).textContent = 'not applied: ' + e; }
+      busy[id] = false;
+    }, 200);
+  });
+}
+let zedControlBusy = false;
+let zedControlGeneration = 0;
+async function zedControl(action) {
+  if (zedControlBusy && action !== 'disengage') return;
+  const generation = ++zedControlGeneration;
+  zedControlBusy = true; $('zedactivate').disabled = true;
+  try {
+    const r = await fetch('zed-control', {method:'POST', headers:{'Content-Type':'application/json','X-Dashboard':'1'}, body:JSON.stringify({action})});
+    const body = await r.text();
+    let d; try { d = JSON.parse(body); } catch (_) { d = {ok:false, message:body || ('HTTP ' + r.status)}; }
+    if (generation === zedControlGeneration) $('inputnote').textContent = d.ok ? (d.message || 'Comando recebido') : (d.message || 'Não foi possível executar o comando');
+  } catch(e) { if (generation === zedControlGeneration) $('inputnote').textContent = 'Sem resposta. Confira o estado do controle antes de tentar novamente.'; }
+  finally { if (generation === zedControlGeneration) zedControlBusy = false; }
+}
+$('zedactivate').onclick = () => zedControl('start');
+$('zedstop').onclick = () => zedControl('disengage');
+$('zedhome').onclick = () => zedControl('home');
+let sourceBusy = false;
+$('inputsource').onchange = async () => {
+  sourceBusy = true; $('inputsource').disabled = true;
+  try {
+    const [ok,j] = await post('input-source', {source:$('inputsource').value});
+    $('inputnote').textContent = ok ? 'Entrada selecionada. Clique Ativar ZED quando o indicador estiver verde.' : (j.message || 'Could not select input');
+  } catch(e) { $('inputnote').textContent = 'Could not select input: ' + e.message; }
+  finally { sourceBusy = false; $('inputsource').disabled = false; }
+};
+slider('sp', 'spv', 'spnote', v => v + ' %', v => post('speed', { scale: v / 100 }));
+slider('rp', 'rpv', 'rpnote', v => v + ' %', v => post('speed', { rot_scale: v / 100 }));
+slider('gf', 'gfv', 'gfnote', v => v + ' N', v => post('grip', { force: v }));
+function setSlider(id, vid, nid, value, shown, note) {
+  const el = $(id);
+  if (value === null || value === undefined) { el.disabled = true; $(vid).textContent = '–'; $(nid).textContent = note; return; }
+  el.disabled = false;
+  if (!busy[id] && document.activeElement !== el) el.value = value;
+  if (!busy[id]) { $(vid).textContent = shown; $(nid).textContent = note; }
+}
+function drawSpeed(sp) {
+  if (!sp) { for (const [i, v, n] of [['sp', 'spv', 'spnote'], ['rp', 'rpv', 'rpnote'], ['gf', 'gfv', 'gfnote']]) setSlider(i, v, n, null, '', 'teleop not running'); return; }
+  setSlider('sp', 'spv', 'spnote', Math.round(sp[0] * 100), Math.round(sp[0] * 100) + ' %', `${(sp[0] * sp[1] * 100).toFixed(0)} cm/s horizontal, ${(sp[0] * sp[2] * 100).toFixed(0)} cm/s vertical`);
+  setSlider('rp', 'rpv', 'rpnote', Math.round(sp[3] * 100), Math.round(sp[3] * 100) + ' %', `${(sp[3] * sp[4]).toFixed(0)} deg/s`);
+  if (sp.length > 5) setSlider('gf', 'gfv', 'gfnote', Math.round(sp[5]), Math.round(sp[5]) + ' N', 'set in the teleop');
+  else setSlider('gf', 'gfv', 'gfnote', null, '', 'this teleop has no live grasp force (restart it)');
+}
+let lastMsg = 0;
+function connect() {
+  const es = new EventSource('stream');
+  es.onerror = () => pill('pRobot', 'robot: reconnecting', 'warn');
+  es.onmessage = e => {
+    const d = JSON.parse(e.data); lastMsg = Date.now(); pill('pRobot', 'robot live', 'on');
+    for (const [l, p] of Object.entries(d.links || {})) if (linkGroups[l]) setPose(linkGroups[l], p);
+    if (d.cmd) setPose(cmdF, d.cmd); else cmdF.visible = false;
+    if (d.tcp) {
+      setPose(tcpF, d.tcp); $('tcp').textContent = d.tcp.slice(0, 3).map(x => (1000 * x).toFixed(0)).join('  ');
+      $('lag').textContent = d.cmd ? Math.round(1000 * Math.hypot(d.cmd[0] - d.tcp[0], d.cmd[1] - d.tcp[1], d.cmd[2] - d.tcp[2])) + ' mm' : '–';
+    }
+    pill('pEng', d.engaged ? 'teleop ENGAGED' : 'teleop idle (Start)', d.engaged ? 'on' : '');
+    if (!sourceBusy && ['joystick','zed'].includes(d.input_source)) $('inputsource').value = d.input_source;
+    $('zedactivate').disabled = zedControlBusy || d.engaged || ['calibrating'].includes(d.zed?.phase) || !!d.zed?.home_running;
+    $('zedhome').disabled = zedControlBusy || !!d.zed?.home_running;
+    pill('zedstatus', d.zed?.home_running ? 'Home em andamento' : (d.zed?.note || 'Aguardando teleop'), d.engaged && d.zed?.phase === 'active' ? 'on' : 'warn');
+    if (d.zed?.phase === 'calibrating') {
+      const t = d.zed?.diagnostics;
+      $('inputnote').textContent = t && t.arm_calibrated === false ? `${t.reason} · ${t.arm_samples}/${t.arm_required_samples}` : d.zed.note + ' · ' + Math.round(100 * (d.zed.stability || 0)) + '%';
+    }
+    else if (d.zed?.phase === 'paused' || d.zed?.phase === 'active') {
+      const t=d.zed?.diagnostics;
+      $('inputnote').textContent=d.zed.note+(t ? ` · ${t.fps || 0} Hz · ${t.capture_age_ms || 0} ms`+(t.arm_scale ? ` · braço ${t.arm_length_m.toFixed(2)} m · escala ${t.arm_scale.toFixed(2)}` : '') : '');
+    } 
+    if ($('zedgesture')) $('zedgesture').textContent = ({Open_Palm:'Palma aberta',Closed_Fist:'Punho fechado'}[d.zed?.gesture] || 'Sem gesto confiável') + (d.zed?.gripper_command ? ' · pedido: ' + (d.zed.gripper_command === 'Closed_Fist' ? 'fechar' : 'abrir') : '');
+    drawPad(d.pad); drawSpeed(d.speed);
+  };
+}
+connect();
+setInterval(() => { if (lastMsg && Date.now() - lastMsg > 3000) pill('pRobot', 'robot: no data ' + ((Date.now() - lastMsg) / 1000).toFixed(0) + ' s', 'bad'); }, 1000);
+</script>
+
+<script>
+// ---- remote PS4: Gamepad API (standard mapping) -> WebSocket /ws -> remote-pad dashboard on the lab PC (:8089, via mesh_server).
+// Same page logic as fr3_dashboard.html's remote card. Everything starts OFF: the operator presses Enable, and any loss (tab hidden,
+// pad unplugged, socket closed, server says blocked) switches it off until pressed again. The server re-checks everything (neutral
+// gate, frame age, round trip, single client, user allow-list); this page only reads the pad.
+(() => {
+  const $ = id => document.getElementById(id);
+  const R = { ws: null, want: false, seq: 0, sent: new Map(), rtt: null, st: null, note: null, lastInput: 0, prev: '', key: '' };
+  const PS4 = ['Cross', 'Circle', 'Square', 'Triangle', 'L1', 'R1', 'L2', 'R2', 'Share', 'Options', 'L3', 'R3', 'Up', 'Down', 'Left', 'Right', 'PS'];
+  const slots = () => (navigator.getGamepads ? [...navigator.getGamepads()] : []);
+  const allPads = () => slots().filter(g => g && g.connected);
+  const pickPad = () => allPads().find(g => g.mapping === 'standard' && g.buttons.length >= 17 && g.axes.length >= 4) || null;
+  window.remotePadOn = () => R.want || !!(R.st && R.st.state !== 'idle' && R.st.state !== 'blocked');   // cameras go lean (first script)
+  function remoteOff(why) { if (R.want) R.note = { t: performance.now(), msg: why }; R.want = false; render(); }   // reason stays 8 s
+  function render() {
+    const g = pickPad(), others = allPads(), open = !!(R.ws && R.ws.readyState === 1), now = performance.now(), live = R.st && R.st.state === 'live';
+    const seen = g && now - R.lastInput < 3000;
+    const items = [
+      ['ok', 'Secure page (HTTPS)', 'yes'],
+      [navigator.getGamepads ? 'ok' : 'bad', 'Browser gamepad support', navigator.getGamepads ? 'yes' : 'missing'],
+      [g ? 'ok' : (others.length ? 'warn' : 'bad'), 'PS4 detected by the browser', g ? g.id.slice(0, 34) : (others.length ? 'non-standard mapping (' + (others[0].mapping || 'none') + '): ' + others[0].id.slice(0, 24) : 'none: click this page, press a button on the pad'),
+       g ? '' : (others.length ? 'A pad is seen but with a non-standard mapping, which is refused. Use Chrome or Edge, close Steam / DS4Windows.' : 'No PS4 seen by the browser. Click this page, then press a button on the pad.')],
+      [g ? (seen ? 'ok' : 'wait') : 'wait', 'Pad responding', g ? (seen ? 'inputs changing' : 'move a stick or press a button') : '-'],
+      [open ? 'ok' : 'bad', 'Link to the robot PC', open ? 'connected' + (R.rtt == null ? '' : ', ' + R.rtt.toFixed(0) + ' ms') : 'offline, retrying'],
+      [live ? 'ok' : 'wait', 'Remote control', live ? 'LIVE: your pad drives the robot input' : (R.want ? ((R.st && R.st.msg) || 'enabling') : 'off (press Enable)')],
+    ];
+    $('rcheck').innerHTML = items.map(([c, t, d]) => `<li class="${c}"><span class="s">${{ ok: '&#10003;', bad: '&#10007;', warn: '!', wait: '&#9675;' }[c]}</span><span class="t">${t}</span><span class="d" title="${d}">${d}</span></li>`).join('');
+    const firstBad = items.find(i => i[0] === 'bad') || items.find(i => i[0] === 'warn');
+    const badge = live ? ['LIVE', 'warn'] : firstBad ? ['not ready', ''] : ['ready', 'on'];
+    $('rbadge').textContent = badge[0]; $('rbadge').className = 'pill ' + badge[1];
+    const b = $('rbanner'); b.hidden = false;
+    if (live) { b.className = 'live'; b.textContent = 'REMOTE PAD LIVE: your PS4 is driving the robot input'; }
+    else if (firstBad) { b.className = firstBad[0]; b.textContent = firstBad[3] || ('Remote pad: ' + firstBad[1] + ' - ' + firstBad[2]); }
+    else if (!seen) { b.className = 'wait'; b.textContent = 'PS4 detected - move a stick or press a button to confirm it responds'; }
+    else { b.className = 'ok'; b.textContent = 'PS4 connected and responding - press Enable remote control (right panel)'; }
+    $('ren').disabled = !(g && open); $('ren').textContent = R.want ? 'DISABLE remote control' : 'Enable remote control'; $('ren').classList.toggle('armed', R.want);
+    $('rrtt').textContent = R.rtt == null ? '–' : R.rtt.toFixed(0) + ' ms';
+    $('rmsg').textContent = R.note && now - R.note.t < 8000 ? R.note.msg : (R.st ? R.st.msg : '');
+    const s = slots(); $('rall').textContent = (s.length ? s.map((x, i) => `[${i}] ` + (x ? `${x.id} | mapping=${x.mapping || '(none)'} | ${x.buttons.length} buttons, ${x.axes.length} axes` : 'empty slot')).join('\n') : 'navigator.getGamepads() returned nothing') + `\nlink=${open}  state=${R.st ? R.st.state : '-'}`;
+    if (!g) $('rdet').open = true;
+  }
+  function drawViz() {                                          // what the BROWSER reads from the pad (independent of Enable)
+    requestAnimationFrame(drawViz);
+    const g = pickPad() || allPads()[0] || null, c = $('rviz'), x = c.getContext('2d'), cs = getComputedStyle(document.documentElement);
+    const snap = g ? g.axes.map(a => a.toFixed(2)).join() + g.buttons.map(b => b.value.toFixed(2)).join() : '';
+    const key = g ? g.index + g.id : ''; if (key !== R.key) { R.key = key; R.prev = ''; R.lastInput = 0; }   // a new pad has not 'responded' yet
+    if (g && R.prev !== '' && snap !== R.prev) R.lastInput = performance.now(); R.prev = snap;
+    x.clearRect(0, 0, c.width, c.height); const line = cs.getPropertyValue('--line'), acc = cs.getPropertyValue('--accent'), mute = cs.getPropertyValue('--muted');
+    const stick = (cx, ax, ay, lab) => { x.strokeStyle = line; x.lineWidth = 2; x.beginPath(); x.arc(cx, 52, 34, 0, 7); x.stroke(); x.fillStyle = g ? acc : mute; x.beginPath(); x.arc(cx + (g ? (g.axes[ax] || 0) : 0) * 28, 52 + (g ? (g.axes[ay] || 0) : 0) * 28, 8, 0, 7); x.fill(); x.fillStyle = mute; x.font = '11px sans-serif'; x.textAlign = 'center'; x.fillText(lab, cx, 100); };
+    stick(48, 0, 1, 'left stick'); stick(272, 2, 3, 'right stick');
+    const trig = (bx, i, lab) => { const v = g && g.buttons[i] ? g.buttons[i].value : 0; x.strokeStyle = line; x.strokeRect(bx, 20, 18, 64); x.fillStyle = acc; x.fillRect(bx, 84 - 64 * v, 18, 64 * v); x.fillStyle = mute; x.font = '11px sans-serif'; x.textAlign = 'center'; x.fillText(lab, bx + 9, 100); };
+    trig(112, 6, 'L2'); trig(190, 7, 'R2');
+    if (!g) { x.fillStyle = mute; x.font = '12px sans-serif'; x.textAlign = 'center'; x.fillText('no pad seen by the browser', 160, 56); }
+    const bs = $('rbtns').children; for (let i = 0; i < bs.length; i++) bs[i].classList.toggle('down', !!(g && g.buttons[i] && g.buttons[i].pressed));
+  }
+  function wsOpen() {
+    const u = new URL('ws', location.href); u.protocol = 'wss:';
+    const ws = new WebSocket(u); R.ws = ws;
+    ws.onopen = () => { R.seq = 0; R.sent.clear(); R.rtt = null; R.st = null; render(); };
+    ws.onmessage = e => {
+      const st = JSON.parse(e.data); R.st = st;
+      const t0 = R.sent.get(st.seq); if (t0 !== undefined) { R.rtt = performance.now() - t0; for (const k of R.sent.keys()) if (k <= st.seq) R.sent.delete(k); }
+      if (st.state === 'blocked') remoteOff('server: ' + st.msg); else render();
+    };
+    ws.onclose = ev => { R.ws = null; remoteOff('link closed' + (ev.reason ? ': ' + ev.reason : '')); render(); setTimeout(wsOpen, 2000); };
+    ws.onerror = () => {};
+  }
+  function send() {
+    const ws = R.ws; if (!ws || ws.readyState !== 1) return;
+    const g = pickPad();
+    if (R.want && (!g || document.hidden)) remoteOff(g ? 'tab hidden: remote control off' : 'pad disconnected: remote control off');
+    const a = g ? [0, 1, 2, 3].map(i => g.axes[i]) : [0, 0, 0, 0];
+    const b = g ? Array.from({ length: 17 }, (_, i) => g.buttons[i].value) : new Array(17).fill(0);
+    const seq = ++R.seq; R.sent.set(seq, performance.now());
+    if (R.sent.size > 200) R.sent.delete(R.sent.keys().next().value);
+    ws.send(JSON.stringify({ t: 'pad', seq, en: R.want, a, b, rtt: R.rtt }));
+  }
+  function init() {
+    $('rbody').hidden = false;
+    $('rbtns').innerHTML = PS4.map(n => `<span class="btn">${n}</span>`).join('');
+    $('ren').onclick = () => { if (R.want) remoteOff('remote control off'); else if (pickPad()) { R.want = true; R.note = null; render(); } };
+    addEventListener('keydown', e => { if (e.key === 'Escape') remoteOff('remote control off (Esc)'); });
+    addEventListener('gamepadconnected', render); addEventListener('gamepaddisconnected', () => remoteOff('pad disconnected: remote control off'));
+    document.addEventListener('visibilitychange', () => { if (document.hidden) remoteOff('tab hidden: remote control off'); });
+    wsOpen(); setInterval(send, 25); setInterval(render, 400); render(); drawViz();
+  }
+  if (!window.isSecureContext) { $('rinsecure').hidden = false; $('rbadge').textContent = 'https only'; return; }
+  fetch('padcfg').then(r => r.ok ? r.json() : Promise.reject(r.status)).then(c => {
+    if (c.remote) init(); else { $('rinsecure').hidden = false; $('rinsecure').textContent = 'The remote-pad server on the lab PC runs without remote_pad:=true.'; }
+  }).catch(e => { $('rinsecure').hidden = false; $('rinsecure').textContent = 'Remote-pad server on the lab PC not reachable (' + e + '); the watchdog on nexus restarts it.'; });
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,38 @@
+{
+  "mapping": "review",
+  "default_exercise": "full_6d",
+  "translation_gain": 1.0,
+  "rotation_gains": {
+    "roll": 1.6,
+    "pitch": 1.2,
+    "yaw": 1.2
+  },
+  "profiles": [
+    "full_6d",
+    "translation",
+    "horizontal",
+    "height",
+    "reach",
+    "roll",
+    "pitch",
+    "yaw",
+    "gripper",
+    "cross",
+    "neutral"
+  ],
+  "backup": "/home/hipolito/spot-teleop/isaac-ros_ws/src/spot_nvblox/fr3/teleop/review_defaults/backup_20261030_115620",
+  "hardware_activated": false,
+  "installed_at": "2026-10-30T12:01:04.406541",
+  "installed_runtime": "/home/murilo/franka_ws/lab/fr3_zed_runtime/fr3_input_teleop_nobox.py",
+  "startup_parameters": "/home/murilo/franka_ws/lab/fr3_joy_teleop.yaml",
+  "dashboard": "http://100.88.134.127:8088/",
+  "verified_engaged": false,
+  "verified_published_commands": 0,
+  "canonical_tests_passed": 59,
+  "runtime_tests_passed": 56,
+  "current_readiness": {
+    "tracking": false,
+    "controller_active_confirmed": false
+  },
+  "control_backend": "direct Cartesian impedance; cuRobo not armed"
+}
