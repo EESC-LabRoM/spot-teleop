@@ -1,0 +1,192 @@
+{
+ "run": "reuse of lying3-reuse152 (lying2 idx152 moved by SE2 ICP lying2->lying3: yaw -0.3 deg, t [-11,+8] mm, fitness 0.96, rmse 4.5 mm) via SE2 ICP {'fitness': 0.948, 'rmse_mm': 5.0, 'yaw_deg': 3.01, 't_mm': [np.float64(-5.7), np.float64(-2.9)], 'z_extent_diff_mm': np.float64(6.0)}",
+ "grasp_pos": [
+  0.4335,
+  -0.1827,
+  0.2608
+ ],
+ "grasp_tcp": [
+  0.3805,
+  -0.1667,
+  0.1735
+ ],
+ "approach": [
+  -0.512,
+  0.155,
+  -0.845
+ ],
+ "map_z_bias": 0.0,
+ "depth": 0.01,
+ "flip_deg": 0.0,
+ "z_offset": 0.0,
+ "table_z": -0.0211,
+ "ik_err_mm": 0.0,
+ "ik_err_deg": 0.0,
+ "stages": {
+  "S1_home_to_pre": {
+   "q": [
+    [
+     -0.10427,
+     0.213,
+     -0.29167,
+     -1.90482,
+     0.00029,
+     1.54708,
+     0.76505
+    ]
+   ],
+   "t": [
+    9.984
+   ]
+  },
+  "S2_pre_to_grasp": {
+   "q": [
+    [
+     -0.10152,
+     0.18136,
+     -0.2927,
+     -2.24004,
+     -0.00739,
+     1.85181,
+     0.77178
+    ]
+   ],
+   "t": [
+    6.0
+   ]
+  },
+  "S3_lift": {
+   "q": [
+    [
+     -0.09322,
+     0.02336,
+     -0.29621,
+     -2.14899,
+     -0.04524,
+     1.60862,
+     0.79586
+    ]
+   ],
+   "t": [
+    6.0
+   ]
+  },
+  "S4_put_back": {
+   "q": [
+    [
+     -0.10071,
+     0.1814,
+     -0.29352,
+     -2.24004,
+     -0.00726,
+     1.85181,
+     0.77167
+    ]
+   ],
+   "t": [
+    6.0
+   ]
+  },
+  "S5_grasp_to_pre": {
+   "q": [
+    [
+     -0.10344,
+     0.21306,
+     -0.29257,
+     -1.9048,
+     0.00044,
+     1.54707,
+     0.76491
+    ]
+   ],
+   "t": [
+    6.0
+   ]
+  },
+  "S6_pre_to_home": {
+   "q": [
+    [
+     0.0,
+     -0.7854,
+     0.0,
+     -2.35619,
+     0.0,
+     1.5708,
+     0.7854
+    ]
+   ],
+   "t": [
+    9.985
+   ]
+  }
+ },
+ "checks": {
+  "S1_home_to_pre": {
+   "min_obstacle_m": 0.409,
+   "min_table_clear_m": 0.296,
+   "arm_links_in_drill_box": false,
+   "n_waypoints": 1,
+   "joint_limit_margin_rad": 1.007
+  },
+  "S2_pre_to_grasp": {
+   "min_obstacle_m": 0.409,
+   "min_table_clear_m": 0.195,
+   "arm_links_in_drill_box": false,
+   "n_waypoints": 1,
+   "joint_limit_margin_rad": 0.8
+  },
+  "S3_lift": {
+   "min_obstacle_m": 0.433,
+   "min_table_clear_m": 0.195,
+   "arm_links_in_drill_box": false,
+   "n_waypoints": 1,
+   "joint_limit_margin_rad": 0.891
+  },
+  "S4_put_back": {
+   "min_obstacle_m": 0.433,
+   "min_table_clear_m": 0.195,
+   "arm_links_in_drill_box": false,
+   "n_waypoints": 1,
+   "joint_limit_margin_rad": 0.8
+  },
+  "S5_grasp_to_pre": {
+   "min_obstacle_m": 0.409,
+   "min_table_clear_m": 0.195,
+   "arm_links_in_drill_box": false,
+   "n_waypoints": 1,
+   "joint_limit_margin_rad": 1.007
+  },
+  "S6_pre_to_home": {
+   "min_obstacle_m": 0.409,
+   "min_table_clear_m": 0.296,
+   "arm_links_in_drill_box": false,
+   "n_waypoints": 1,
+   "joint_limit_margin_rad": 0.684
+  },
+  "grasp_hand": {
+   "palm_pts_in_drill": 0,
+   "finger_body_pts": 1,
+   "pts_between_pads": 448,
+   "tcp_below_local_top_cm": 4.0,
+   "higher_tip_below_top_cm": 3.8
+  }
+ },
+ "problems": [],
+ "hand_R": [
+  [
+   0.777997,
+   -0.363607,
+   -0.512358
+  ],
+  [
+   -0.332582,
+   -0.930226,
+   0.155142
+  ],
+  [
+   -0.533019,
+   0.049701,
+   -0.844642
+  ]
+ ]
+}

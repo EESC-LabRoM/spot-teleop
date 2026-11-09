@@ -1,0 +1,14 @@
+# sim_static.yaml + sharper depth for thin parts (the bottle cap): the SDK's best depth model and full-resolution
+# publishing (1920x1080 instead of 960x540). With NEURAL_LIGHT at half resolution, the cap's pixels read background depth
+# (ZED2: 98 %, a median +9.6 cm) or none (ZED1: 62 %), so nvblox carved the cap out of the map (runs/mapcheck_2zed).
+/**:
+  ros__parameters:
+    pos_tracking:
+      pos_tracking_enabled: false
+    sensors:
+      publish_imu: false
+      publish_imu_raw: false
+    general:
+      pub_resolution: 'NATIVE'
+    depth:
+      depth_mode: 'NEURAL_PLUS'

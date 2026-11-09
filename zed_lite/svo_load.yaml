@@ -1,0 +1,29 @@
+# The REAL lab's ZED settings for the virtual ZED in the sim (measured live on the lab PC, 2026-10-16, zed1/zed2/zed3 wrappers):
+# camera zed2i, grab HD720 @ 30 fps, published at half size (640x360), depth NEURAL_LIGHT, depth stabilization 30, min/max depth 0.3/10 m.
+# What cannot be copied: positional tracking (the sim stream has no IMU) and the camera model (the Isaac extension only has ZED_X: ~same 110 deg HFOV).
+# Use with franka_mpc/run_grasp.sh REAL=1. The Isaac ZED X has no HD720 (only HD1200/HD1080/SVGA): it streams HD1080 and the wrapper's downscale 3 gives
+# exactly the real 640x360. DEVIATION: the depth network sees a 1080p grab here, the real one a 720p grab.
+/**:
+  ros__parameters:
+    pos_tracking:
+      pos_tracking_enabled: false
+      reset_pose_with_svo_loop: false   # svo_load: the loop restart would start pos. tracking (no IMU in the sim SVO)
+    sensors:
+      publish_imu: false
+      publish_imu_raw: false
+    general:
+      pub_resolution: 'CUSTOM'
+      pub_downscale_factor: 3.0
+      pub_frame_rate: 30.0
+    svo:
+      svo_loop: true
+      svo_realtime: false
+      use_svo_timestamps: false
+      publish_svo_clock: false
+    depth:
+      depth_mode: 'NEURAL_LIGHT'
+      depth_stabilization: 0   # svo_load: the sim SVO has no IMU -> stabilization (needs pos. tracking) cannot start
+      min_depth: 0.3
+      max_depth: 10.0
+# --- appended by svo_load.yaml (10-29): SVO playback as GPU/CPU LOAD for the MPC rate test (no Isaac). Every frame processed at 30 Hz (the real
+# lab grabs 30 fps), looped, wall-clock stamps. Grab res = the SVO's (HD1080 from the Isaac ZED X: heavier than the real HD720).

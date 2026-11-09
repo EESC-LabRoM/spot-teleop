@@ -1,0 +1,516 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NASA-TLX — Robot Teleoperation (Operator Form)</title>
+<style>
+  :root { --ink: #111; --muted: #555; --line: #999; --accent: #1a56db; }
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+         color: var(--ink); margin: 0; padding: 24px; background: #fff; }
+  .sheet { max-width: 820px; margin: 0 auto; }
+  h1 { font-size: 22px; margin: 0 0 2px; }
+  h2 { font-size: 16px; margin: 26px 0 8px; border-bottom: 2px solid var(--ink); padding-bottom: 4px; }
+  h3 { font-size: 14px; margin: 18px 0 6px; }
+  .subtitle { color: var(--muted); font-size: 13px; margin: 0 0 12px; }
+  .meta { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 24px; margin: 12px 0;
+          border: 1px solid var(--line); padding: 12px 14px; }
+  .meta label { font-size: 13px; display: block; }
+  .meta .field { display: inline-block; min-width: 220px; border-bottom: 1px solid var(--ink);
+                 height: 20px; vertical-align: bottom; }
+  .inputs input[type="text"] { border: none; border-bottom: 1px solid var(--ink);
+      font-size: 14px; padding: 1px 2px; width: 220px; background: transparent; }
+  .instr { font-size: 13px; background: #f4f4f4; border: 1px solid var(--line);
+           padding: 10px 12px; margin: 10px 0; }
+  .instr ol, .instr ul { margin: 6px 0 0; padding-left: 20px; }
+  .instr li { margin: 2px 0; }
+  .scale { border: 1px solid var(--line); padding: 10px 12px 12px; margin: 10px 0;
+           page-break-inside: avoid; }
+  .scale-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+  .scale-name { font-size: 14px; font-weight: 700; letter-spacing: .04em; }
+  .scale-q { font-size: 13px; font-style: italic; }
+  .scale-desc { font-size: 12px; color: var(--muted); margin: 4px 0 8px; }
+  .scale-desc b { color: var(--ink); }
+  .ticks { display: flex; align-items: flex-end; justify-content: space-between;
+           border-top: 2px solid var(--ink); padding-top: 6px; margin-top: 10px; }
+  .tick { display: flex; flex-direction: column; align-items: center; gap: 2px; }
+  .tick input { margin: 0; width: 14px; height: 14px; accent-color: var(--accent); cursor: pointer; }
+  .tick span { font-size: 9px; color: var(--muted); min-height: 11px; }
+  .endpoints { display: flex; justify-content: space-between; font-size: 12px;
+               font-weight: 700; margin-top: 2px; }
+  .chosen { font-size: 12px; color: var(--accent); font-weight: 700; }
+  .pair { display: flex; align-items: center; gap: 10px; font-size: 13px;
+          padding: 5px 4px; border-bottom: 1px dotted #bbb; }
+  .pair:nth-child(odd) { background: #fafafa; }
+  .pair .num { width: 26px; color: var(--muted); flex: none; }
+  .pair label { display: flex; align-items: center; gap: 6px; cursor: pointer; flex: 1; }
+  .pair input { width: 15px; height: 15px; accent-color: var(--accent); }
+  .pair .vs { color: var(--muted); font-size: 12px; flex: none; }
+  table.score { border-collapse: collapse; width: 100%; font-size: 13px; margin-top: 8px; }
+  table.score th, table.score td { border: 1px solid var(--line); padding: 5px 8px; text-align: left; }
+  table.score th { background: #eee; }
+  table.score td.num { width: 90px; height: 22px; }
+  #t-rtotal, #t-wtotal, #t-grand { font-weight: 700; }
+  .fine { font-size: 12px; color: var(--muted); }
+  .toolbar { display: flex; gap: 10px; margin: 14px 0; }
+  .toolbar button { font-size: 14px; padding: 8px 18px; cursor: pointer; }
+  #live { font-size: 13px; margin-top: 8px; }
+  #status { font-size: 13px; margin: 6px 0; min-height: 18px; font-weight: 700; }
+  body { padding-bottom: 56px; }
+  #stickybar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 50; display: none;
+               background: #111; color: #fff; font-size: 15px; font-weight: 700;
+               padding: 12px 16px; text-align: center; }
+  .page-break { page-break-before: always; }
+  @media print {
+    body { padding: 0; }
+    .toolbar, .chosen, #live, .screen-only { display: none !important; }
+    .instr { background: none; }
+    h2 { margin-top: 18px; }
+  }
+</style>
+</head>
+<body>
+<div class="sheet">
+
+  <h1>NASA Task Load Index (NASA-TLX) — Robot Teleoperation</h1>
+  <p class="subtitle">Operator workload form &middot; one copy per interface condition &middot; internal draft for operator review</p>
+  <div class="screen-only" style="display:flex;gap:8px;margin:8px 0 10px;flex-wrap:wrap">
+    <a id="backTempos" href="/tempos" style="font-size:13px;padding:7px 12px;border:1px solid var(--line);text-decoration:none;color:#fff;background:var(--accent)">Run: tempos + resultado + contato →</a>
+    <span id="linkedRun" style="font-size:12px;color:var(--muted);align-self:center">Registre as tentativas na página do run e feche o bloco aqui (uma vez por bloco).</span>
+  </div>
+  <div id="blockInfo" class="screen-only" style="font-size:13px;background:#f4f4f4;border:1px solid var(--line);padding:8px 12px;margin:0 0 10px;display:none"></div>
+
+  <div class="meta inputs">
+    <label>Operator ID: <input type="text" name="operator" autocomplete="off"></label>
+    <label>Date: <input type="text" name="date" autocomplete="off"></label>
+    <label>Interface / condition: <input type="text" name="condition" placeholder="e.g. tablet / vision-only / full" autocomplete="off"></label>
+    <label>Task: <input type="text" name="task" placeholder="e.g. valve / drill" autocomplete="off"></label>
+  </div>
+
+  <div class="toolbar screen-only">
+    <button onclick="submitForm()">Submit responses</button>
+    <button onclick="downloadCSV()">Download CSV</button>
+    <button onclick="window.print()">Print / Save PDF</button>
+    <button onclick="document.querySelectorAll('input[type=radio]').forEach(r=>r.checked=false);updateLive();try{localStorage.removeItem(LS_KEY)}catch(e){};setStatus('Cleared.',true);">Clear all marks</button>
+  </div>
+  <div id="status" class="screen-only"></div>
+  <div id="stickybar" class="screen-only"></div>
+
+  <h2>Part 1 — Ratings (complete after EACH condition)</h2>
+  <div class="instr">
+    <b>Instructions.</b> Rate the block of trials you just finished <b>as a whole</b>.
+    <ol>
+      <li>On each of the 6 scales below, mark the point that matches your experience (click, or mark with an <b>X</b> on paper).</li>
+      <li>Consider each scale independently — e.g. a task can be mentally easy but physically tiring.</li>
+      <li>On the <b>Performance</b> scale only, the <b>left</b> end means good performance.</li>
+      <li>There are no right or wrong answers. Do not discuss your ratings with other operators until all forms are collected.</li>
+    </ol>
+  </div>
+  <div id="scales"></div>
+
+  <div class="page-break"></div>
+
+  <h2>Part 2 — Sources of workload (complete ONCE per operator)</h2>
+  <div class="instr">
+    <b>Instructions.</b> After you have tried all the interfaces, go through the 15 pairs below.
+    For each pair, circle the scale that contributed <b>more</b> to your workload in these teleoperation tasks.
+    <ul>
+      <li>Example: if <i>Mental Demand</i> mattered more than <i>Physical Demand</i> for you, circle <i>Mental Demand</i>.</li>
+      <li>Do this once — the result weights your Part 1 ratings for every condition.</li>
+    </ul>
+  </div>
+  <div id="pairs"></div>
+
+  <h2>Part 3 — Scoring (experimenter only)</h2>
+  <div class="instr">
+    <ol>
+      <li><b>Rating</b> (0–100): read each Part 1 mark in steps of 5 (each tick = 5 points).</li>
+      <li><b>Weight</b> (0–5): count how many times each scale was circled in Part 2. The six weights must sum to <b>15</b>.</li>
+      <li><b>Weighted TLX</b> = &Sigma;(weight &times; rating) &divide; 15 &nbsp;(range 0–100).</li>
+      <li><b>Raw TLX</b> (accepted alternative, Hart 2006) = mean of the 6 ratings. Use it if Part 2 was skipped.</li>
+      <li>For the paper, report per-scale means <b>and</b> the overall score, and state whether it is weighted or raw.</li>
+    </ol>
+    <p class="screen-only" style="margin:6px 0 0"><b>On screen:</b> this table fills in automatically from your Parts 1–2 marks; on paper, fill it by hand.</p>
+  </div>
+  <table class="score">
+    <tr><th>Scale</th><th>Rating (0–100)</th><th>Weight (0–5)</th><th>Weight &times; Rating</th></tr>
+    <tr><td>Mental Demand</td><td class="num" id="t-r-mental"></td><td class="num" id="t-w-mental"></td><td class="num" id="t-p-mental"></td></tr>
+    <tr><td>Physical Demand</td><td class="num" id="t-r-physical"></td><td class="num" id="t-w-physical"></td><td class="num" id="t-p-physical"></td></tr>
+    <tr><td>Temporal Demand</td><td class="num" id="t-r-temporal"></td><td class="num" id="t-w-temporal"></td><td class="num" id="t-p-temporal"></td></tr>
+    <tr><td>Performance</td><td class="num" id="t-r-performance"></td><td class="num" id="t-w-performance"></td><td class="num" id="t-p-performance"></td></tr>
+    <tr><td>Effort</td><td class="num" id="t-r-effort"></td><td class="num" id="t-w-effort"></td><td class="num" id="t-p-effort"></td></tr>
+    <tr><td>Frustration</td><td class="num" id="t-r-frustration"></td><td class="num" id="t-w-frustration"></td><td class="num" id="t-p-frustration"></td></tr>
+    <tr><td><b>Total</b></td><td class="num" id="t-rtotal"></td><td class="num" id="t-wtotal">/ 15</td><td class="num" id="t-grand">&divide; 15 =</td></tr>
+  </table>
+  <p id="live" class="screen-only"></p>
+
+  <h3>Notes for this study</h3>
+  <ul class="fine">
+    <li>Scale wording is the standard NASA-TLX wording (Hart &amp; Stavig, 1988) so scores stay comparable with published teleoperation studies. The <i>teleop examples</i> under each scale are clarifications only — they do not change the item.</li>
+    <li>Fill Part 1 immediately after each condition block, before starting the next one. Order of conditions is set by the experimenter (counterbalanced).</li>
+    <li>Reference: Hart, S. G., &amp; Stavig, L. E. (1988). Development of NASA-TLX (Task Load Index). In <i>Human Mental Workload</i>. — Raw TLX: Hart, S. G. (2006). NASA-TLX: 20 years later. <i>Proc. HFES</i>.</li>
+  </ul>
+
+</div>
+
+<script>
+const SCALES = [
+  { id: "mental", name: "MENTAL DEMAND",
+    q: "How mentally demanding was the task?",
+    std: "Thinking, deciding, calculating, remembering, looking, searching.",
+    teleop: "e.g. interpreting camera views, judging depth/distance on screen, deciding when to trigger autonomy, keeping track of the robot state.",
+    lo: "Very Low", hi: "Very High" },
+  { id: "physical", name: "PHYSICAL DEMAND",
+    q: "How physically demanding was the task?",
+    std: "Pushing, pulling, turning, controlling, activating.",
+    teleop: "e.g. holding your arm/hand in mid-air poses, standing or walking with the robot, repeating gestures across trials.",
+    lo: "Very Low", hi: "Very High" },
+  { id: "temporal", name: "TEMPORAL DEMAND",
+    q: "How hurried or rushed was the pace of the task?",
+    std: "Rate or pace at which the task occurred.",
+    teleop: "e.g. pace set by the robot's motion, waiting on target grounding or autonomy, any time pressure to finish the trial.",
+    lo: "Very Low", hi: "Very High" },
+  { id: "performance", name: "PERFORMANCE",
+    q: "How successful were you in accomplishing what you were asked to do?",
+    std: "Success in reaching the task goals.",
+    teleop: "e.g. completing the valve/drill manipulation, grasp success, alignment accuracy. Left = good, right = poor.",
+    lo: "Perfect", hi: "Failure" },
+  { id: "effort", name: "EFFORT",
+    q: "How hard did you have to work to accomplish your level of performance?",
+    std: "Mental and physical work combined.",
+    teleop: "e.g. overall work to get the robot to do what you wanted, including compensating for tracking errors or autonomy corrections.",
+    lo: "Very Low", hi: "Very High" },
+  { id: "frustration", name: "FRUSTRATION",
+    q: "How insecure, discouraged, irritated, stressed, and annoyed were you?",
+    std: "Feelings during the task.",
+    teleop: "e.g. tracking losses or occlusions, autonomy resisting or surprising you, failed grasps, interface lag.",
+    lo: "Very Low", hi: "Very High" },
+];
+
+const PAIRS = [
+  ["Mental Demand", "Physical Demand"],
+  ["Mental Demand", "Temporal Demand"],
+  ["Mental Demand", "Performance"],
+  ["Mental Demand", "Effort"],
+  ["Mental Demand", "Frustration"],
+  ["Physical Demand", "Temporal Demand"],
+  ["Physical Demand", "Performance"],
+  ["Physical Demand", "Effort"],
+  ["Physical Demand", "Frustration"],
+  ["Temporal Demand", "Performance"],
+  ["Temporal Demand", "Effort"],
+  ["Temporal Demand", "Frustration"],
+  ["Performance", "Effort"],
+  ["Performance", "Frustration"],
+  ["Effort", "Frustration"],
+];
+
+const MAJORS = { 0: "0", 20: "20", 40: "40", 60: "60", 80: "80", 100: "100" };
+
+function buildScales() {
+  const host = document.getElementById("scales");
+  SCALES.forEach(s => {
+    const div = document.createElement("div");
+    div.className = "scale";
+    let ticks = "";
+    for (let v = 0; v <= 100; v += 5) {
+      ticks += `<label class="tick"><input type="radio" name="r-${s.id}" value="${v}" onchange="updateLive()"><span>${MAJORS[v] || ""}</span></label>`;
+    }
+    div.innerHTML = `
+      <div class="scale-head"><span class="scale-name">${s.name}</span>
+        <span class="chosen" id="c-${s.id}"></span></div>
+      <div class="scale-q">${s.q}</div>
+      <div class="scale-desc"><b>What it covers:</b> ${s.std}<br><b>In teleop:</b> <i>${s.teleop}</i></div>
+      <div class="ticks">${ticks}</div>
+      <div class="endpoints"><span>${s.lo}</span><span>${s.hi}</span></div>`;
+    host.appendChild(div);
+  });
+}
+
+function buildPairs() {
+  const host = document.getElementById("pairs");
+  PAIRS.forEach((p, i) => {
+    const div = document.createElement("div");
+    div.className = "pair";
+    div.innerHTML = `<span class="num">${i + 1}.</span>
+      <label><input type="radio" name="p${i + 1}" value="${p[0]}" onchange="updateLive()">${p[0]}</label>
+      <span class="vs">or</span>
+      <label><input type="radio" name="p${i + 1}" value="${p[1]}" onchange="updateLive()">${p[1]}</label>`;
+    host.appendChild(div);
+  });
+}
+
+function paintTable(ratings, weights, vals, pairsDone) {
+  const wDone = pairsDone === 15;
+  SCALES.forEach(s => {
+    const r = ratings[s.name];
+    document.getElementById("t-r-" + s.id).textContent = r === null ? "" : r;
+    document.getElementById("t-w-" + s.id).textContent = wDone ? weights[s.name] : "";
+    document.getElementById("t-p-" + s.id).textContent =
+      (r !== null && wDone) ? weights[s.name] * r : "";
+  });
+  const rAll = vals.length === 6;
+  document.getElementById("t-rtotal").textContent =
+    rAll ? vals.reduce((a, b) => a + b, 0) : "";
+  const wSum = SCALES.reduce((a, s) => a + weights[s.name], 0);
+  document.getElementById("t-wtotal").textContent = wDone ? (wSum + " / 15") : "/ 15";
+  document.getElementById("t-grand").textContent =
+    (rAll && wDone)
+      ? ("÷ 15 = " + (SCALES.reduce((a, s) => a + weights[s.name] * ratings[s.name], 0) / 15).toFixed(1))
+      : "÷ 15 =";
+}
+function updateLive() {
+  const ratings = {};
+  SCALES.forEach(s => {
+    const el = document.querySelector(`input[name="r-${s.id}"]:checked`);
+    ratings[s.name] = el ? +el.value : null;
+    document.getElementById("c-" + s.id).textContent = el ? ("= " + el.value) : "";
+  });
+  const weights = {};
+  const byKey = {};
+  SCALES.forEach(s => { weights[s.name] = 0; byKey[s.name.toLowerCase()] = s.name; });
+  let pairsDone = 0;
+  for (let i = 1; i <= 15; i++) {
+    const el = document.querySelector(`input[name="p${i}"]:checked`);
+    if (el && byKey[el.value.toLowerCase()] !== undefined) {
+      weights[byKey[el.value.toLowerCase()]]++;
+      pairsDone++;
+    }
+  }
+  const vals = Object.values(ratings).filter(v => v !== null);
+  const box = document.getElementById("live");
+  const bar = document.getElementById("stickybar");
+  paintTable(ratings, weights, vals, pairsDone);
+  if (!vals.length && !pairsDone) {
+    box.textContent = "";
+    bar.style.display = "none"; bar.textContent = "";
+    return;
+  }
+  let msg = "";
+  if (vals.length === 6) {
+    const raw = vals.reduce((a, b) => a + b, 0) / 6;
+    msg += `Raw TLX (mean of 6 ratings): ${raw.toFixed(1)}   `;
+  } else {
+    msg += `Ratings: ${vals.length}/6 marked.   `;
+  }
+  if (pairsDone === 15 && vals.length === 6) {
+    const w = SCALES.reduce((a, s) => a + weights[s.name] * ratings[s.name], 0) / 15;
+    msg += `Weighted TLX: ${w.toFixed(1)}   `;
+  } else {
+    msg += `Weight pairs: ${pairsDone}/15 circled.`;
+  }
+  msg += " (Convenience display only — official scoring is done by the experimenter per Part 3.)";
+  box.textContent = msg;
+  bar.style.display = "block";
+  if (vals.length === 6) {
+    const raw = vals.reduce((a, b) => a + b, 0) / 6;
+    let short = `Raw TLX: ${raw.toFixed(1)}`;
+    if (pairsDone === 15) {
+      const w = SCALES.reduce((a, s) => a + weights[s.name] * ratings[s.name], 0) / 15;
+      short += `  ·  Weighted TLX: ${w.toFixed(1)}`;
+    } else short += `  ·  pairs ${pairsDone}/15`;
+    bar.textContent = short;
+  } else {
+    bar.textContent = `Ratings ${vals.length}/6  ·  pairs ${pairsDone}/15`;
+  }
+}
+
+function scaleRatings() {
+  const out = {};
+  SCALES.forEach(s => {
+    const el = document.querySelector(`input[name="r-${s.id}"]:checked`);
+    out[s.id] = el ? +el.value : null;
+  });
+  return out;
+}
+function scaleWeights() {
+  const byName = {};
+  const byKey = {};
+  SCALES.forEach(s => { byName[s.name] = 0; byKey[s.name.toLowerCase()] = s.name; });
+  let done = 0;
+  for (let i = 1; i <= 15; i++) {
+    const el = document.querySelector(`input[name="p${i}"]:checked`);
+    if (el && byKey[el.value.toLowerCase()] !== undefined) {
+      byName[byKey[el.value.toLowerCase()]]++;
+      done++;
+    }
+  }
+  if (done < 15) return { weights: null, done };
+  const weights = {};
+  SCALES.forEach(s => weights[s.id] = byName[s.name]);
+  return { weights, done };
+}
+function headerFields() {
+  const g = n => (document.querySelector(`.inputs input[name="${n}"]`).value || "").trim();
+  return { operator: g("operator"), date: g("date"), condition: g("condition"), task: g("task") };
+}
+function setStatus(msg, ok) {
+  const el = document.getElementById("status");
+  el.textContent = msg;
+  el.style.color = ok ? "green" : "#b00";
+}
+async function submitForm() {
+  const h = headerFields(), r = scaleRatings();
+  const missing = SCALES.filter(s => r[s.id] === null).map(s => s.name);
+  if (!h.operator) { setStatus("Fill in Operator ID before submitting.", false); return; }
+  if (!h.condition) { setStatus("Fill in Interface / condition before submitting.", false); return; }
+  if (missing.length) { setStatus("Missing ratings: " + missing.join(", "), false); return; }
+  const { weights } = scaleWeights();
+  const vals = SCALES.map(s => r[s.id]);
+  const raw = vals.reduce((a, b) => a + b, 0) / 6;
+  const weighted = weights ? SCALES.reduce((a, s) => a + weights[s.id] * r[s.id], 0) / 15 : null;
+  const payload = { ...h, ratings: r, weights, raw_tlx: +raw.toFixed(1),
+                    weighted_tlx: weighted === null ? null : +weighted.toFixed(1) };
+  setStatus("Submitting…", true);
+  try {
+    const res = await fetch("submit", { method: "POST",
+      headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+    if (!res.ok) throw new Error("server said " + res.status);
+    const data = await res.json();
+    setStatus(`Saved ✓ (submission #${data.n} on this collector)` +
+      (weights ? "" : " — weights incomplete, stored as Raw TLX only."), true);
+  } catch (e) {
+    setStatus("Submit failed (" + e.message + "). Use the served link, or Download CSV and send the file instead.", false);
+  }
+}
+function downloadCSV() {
+  const h = headerFields(), r = scaleRatings();
+  if (!h.operator || SCALES.some(s => r[s.id] === null)) {
+    setStatus("Fill in Operator ID and all 6 ratings before downloading.", false); return;
+  }
+  const { weights } = scaleWeights();
+  const vals = SCALES.map(s => r[s.id]);
+  const raw = (vals.reduce((a, b) => a + b, 0) / 6).toFixed(1);
+  const weighted = weights ? (SCALES.reduce((a, s) => a + weights[s.id] * r[s.id], 0) / 15).toFixed(1) : "";
+  const cols = ["operator", "date", "condition", "task", "mental", "physical", "temporal",
+    "performance", "effort", "frustration", "raw_tlx",
+    "w_mental", "w_physical", "w_temporal", "w_performance", "w_effort", "w_frustration", "weighted_tlx"];
+  const row = [h.operator, h.date, h.condition, h.task, ...vals, raw,
+    ...(weights ? SCALES.map(s => weights[s.id]) : ["", "", "", "", "", ""]), weighted];
+  const q = v => `"${String(v).replace(/"/g, '""')}"`;
+  const csv = cols.join(",") + "\n" + row.map(q).join(",") + "\n";
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
+  a.download = `tlx-${h.operator}-${h.condition}.csv`.replace(/[^\w.-]+/g, "_");
+  a.click();
+  URL.revokeObjectURL(a.href);
+  setStatus("Downloaded ✓ — send the CSV file back to the experimenter.", true);
+}
+const LS_KEY = "tlx-form-v1";
+function saveState() {
+  const st = { text: {}, checked: [] };
+  document.querySelectorAll('.inputs input[type="text"]').forEach(i => st.text[i.name] = i.value);
+  document.querySelectorAll('input[type="radio"]:checked').forEach(i => st.checked.push(i.name + "=" + i.value));
+  try { localStorage.setItem(LS_KEY, JSON.stringify(st)); } catch (e) {}
+}
+function restoreState() {
+  let st = null;
+  try { st = JSON.parse(localStorage.getItem(LS_KEY) || "null"); } catch (e) {}
+  if (!st) return;
+  Object.entries(st.text || {}).forEach(([n, v]) => {
+    const i = document.querySelector(`.inputs input[name="${n}"]`);
+    if (i) i.value = v;
+  });
+  (st.checked || []).forEach(c => {
+    const eq = c.indexOf("=");
+    const i = document.querySelector(`input[name="${c.slice(0, eq)}"][value="${CSS.escape(c.slice(eq + 1))}"]`);
+    if (i) i.checked = true;
+  });
+}
+document.addEventListener("change", saveState);
+document.addEventListener("input", saveState);
+
+buildScales();
+buildPairs();
+restoreState();
+updateLive();
+</script>
+<script>
+// Run-link handoff (separate block: smoke_test.js only executes the first script).
+// Shares the block header with /tempos via URL params + shared localStorage key,
+// and shows how many attempts already exist for the current header.
+(function(){
+  if (typeof window === "undefined" || typeof document === "undefined") return;
+  var SHARED = "tlx_hdr_shared_v1";
+  function hdrInputs(){
+    return {
+      operator: document.querySelector('.inputs input[name="operator"]'),
+      date: document.querySelector('.inputs input[name="date"]'),
+      condition: document.querySelector('.inputs input[name="condition"]'),
+      task: document.querySelector('.inputs input[name="task"]')
+    };
+  }
+  function curHdr(){
+    var els = hdrInputs(), o = {};
+    Object.keys(els).forEach(function(k){ o[k] = els[k] ? (els[k].value||"").trim() : ""; });
+    return o;
+  }
+  function keyOf(h){
+    return [h.operator,h.date,h.condition,h.task].map(function(s){ return (s||"").trim().toLowerCase(); }).join("|");
+  }
+  function esc(s){ return String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+  function writeShared(){
+    try{ localStorage.setItem(SHARED, JSON.stringify(curHdr())); }catch(e){}
+  }
+  // Prefill: URL params win, then shared header (only into empty fields).
+  try{
+    var q = new URLSearchParams(window.location.search);
+    var els = hdrInputs(), fromParams = false;
+    ["operator","date","condition","task"].forEach(function(k){
+      if (q.get(k) && els[k]){ els[k].value = q.get(k); fromParams = true; }
+    });
+    if (!fromParams){
+      var shared = JSON.parse(localStorage.getItem(SHARED) || "null");
+      if (shared) ["operator","date","condition","task"].forEach(function(k){
+        if (shared[k] && els[k] && !els[k].value) els[k].value = shared[k];
+      });
+    } else { writeShared(); }
+  }catch(e){}
+  // Keep shared header fresh + refresh back-link and block info on edit.
+  var back = document.getElementById("backTempos");
+  var linked = document.getElementById("linkedRun");
+  var info = document.getElementById("blockInfo");
+  var timer = null;
+  function refreshLinks(){
+    var h = curHdr();
+    try{
+      var qs = new URLSearchParams(h).toString();
+      if (back) back.href = "/tempos?" + qs;
+      if (linked && (h.operator || h.condition || h.task))
+        linked.textContent = "Bloco: " + [h.operator,h.date,h.condition,h.task].filter(Boolean).join(" · ");
+    }catch(e){}
+  }
+  function refreshInfo(){
+    var h = curHdr();
+    if (!info) return;
+    if (!(h.operator && h.condition && h.task)){ info.style.display = "none"; return; }
+    fetch("/api/times").then(function(r){ return r.json(); }).then(function(rows){
+      if (!Array.isArray(rows)) return;
+      var k = keyOf(h);
+      var mine = rows.filter(function(r){ return keyOf(r) === k; });
+      if (!mine.length){
+        info.style.display = "block";
+        info.innerHTML = "Nenhuma tentativa salva ainda para este bloco. Registre primeiro na página do <b>Run</b> (o botão acima leva o cabeçalho junto).";
+        return;
+      }
+      var ok = mine.filter(function(r){ return r.outcome==="success"; }).length;
+      var fail = mine.filter(function(r){ return r.outcome==="failure"; }).length;
+      var ct = mine.filter(function(r){ return r.contact==="yes"; }).length;
+      info.style.display = "block";
+      info.innerHTML = "Este bloco já tem <b>" + mine.length + "</b> tentativa(s): " +
+        ok + " sucesso · " + fail + " falha · " + ct + " com contato. " +
+        "Preencha o TLX considerando o bloco como um todo.";
+    }).catch(function(){});
+  }
+  function schedule(){ refreshLinks(); if (timer) clearTimeout(timer); timer = setTimeout(refreshInfo, 400); }
+  ["operator","date","condition","task"].forEach(function(k){
+    var el = document.querySelector('.inputs input[name="'+k+'"]');
+    if (el) el.addEventListener("input", function(){ writeShared(); schedule(); });
+  });
+  refreshLinks();
+  refreshInfo();
+})();
+</script>
+</body>
+</html>

@@ -18,3 +18,79 @@ isaac-ros_ws/log/
 .cache
 *.pyc
 .gitconfig
+
+# ===== FR3 grasp/teleop lane (added 2026-11-09) =====
+# --- bags / recordings / video ---
+*.bag
+*.mcap
+*.db3
+*.svo
+*.svo2
+*.mp4
+*.avi
+*.mkv
+*.webm
+rosbag*/
+*_bag/
+bags/
+
+# --- logs, caches, backups ---
+*.log
+*.out
+*.done
+*.pid
+*.lo
+*.bak
+*.bak_*
+*.orig
+*.tmp
+*.swp
+__pycache__/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# --- build output ---
+build/
+install/
+log/
+*.o
+*.so
+*.d
+CMakeFiles/
+CMakeCache.txt
+
+# --- model / weights / large binary blobs ---
+*.model
+*.model_optimized*
+*timing_cache*
+*.engine
+*.onnx
+*.pt
+*.pth
+*.ckpt
+*.npy
+*.npz
+
+# --- run data (regenerable, big) ---
+fr3_real_repro/vm_real/saved_runs/
+fr3_real_repro/grasp_loop/runs/
+fr3_real_repro/zed2_align/
+teleop_run_*/
+snapshots/
+zed_lite/zed_resources/
+*.csv
+
+# --- isaac-sim_ws: vendored / caches / nested repos / run output (keep franka_mpc code only) ---
+isaac-sim_ws/cache/
+isaac-sim_ws/curobo-isaac6/
+isaac-sim_ws/zed-isaac-sim-5.1.0/
+isaac-sim_ws/graspgenx_vm/
+isaac-sim_ws/franka_mpc/runs/
+isaac-sim_ws/franka_mpc/pydeps/
+isaac-sim_ws/franka_mpc/cache_newton_home/
+isaac-sim_ws/franka_mpc/simrep/
+fr3_real_repro/grasp_loop/runs_real/
+zed_lite/nvblox/out/
+
+isaac-sim_ws/spot-sim/
+zed_lite/src/

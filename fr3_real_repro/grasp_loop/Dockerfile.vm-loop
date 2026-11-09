@@ -1,0 +1,5 @@
+# Grasp-loop runner: ROS Humble + utils to drive the loop end to end.
+FROM nvblox-lite:3.2.5-humble
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends openssh-client docker.io \
+    && rm -rf /var/lib/apt/lists/*

@@ -1,0 +1,657 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Run de Teleoperação — Spot (tempos + resultado + NASA-TLX)</title>
+<style>
+  :root { --ink:#111; --muted:#555; --line:#999; --accent:#1a56db; --accent2:#0b6a2b; --fail:#b00; --bg:#fff; --card:#f8f8f8; }
+  * { box-sizing:border-box; }
+  body { font-family:-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; color:var(--ink); margin:0; padding:0; background:var(--bg); }
+  .sheet { max-width:1100px; margin:0 auto; padding:24px 20px 56px; }
+  h1 { font-size:22px; margin:0 0 2px; }
+  h2 { font-size:16px; margin:26px 0 8px; border-bottom:2px solid var(--ink); padding-bottom:4px; }
+  h3 { font-size:14px; margin:18px 0 6px; }
+  .subtitle { color:var(--muted); font-size:13px; margin:0 0 12px; }
+  .nav { display:flex; gap:8px; flex-wrap:wrap; margin:10px 0 14px; }
+  .nav a { font-size:13px; padding:7px 12px; border:1px solid var(--line); text-decoration:none; color:var(--ink); background:#fff; }
+  .nav a.active { background:var(--ink); color:#fff; border-color:var(--ink); }
+  .steps { display:flex; gap:0; margin:12px 0 4px; border:1px solid var(--line); font-size:13px; }
+  .steps div { flex:1; padding:8px 10px; text-align:center; background:#f4f4f4; }
+  .steps div+div { border-left:1px solid var(--line); }
+  .steps b { display:block; font-size:12px; }
+  .steps .now { background:var(--ink); color:#fff; }
+  .meta { display:grid; grid-template-columns:1fr 1fr; gap:8px 24px; border:1px solid var(--line); padding:12px 14px; background:#fff; }
+  @media(max-width:760px){ .meta{grid-template-columns:1fr} }
+  .inputs input[type="text"], .inputs input[type="number"], .inputs select { border:none; border-bottom:1px solid var(--ink); font-size:14px; padding:2px 2px; width:100%; max-width:260px; background:transparent; }
+  .inputs label { font-size:13px; display:block; }
+  .instr { font-size:13px; background:#f4f4f4; border:1px solid var(--line); padding:10px 12px; margin:10px 0; }
+  .card { border:1px solid var(--line); padding:14px; margin:12px 0; background:#fff; }
+  .timer-display { font-size:42px; font-weight:800; font-variant-numeric:tabular-nums; letter-spacing:0.04em; text-align:center; padding:10px 0 6px; }
+  .timer-sub { text-align:center; font-size:12px; color:var(--muted); margin-bottom:10px; }
+  .btnrow { display:flex; gap:8px; justify-content:center; flex-wrap:wrap; margin:8px 0; }
+  button { font-size:14px; padding:8px 16px; cursor:pointer; border:1px solid var(--line); background:#fff; }
+  button.primary { background:var(--accent); color:#fff; border-color:var(--accent); font-weight:700; }
+  button.success { background:var(--accent2); color:#fff; border-color:var(--accent2); font-weight:700; }
+  button:disabled { opacity:0.5; cursor:not-allowed; }
+  .fieldrow { display:flex; gap:12px; flex-wrap:wrap; align-items:end; margin:10px 0; }
+  .fieldrow label { font-size:13px; display:flex; flex-direction:column; gap:4px; }
+  .fieldrow input, .fieldrow select { border:1px solid var(--line); padding:6px 8px; font-size:14px; min-width:160px; }
+  .fieldrow input.mono { font-variant-numeric:tabular-nums; }
+  .cols2 { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin:10px 0; }
+  @media(max-width:760px){ .cols2{grid-template-columns:1fr} }
+  .segbox { border:1px solid var(--line); padding:10px 12px; }
+  .segbox .cap { font-size:12px; font-weight:700; margin-bottom:8px; }
+  .seg { display:flex; gap:0; border:1px solid var(--line); width:fit-content; max-width:100%; }
+  .seg button { border:none; padding:9px 18px; font-weight:700; background:#fff; }
+  .seg button+button { border-left:1px solid var(--line); }
+  .seg button.on-ok { background:var(--accent2); color:#fff; }
+  .seg button.on-fail { background:var(--fail); color:#fff; }
+  .seg button.on-neutral { background:var(--ink); color:#fff; }
+  .stepper { display:flex; align-items:center; gap:8px; margin-top:8px; }
+  .stepper button { padding:4px 14px; font-size:16px; font-weight:700; }
+  .stepper .val { font-size:20px; font-weight:800; min-width:32px; text-align:center; font-variant-numeric:tabular-nums; }
+  .status { font-size:13px; min-height:18px; font-weight:700; margin:6px 0; }
+  .status.ok { color:var(--accent2); } .status.err { color:#b00; }
+  .badge { display:inline-block; font-size:11px; padding:2px 6px; border:1px solid var(--line); margin-left:6px; vertical-align:middle; white-space:nowrap; }
+  .badge.livre { background:#e6f0ff; border-color:#9ab6ff; }
+  .badge.obs { background:#ffe9c7; border-color:#e2a84b; }
+  .badge.ok { background:#d9f5e0; border-color:#6fbf7a; }
+  .badge.warn { background:#ffe0e0; border-color:#e88; }
+  .badge.fail { background:#ffd9d9; border-color:#c33; color:#800; }
+  .badge.succ { background:#d9f5e0; border-color:#6fbf7a; color:#0a4d1c; }
+  .badge.contact { background:#ffe9c7; border-color:#e2a84b; color:#7a4a00; }
+  .badge.muted { background:#f0f0f0; color:#666; }
+  table.tbl { border-collapse:collapse; width:100%; font-size:12px; margin-top:8px; }
+  table.tbl th, table.tbl td { border:1px solid var(--line); padding:5px 6px; text-align:left; white-space:nowrap; }
+  table.tbl th { background:#eee; position:sticky; top:0; }
+  table.tbl td.num { text-align:right; font-variant-numeric:tabular-nums; }
+  .scroll { overflow:auto; max-height:520px; border:1px solid var(--line); }
+  .toolbar { display:flex; gap:8px; flex-wrap:wrap; margin:10px 0; align-items:center; }
+  .toolbar select, .toolbar input { font-size:13px; padding:5px 6px; border:1px solid var(--line); }
+  .toolbar label { font-size:12px; }
+  .hint { font-size:12px; color:var(--muted); }
+  .pill { font-size:12px; background:#111; color:#fff; padding:3px 8px; }
+  .blocksum { font-size:13px; margin:6px 0; }
+  .blocksum table { border-collapse:collapse; font-size:13px; margin-top:6px; }
+  .blocksum td, .blocksum th { border:1px solid var(--line); padding:4px 10px; text-align:center; }
+  .blocksum th { background:#eee; }
+  #stickybar { position:fixed; left:0; right:0; bottom:0; z-index:50; display:none; background:#111; color:#fff; font-size:14px; font-weight:700; padding:10px 16px; text-align:center; }
+</style>
+</head>
+<body>
+<div class="sheet">
+
+  <h1>Run de Teleoperação — Spot</h1>
+  <p class="subtitle">Uma página, um fluxo: configure o bloco <b>uma vez</b>, registre cada tentativa com tempo + resultado + contato, e feche o bloco com o NASA-TLX.</p>
+
+  <div class="nav">
+    <a href="/">NASA-TLX (formulário)</a>
+    <a class="active" href="/tempos">Run (cronômetro + tabela)</a>
+    <a href="/api/consolidated.csv">Baixar consolidado CSV</a>
+    <a href="/api/times.csv">times.csv</a>
+    <a href="/api/submissions.csv">submissions.csv (TLX)</a>
+  </div>
+
+  <div class="steps">
+    <div><b>PASSO 1</b>Bloco: operator · condition · task</div>
+    <div><b>PASSO 2</b>Tentativas: tempo + resultado + contato</div>
+    <div><b>PASSO 3</b>TLX: uma vez por bloco</div>
+  </div>
+
+  <h2>Passo 1 — Bloco (preencha uma vez)</h2>
+  <div class="meta inputs" id="hdr">
+    <label>Operator ID <input type="text" name="operator" autocomplete="off" placeholder="ex. Hipolito"></label>
+    <label>Date <input type="text" name="date" autocomplete="off" placeholder="ex. 04/11/2026"></label>
+    <label>Interface / condition <input type="text" name="condition" autocomplete="off" placeholder="ex. joystick / tablet"></label>
+    <label>Task <input type="text" name="task" autocomplete="off" placeholder="ex. valve / drill / bottle"></label>
+  </div>
+  <div class="hint" style="margin-top:6px">Este cabeçalho é compartilhado automaticamente com o formulário NASA-TLX — preencha aqui e ele já aparece lá (e vice-versa).</div>
+
+  <h2>Passo 2 — Tentativa <span id="hdrBadge" class="badge livre">sem obstáculo</span></h2>
+  <div class="card">
+    <div class="fieldrow">
+      <label>Tentativa / repetição <select id="attemptSel"></select></label>
+      <label>Condição de obstáculo
+        <select id="obstacleSel">
+          <option value="sem_obstaculo">Livre / Sem obstáculo</option>
+          <option value="com_obstaculo">Com obstáculo</option>
+        </select>
+      </label>
+    </div>
+    <div class="timer-display" id="timerDisplay">00:00.000</div>
+    <div class="timer-sub" id="timerSub">pronto — Iniciar para cronometrar, ou digite o tempo manualmente abaixo</div>
+    <div class="btnrow">
+      <button id="btnStart" class="primary" onclick="timerStart()">Iniciar</button>
+      <button id="btnPause" onclick="timerPause()" disabled>Pausar</button>
+      <button id="btnReset" onclick="timerReset()">Zerar</button>
+      <button onclick="timerLapSave()">Usar valor do cronômetro</button>
+    </div>
+    <div class="fieldrow">
+      <label>Tempo (manual ou do cronômetro)
+        <input id="manualDuration" class="mono" placeholder="ex. 42.3  ou  01:12.4">
+      </label>
+    </div>
+    <div class="cols2">
+      <div class="segbox">
+        <div class="cap">Resultado da tentativa</div>
+        <div class="seg" id="segOutcome">
+          <button id="btnOk" onclick="setOutcome('success')">Sucesso</button>
+          <button id="btnFail" onclick="setOutcome('failure')">Falha</button>
+        </div>
+        <div class="hint" style="margin-top:6px">Falha = não completou a tarefa (grasp perdido, timeout, abortou, etc.).</div>
+      </div>
+      <div class="segbox">
+        <div class="cap">Contato com obstáculo?</div>
+        <div class="seg" id="segContact">
+          <button id="btnNoContact" onclick="setContact('no')">Sem contato</button>
+          <button id="btnContact" onclick="setContact('yes')">Tocou / bateu</button>
+        </div>
+        <div class="stepper">
+          <span class="hint">nº de toques:</span>
+          <button onclick="stepContact(-1)" title="menos">−</button>
+          <span class="val" id="contactCountVal">0</span>
+          <button onclick="stepContact(1)" title="mais">+</button>
+        </div>
+      </div>
+    </div>
+    <div class="fieldrow">
+      <label style="flex:1">Notas da tentativa (opcional)
+        <input id="attemptNotes" type="text" style="min-width:280px" placeholder="ex. grasp escorregou na 2ª pega, re-tentativa imediata">
+      </label>
+    </div>
+    <div class="btnrow" style="justify-content:flex-start">
+      <button class="success" onclick="saveTime()">Salvar tentativa</button>
+      <span id="saveStatus" class="status"></span>
+    </div>
+    <div class="hint">Após salvar, a tentativa avança sozinha (1 → 2 → 3…) e resultado/contato voltam ao padrão. Só troque o obstáculo quando mudar de condição.</div>
+  </div>
+
+  <h2>Passo 3 — Feche o bloco com o NASA-TLX</h2>
+  <div class="card">
+    <div class="blocksum" id="blockSummary">Preencha o Passo 1 para ver o resumo do bloco.</div>
+    <div class="blocksum" id="tlxStatus"></div>
+    <div class="btnrow" style="justify-content:flex-start">
+      <button class="primary" id="btnOpenTlx" onclick="openTlx()">Abrir NASA-TLX com este cabeçalho</button>
+    </div>
+    <div class="hint">O TLX é preenchido <b>uma vez por bloco</b> (operator + date + condition + task), depois das tentativas. O botão leva o cabeçalho junto — sem redigitar.</div>
+  </div>
+
+  <h2>Tabela consolidada — tempos + resultado + contato + NASA-TLX</h2>
+  <div class="toolbar">
+    <label>operator <select id="fOperator"><option value="">(todos)</option></select></label>
+    <label>condition <select id="fCondition"><option value="">(todos)</option></select></label>
+    <label>task <select id="fTask"><option value="">(todos)</option></select></label>
+    <label>obstáculo <select id="fObstacle"><option value="">(todos)</option><option value="sem_obstaculo">sem obstáculo</option><option value="com_obstaculo">com obstáculo</option></select></label>
+    <label>resultado <select id="fOutcome"><option value="">(todos)</option><option value="success">sucesso</option><option value="failure">falha</option></select></label>
+    <label>contato <select id="fContact"><option value="">(todos)</option><option value="yes">com contato</option><option value="no">sem contato</option></select></label>
+    <button onclick="loadAll()">Atualizar</button>
+    <button class="primary" onclick="exportConsolidatedCSV()">Exportar CSV consolidado</button>
+    <button onclick="exportTimesCSV()">Exportar tempos CSV</button>
+    <span id="countInfo" class="pill">—</span>
+  </div>
+  <div class="hint" id="linkHint" style="margin:6px 0"></div>
+  <div class="scroll">
+    <table class="tbl" id="tbl">
+      <thead><tr>
+        <th>operator</th><th>date</th><th>condition</th><th>task</th><th>att</th><th>obstacle</th><th>tempo (s)</th><th>tempo</th><th>result</th><th>contato</th><th>raw</th><th>weighted</th><th>mental</th><th>phys</th><th>temp</th><th>perf</th><th>eff</th><th>frus</th><th>TLX?</th><th>notes</th><th></th>
+      </tr></thead>
+      <tbody id="tbody"><tr><td colspan="21" class="hint" style="text-align:center; padding:16px">carregando…</td></tr></tbody>
+    </table>
+  </div>
+  <div class="hint" style="margin-top:8px">A coluna <b>TLX?</b> indica se houve casamento automático pela chave (operator+date+condition+task). Se mostrar <span class="badge warn">sem TLX</span>, use o botão do Passo 3.</div>
+
+  <h2>Registros NASA-TLX disponíveis (para conferência)</h2>
+  <div class="scroll" style="max-height:240px">
+    <table class="tbl" id="tlxTbl">
+      <thead><tr><th>timestamp</th><th>operator</th><th>date</th><th>condition</th><th>task</th><th>raw</th><th>weighted</th><th>6 escalas</th></tr></thead>
+      <tbody id="tlxBody"><tr><td colspan="8" class="hint" style="text-align:center;padding:10px">carregando…</td></tr></tbody>
+    </table>
+  </div>
+
+  <p class="hint" style="margin-top:18px">Servido por <code>serve.py</code> em <code>/tempos</code>. Dados em <code>times.csv</code> (tentativas) + <code>submissions.csv</code> (TLX). Exportação consolidada junta tudo pela chave do bloco.</p>
+</div>
+
+<div id="stickybar"></div>
+
+<script>
+const LS_KEY = "tempos-form-v2";
+const LS_HDR_SHARED = "tlx_hdr_shared_v1";
+let elapsed = 0;
+let running = false;
+let startAt = 0;
+let tickId = null;
+let outcome = "success";
+let contact = "no";
+let contactCount = 0;
+
+function fmtMs(ms){
+  const s = Math.floor(ms/1000);
+  const m = Math.floor(s/60);
+  const sec = s % 60;
+  const ms3 = Math.floor(ms % 1000);
+  return String(m).padStart(2,"0")+":"+String(sec).padStart(2,"0")+"."+String(ms3).padStart(3,"0");
+}
+function parseDuration(str){
+  str = (str||"").trim();
+  if(!str) return null;
+  str = str.replace(",",".").replace(/s$/i,"").trim();
+  if(str.includes(":")){
+    const parts = str.split(":").map(p=>p.trim());
+    let total=0;
+    if(parts.length===2){
+      total = parseFloat(parts[0])*60 + parseFloat(parts[1]);
+    } else if(parts.length===3){
+      total = parseFloat(parts[0])*3600 + parseFloat(parts[1])*60 + parseFloat(parts[2]);
+    } else return null;
+    if(isNaN(total)) return null;
+    return total;
+  }
+  const v = parseFloat(str);
+  if(isNaN(v)) return null;
+  return v;
+}
+function updateTimerDisplay(){
+  const ms = running ? (Date.now()-startAt) : elapsed;
+  document.getElementById("timerDisplay").textContent = fmtMs(ms);
+}
+function timerStart(){
+  if(running) return;
+  running = true;
+  startAt = Date.now() - elapsed;
+  document.getElementById("btnStart").disabled = true;
+  document.getElementById("btnPause").disabled = false;
+  document.getElementById("timerSub").textContent = "cronometrando…";
+  tickId = setInterval(updateTimerDisplay, 50);
+  updateTimerDisplay();
+}
+function timerPause(){
+  if(!running) return;
+  elapsed = Date.now() - startAt;
+  running = false;
+  clearInterval(tickId);
+  document.getElementById("btnStart").disabled = false;
+  document.getElementById("btnPause").disabled = true;
+  document.getElementById("timerSub").textContent = "pausado — Iniciar para retomar, Zerar para reiniciar";
+  updateTimerDisplay();
+}
+function timerReset(){
+  running = false;
+  clearInterval(tickId);
+  elapsed = 0;
+  document.getElementById("btnStart").disabled = false;
+  document.getElementById("btnPause").disabled = true;
+  document.getElementById("timerSub").textContent = "pronto — Iniciar para cronometrar, ou digite o tempo manualmente abaixo";
+  updateTimerDisplay();
+}
+function timerLapSave(){
+  if(running){
+    elapsed = Date.now() - startAt;
+    updateTimerDisplay();
+  }
+  const s = (elapsed/1000).toFixed(3);
+  document.getElementById("manualDuration").value = s;
+}
+
+function setOutcome(v){
+  outcome = v;
+  document.getElementById("btnOk").className = v==="success" ? "on-ok" : "";
+  document.getElementById("btnFail").className = v==="failure" ? "on-fail" : "";
+}
+function setContact(v){
+  contact = v;
+  if(v==="no"){ contactCount = 0; paintContactCount(); }
+  if(v==="yes" && contactCount===0){ contactCount = 1; paintContactCount(); }
+  paintContactSeg();
+}
+function stepContact(d){
+  contactCount = Math.min(99, Math.max(0, contactCount + d));
+  if(contactCount > 0) contact = "yes";
+  paintContactCount();
+  paintContactSeg();
+}
+function paintContactCount(){
+  document.getElementById("contactCountVal").textContent = contactCount;
+}
+function paintContactSeg(){
+  document.getElementById("btnNoContact").className = contact==="no" ? "on-neutral" : "";
+  document.getElementById("btnContact").className = contact==="yes" ? "on-fail" : "";
+}
+function resetAttemptMarks(){
+  setOutcome("success");
+  contact = "no"; contactCount = 0;
+  paintContactCount(); paintContactSeg();
+}
+
+function headerFields(){
+  const g = n => (document.querySelector(`#hdr [name="${n}"]`)?.value || "").trim();
+  return { operator:g("operator"), date:g("date"), condition:g("condition"), task:g("task"),
+           attempt: document.getElementById("attemptSel").value,
+           obstacle: document.getElementById("obstacleSel").value,
+           notes: (document.getElementById("attemptNotes")?.value || "").trim() };
+}
+function blockKey(h){
+  return [h.operator,h.date,h.condition,h.task].map(s=>(s||"").trim().toLowerCase()).join("|");
+}
+function setStatus(msg, ok){
+  const el=document.getElementById("saveStatus");
+  el.textContent=msg;
+  el.className="status "+(ok===undefined?"":(ok?"ok":"err"));
+}
+function saveState(){
+  const st={};
+  document.querySelectorAll("#hdr [name]").forEach(i=> st[i.name]=i.value);
+  st.attempt = document.getElementById("attemptSel").value;
+  st.obstacle = document.getElementById("obstacleSel").value;
+  try{
+    localStorage.setItem(LS_KEY, JSON.stringify(st));
+    localStorage.setItem(LS_HDR_SHARED, JSON.stringify({
+      operator:st.operator||"", date:st.date||"", condition:st.condition||"", task:st.task||""
+    }));
+  }catch(e){}
+}
+function restoreState(){
+  // priority: URL params > shared TLX header > own saved state
+  let params = {};
+  try{
+    const q = new URLSearchParams(window.location.search);
+    ["operator","date","condition","task"].forEach(k=>{ if(q.get(k)) params[k]=q.get(k); });
+  }catch(e){}
+  let shared = null, own = null;
+  try{ shared = JSON.parse(localStorage.getItem(LS_HDR_SHARED)||"null"); }catch(e){}
+  try{ own = JSON.parse(localStorage.getItem(LS_KEY)||"null"); }catch(e){}
+  const hdr = Object.assign({}, (own||{}), (shared||{}), params);
+  ["operator","date","condition","task"].forEach(k=>{
+    const el=document.querySelector(`#hdr [name="${k}"]`);
+    if(el && hdr[k]) el.value = hdr[k];
+  });
+  const src = Object.assign({}, own||{}, params.attempt?{attempt:params.attempt}:null);
+  if(src.attempt) document.getElementById("attemptSel").value = src.attempt;
+  if(src.obstacle) document.getElementById("obstacleSel").value = src.obstacle;
+  if(Object.keys(params).length) saveState();
+}
+document.addEventListener("input", saveState);
+document.addEventListener("change", saveState);
+
+function buildAttemptOptions(){
+  const sel=document.getElementById("attemptSel");
+  sel.innerHTML="";
+  for(let i=1;i<=20;i++){
+    const o=document.createElement("option");
+    o.value=String(i); o.textContent=String(i);
+    sel.appendChild(o);
+  }
+}
+buildAttemptOptions();
+
+function obstacleBadge(v){
+  if(v==="com_obstaculo") return '<span class="badge obs">com obstáculo</span>';
+  return '<span class="badge livre">sem obstáculo</span>';
+}
+function outcomeBadge(v){
+  if(v==="success") return '<span class="badge succ">sucesso</span>';
+  if(v==="failure") return '<span class="badge fail">falha</span>';
+  return '<span class="badge muted">—</span>';
+}
+function contactBadge(v, n){
+  if(v==="yes") return `<span class="badge contact">contato${n && n!=="0" ? " ×"+esc(n) : ""}</span>`;
+  if(v==="no") return '<span class="badge muted">sem contato</span>';
+  return '<span class="badge muted">—</span>';
+}
+
+async function saveTime(){
+  const h=headerFields();
+  if(!h.operator){ setStatus("Preencha Operator ID no Passo 1.", false); return; }
+  if(!h.condition){ setStatus("Preencha Interface/condition no Passo 1.", false); return; }
+  if(!h.task){ setStatus("Preencha Task no Passo 1.", false); return; }
+  let dur = parseDuration(document.getElementById("manualDuration").value);
+  if(dur===null){
+    const ms = running ? (Date.now()-startAt) : elapsed;
+    if(ms < 100) { setStatus("Cronometre ou digite o tempo (ex. 42.3).", false); return; }
+    dur = ms/1000;
+  }
+  if(!(dur>0 && dur<36000)){ setStatus("Tempo inválido.", false); return; }
+  const payload = { operator:h.operator, date:h.date, condition:h.condition, task:h.task,
+                    attempt:h.attempt, obstacle:h.obstacle, duration_s: dur,
+                    outcome, contact, contact_count: contactCount, notes:h.notes };
+  setStatus("Salvando…");
+  try{
+    const res = await fetch("/api/times", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(payload) });
+    if(!res.ok) throw new Error(await res.text() || res.status);
+    const resLabel = outcome==="success" ? "sucesso" : "FALHA";
+    const ctLabel = contact==="yes" ? ` · contato ×${contactCount}` : "";
+    setStatus(`Salvo — ${h.operator} · t${h.attempt} · ${h.obstacle.replace("_"," ")} · ${dur.toFixed(2)}s · ${resLabel}${ctLabel}`, true);
+    const next = Math.min(20, parseInt(h.attempt,10)+1);
+    document.getElementById("attemptSel").value = String(next);
+    saveState();
+    document.getElementById("manualDuration").value="";
+    document.getElementById("attemptNotes").value="";
+    resetAttemptMarks();
+    timerReset();
+    await loadAll();
+  }catch(e){
+    setStatus("Falha ao salvar: "+e.message, false);
+  }
+}
+
+function openTlx(){
+  const h=headerFields();
+  const q = new URLSearchParams({ operator:h.operator||"", date:h.date||"", condition:h.condition||"", task:h.task||"" });
+  window.location.href = "/?" + q.toString();
+}
+
+let lastConsolidated=[];
+let lastTlx=[];
+async function loadAll(){
+  const tb=document.getElementById("tbody");
+  tb.innerHTML='<tr><td colspan="21" class="hint" style="text-align:center;padding:12px">carregando…</td></tr>';
+  try{
+    const [timesRes, tlxRes, consRes] = await Promise.all([
+      fetch("/api/times").then(r=>r.json()),
+      fetch("/api/tlx").then(r=>r.json()),
+      fetch("/api/consolidated").then(r=>r.json())
+    ]);
+    lastConsolidated = consRes;
+    lastTlx = tlxRes;
+    renderFilters(consRes, timesRes, tlxRes);
+    renderTable(applyFilters(consRes));
+    renderTlx(tlxRes);
+    renderBlockPanel(consRes, tlxRes);
+    document.getElementById("countInfo").textContent = `${timesRes.length} tempos · ${tlxRes.length} TLX · ${consRes.length} consolidados`;
+    const matched = consRes.filter(r=>r.tlx_matched===true || r.tlx_matched==="True" || r.tlx_matched==="1").length;
+    document.getElementById("linkHint").textContent = matched ? `Vínculo automático: ${matched}/${consRes.length} tempos já casados com TLX pela chave do bloco.` : "Nenhum tempo casado ainda — use o botão do Passo 3 para preencher o TLX deste bloco.";
+    document.getElementById("stickybar").style.display="block";
+    document.getElementById("stickybar").textContent = `${timesRes.length} tempos · ${tlxRes.length} TLX · ${matched} vinculados`;
+  }catch(e){
+    tb.innerHTML='<tr><td colspan="21" class="hint" style="text-align:center;padding:12px;color:#b00">erro ao carregar: '+esc(e.message)+'</td></tr>';
+  }
+}
+
+function renderBlockPanel(cons, tlx){
+  const h = headerFields();
+  const key = blockKey(h);
+  const hasHdr = !!(h.operator && h.condition && h.task);
+  const box = document.getElementById("blockSummary");
+  const tlxBox = document.getElementById("tlxStatus");
+  if(!hasHdr){
+    box.textContent = "Preencha o Passo 1 para ver o resumo do bloco.";
+    tlxBox.textContent = "";
+    return;
+  }
+  const rows = cons.filter(r=>blockKey(r)===key);
+  const ok = rows.filter(r=>r.outcome==="success").length;
+  const fail = rows.filter(r=>r.outcome==="failure").length;
+  const unk = rows.length - ok - fail;
+  const withCt = rows.filter(r=>r.contact==="yes").length;
+  const totCt = rows.reduce((a,r)=>a+(parseInt(r.contact_count||"0",10)||0),0);
+  function mean(obs){
+    const ds = rows.filter(r=>r.obstacle===obs).map(r=>parseFloat(r.duration_s)).filter(v=>!isNaN(v));
+    if(!ds.length) return "—";
+    return (ds.reduce((a,b)=>a+b,0)/ds.length).toFixed(2)+"s";
+  }
+  box.innerHTML = `<b>Bloco atual:</b> ${esc(h.operator)} · ${esc(h.date||"—")} · ${esc(h.condition)} · ${esc(h.task)} — ` +
+    `<b>${rows.length}</b> tentativa(s)` +
+    (rows.length ? ` (${ok} sucesso · ${fail} falha${unk?` · ${unk} sem marcação`:""} · ${withCt} com contato, ${totCt} toques)` : " — nenhuma tentativa salva ainda.") +
+    (rows.length ? `<table><tr><th></th><th>sem obstáculo</th><th>com obstáculo</th></tr>` +
+      `<tr><td>tempo médio</td><td>${mean("sem_obstaculo")}</td><td>${mean("com_obstaculo")}</td></tr></table>` : "");
+  const trow = tlx.find(r=>blockKey(r)===key);
+  if(trow){
+    tlxBox.innerHTML = `<span class="badge ok">TLX ✓</span> Bloco fechado — raw <b>${esc(trow.raw_tlx)}</b> · weighted <b>${esc(trow.weighted_tlx||"—")}</b>. Pode trocar de bloco no Passo 1.`;
+  } else {
+    tlxBox.innerHTML = rows.length
+      ? `<span class="badge warn">TLX pendente</span> Este bloco tem ${rows.length} tentativa(s) mas ainda <b>sem TLX</b> — abra o Passo 3 quando terminar as tentativas.`
+      : `<span class="badge muted">TLX —</span> O TLX deste bloco ainda não foi preenchido.`;
+  }
+}
+
+function uniqueSorted(arr, key){
+  const s=new Set(arr.map(r=>r[key]).filter(v=>v));
+  return Array.from(s).sort();
+}
+function renderFilters(cons, times, tlx){
+  const all=[...times, ...tlx, ...cons];
+  const ops = uniqueSorted(all,"operator");
+  const conds = uniqueSorted(all,"condition");
+  const tasks = uniqueSorted(all,"task");
+  function fill(selId, vals, keep){
+    const sel=document.getElementById(selId);
+    const cur=sel.value;
+    sel.innerHTML='<option value="">(todos)</option>';
+    vals.forEach(v=>{ const o=document.createElement("option"); o.value=v; o.textContent=v; sel.appendChild(o); });
+    if(keep && vals.includes(cur)) sel.value=cur;
+  }
+  fill("fOperator", ops, true);
+  fill("fCondition", conds, true);
+  fill("fTask", tasks, true);
+}
+function applyFilters(rows){
+  const o=document.getElementById("fOperator").value;
+  const c=document.getElementById("fCondition").value;
+  const t=document.getElementById("fTask").value;
+  const ob=document.getElementById("fObstacle").value;
+  const oc=document.getElementById("fOutcome").value;
+  const ct=document.getElementById("fContact").value;
+  return rows.filter(r=>{
+    if(o && r.operator!==o) return false;
+    if(c && r.condition!==c) return false;
+    if(t && r.task!==t) return false;
+    if(ob && r.obstacle!==ob) return false;
+    if(oc && (r.outcome||"")!==oc) return false;
+    if(ct && (r.contact||"")!==ct) return false;
+    return true;
+  });
+}
+["fOperator","fCondition","fTask","fObstacle","fOutcome","fContact"].forEach(id=>{
+  document.getElementById(id).addEventListener("change", ()=>renderTable(applyFilters(lastConsolidated)));
+});
+
+function renderTable(rows){
+  const tb=document.getElementById("tbody");
+  if(!rows.length){
+    tb.innerHTML='<tr><td colspan="21" class="hint" style="text-align:center;padding:14px">nenhum registro com o filtro atual</td></tr>';
+    return;
+  }
+  rows.sort((a,b)=>{
+    const k = (a.operator||"").localeCompare(b.operator||"");
+    if(k) return k;
+    const k2=(a.date||"").localeCompare(b.date||"");
+    if(k2) return k2;
+    const k3=(a.task||"").localeCompare(b.task||"");
+    if(k3) return k3;
+    const k4=(a.obstacle||"").localeCompare(b.obstacle||"");
+    if(k4) return k4;
+    return parseInt(a.attempt||0)-parseInt(b.attempt||0);
+  });
+  tb.innerHTML="";
+  rows.forEach(r=>{
+    const dur = parseFloat(r.duration_s);
+    const durStr = isNaN(dur) ? "" : fmtMs(dur*1000);
+    const matched = r.tlx_matched===true || r.tlx_matched==="True" || r.tlx_matched==="1" || r.tlx_matched===1;
+    const tr=document.createElement("tr");
+    tr.innerHTML = `
+      <td>${esc(r.operator)}</td><td>${esc(r.date)}</td><td>${esc(r.condition)}</td><td>${esc(r.task)}</td>
+      <td class="num">${esc(r.attempt)}</td><td>${obstacleBadge(r.obstacle)}</td>
+      <td class="num">${isNaN(dur)?"":dur.toFixed(2)}</td><td class="num">${durStr}</td>
+      <td>${outcomeBadge(r.outcome)}</td><td>${contactBadge(r.contact, r.contact_count)}</td>
+      <td class="num">${esc(r.raw_tlx)}</td><td class="num">${esc(r.weighted_tlx)}</td>
+      <td class="num">${esc(r.mental)}</td><td class="num">${esc(r.physical)}</td><td class="num">${esc(r.temporal)}</td><td class="num">${esc(r.performance)}</td><td class="num">${esc(r.effort)}</td><td class="num">${esc(r.frustration)}</td>
+      <td>${matched?'<span class="badge ok">TLX ✓</span>':'<span class="badge warn">sem TLX</span>'}</td>
+      <td class="hint">${esc(r.notes||"")}</td>
+      <td><button onclick="deleteTime('${escAttr(r.timestamp)}')" title="Apagar">×</button></td>`;
+    tb.appendChild(tr);
+  });
+}
+function renderTlx(rows){
+  const tb=document.getElementById("tlxBody");
+  if(!rows.length){ tb.innerHTML='<tr><td colspan="8" class="hint" style="text-align:center;padding:10px">nenhum TLX enviado ainda</td></tr>'; return; }
+  tb.innerHTML="";
+  [...rows].reverse().forEach(r=>{
+    const tr=document.createElement("tr");
+    const scales = ["mental","physical","temporal","performance","effort","frustration"].map(k=> `${k}:${r[k]||""}`).join(" ");
+    tr.innerHTML=`<td class="hint">${esc(r.timestamp)}</td><td>${esc(r.operator)}</td><td>${esc(r.date)}</td><td>${esc(r.condition)}</td><td>${esc(r.task)}</td><td class="num">${esc(r.raw_tlx)}</td><td class="num">${esc(r.weighted_tlx)}</td><td class="hint">${esc(scales)}</td>`;
+    tb.appendChild(tr);
+  });
+}
+function esc(s){ return String(s??"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+function escAttr(s){ return String(s??"").replace(/'/g,"\\'").replace(/"/g,"&quot;"); }
+
+async function deleteTime(ts){
+  if(!confirm("Apagar este tempo ("+ts+")?")) return;
+  const res = await fetch("/api/times/delete", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({timestamp: ts}) });
+  if(!res.ok){ alert("Falha: "+await res.text()); return; }
+  await loadAll();
+}
+
+function csvEscape(v){
+  const s=String(v??"");
+  if(s.includes('"')||s.includes(',')||s.includes('\n')) return '"'+s.replace(/"/g,'""')+'"';
+  return s;
+}
+const TIMES_CSV_COLS=["timestamp","operator","date","condition","task","attempt","obstacle","duration_s","outcome","contact","contact_count","notes"];
+function exportConsolidatedCSV(){
+  if(!lastConsolidated.length){ alert("Nada para exportar."); return; }
+  const cols=[...TIMES_CSV_COLS,"mental","physical","temporal","performance","effort","frustration","raw_tlx","w_mental","w_physical","w_temporal","w_performance","w_effort","w_frustration","weighted_tlx","tlx_timestamp","tlx_matched"];
+  const lines=[cols.join(",")];
+  lastConsolidated.forEach(r=>{
+    lines.push(cols.map(c=>csvEscape(r[c]??"")).join(","));
+  });
+  downloadCSV(lines.join("\n")+"\n", "consolidado_tempos_tlx.csv");
+}
+function exportTimesCSV(){
+  if(!lastConsolidated.length){ alert("Nada para exportar."); return; }
+  const lines=[TIMES_CSV_COLS.join(",")];
+  lastConsolidated.forEach(r=> lines.push(TIMES_CSV_COLS.map(c=>csvEscape(r[c]??"")).join(",")));
+  downloadCSV(lines.join("\n")+"\n", "times.csv");
+}
+function downloadCSV(text, filename){
+  const a=document.createElement("a");
+  a.href=URL.createObjectURL(new Blob([text],{type:"text/csv;charset=utf-8"}));
+  a.download=filename;
+  a.click();
+  setTimeout(()=>URL.revokeObjectURL(a.href), 1000);
+}
+
+document.getElementById("obstacleSel").addEventListener("change", e=>{
+  const v=e.target.value;
+  const b=document.getElementById("hdrBadge");
+  b.textContent = v==="com_obstaculo" ? "com obstáculo" : "sem obstáculo";
+  b.className = "badge "+(v==="com_obstaculo"?"obs":"livre");
+  saveState();
+});
+document.querySelectorAll("#hdr input").forEach(el=>{
+  el.addEventListener("input", ()=>{ if(lastConsolidated.length||lastTlx.length) renderBlockPanel(lastConsolidated, lastTlx); });
+});
+
+restoreState();
+resetAttemptMarks();
+updateTimerDisplay();
+(function(){
+  const v=document.getElementById("obstacleSel").value;
+  const b=document.getElementById("hdrBadge");
+  b.textContent = v==="com_obstaculo" ? "com obstáculo" : "sem obstáculo";
+  b.className = "badge "+(v==="com_obstaculo"?"obs":"livre");
+})();
+loadAll();
+</script>
+</body>
+</html>

@@ -1,0 +1,18 @@
+# NEURAL_PLUS variant of sim_real_svga.yaml (10-28): identical streaming/publishing
+# (SVGA grab @ 15 fps, CUSTOM downscale 1.5 -> 640x400, stabilization 30, 0.3/10 m),
+# only the depth network changes NEURAL_LIGHT -> NEURAL_PLUS. Single factor vs run 5.
+/**:
+  ros__parameters:
+    pos_tracking:
+      pos_tracking_enabled: false
+    sensors:
+      publish_imu: false
+      publish_imu_raw: false
+    general:
+      pub_resolution: 'CUSTOM'
+      pub_downscale_factor: 1.5
+    depth:
+      depth_mode: 'NEURAL_PLUS'
+      depth_stabilization: 30
+      min_depth: 0.3
+      max_depth: 10.0

@@ -1,0 +1,18 @@
+# Resolution control for run 5 (10-28): same NEURAL_LIGHT network, but HD1080 grab with
+# NATIVE full-res publishing (1920x1080) instead of SVGA/640x400. Single factor vs run 5
+# (network fixed) and vs the old L40S depth pipeline (minus stands/voxel). Use with:
+# --zed-res HD1080 --zed-fps 15.
+/**:
+  ros__parameters:
+    pos_tracking:
+      pos_tracking_enabled: false
+    sensors:
+      publish_imu: false
+      publish_imu_raw: false
+    general:
+      pub_resolution: 'NATIVE'
+    depth:
+      depth_mode: 'NEURAL_LIGHT'
+      depth_stabilization: 30
+      min_depth: 0.3
+      max_depth: 10.0

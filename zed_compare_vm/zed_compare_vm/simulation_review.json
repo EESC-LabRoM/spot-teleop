@@ -1,0 +1,1907 @@
+{
+  "revision": 1,
+  "status": "complete",
+  "dataset": "ZED RGBD completo reprocessado",
+  "mapping": "per-exercise review profiles; explicit isolation, not a universal gesture classifier",
+  "runs": [
+    {
+      "source_id": "zed_protocol_20261030_00_neutro_reprocessed_v1",
+      "stage": "00_neutro",
+      "label": "ZED · Parado / calibração",
+      "status": "done",
+      "expected": "Parado",
+      "profile": "neutral",
+      "tracking": {
+        "frames": 325,
+        "position_valid": 319,
+        "orientation_valid": 317
+      },
+      "clip_id": "82d895ad8076",
+      "job_id": "b1455a5e5235",
+      "start_s": 3.377126693725586,
+      "end_s": 17.612200498580933,
+      "url": "/exports/b1455a5e5235/clip.mp4",
+      "manifest_url": "/exports/b1455a5e5235/simulation/summary.json",
+      "metrics": {
+        "id": 1,
+        "clip_name": "clip_01",
+        "label": "ZED RGBD · ZED · Parado / calibração",
+        "start_s": 3.377,
+        "end_s": 17.612,
+        "duration": 14.235,
+        "active_after_s": 0.67,
+        "planned_hand_delta": {
+          "dx_cm": 4.487252890358828,
+          "dy_cm": -8.304977615021103,
+          "dz_cm": 6.115736286734147,
+          "roll_deg": 4.505656176958707
+        },
+        "hand_delta": {
+          "dx_cm": 2.77,
+          "dy_cm": -8.51,
+          "dz_cm": 3.07,
+          "roll_deg": 3.85
+        },
+        "robot_tcp_delta": {
+          "dx_cm": 0.0,
+          "dy_cm": 0.0,
+          "dz_cm": -0.03,
+          "dr_cm": 0.0,
+          "yaw_deg": 0.0,
+          "roll_deg": -0.0
+        },
+        "ratio_robot_hand": {
+          "mapped": {
+            "tcp_dz_over_hand_dx": -0.011,
+            "tcp_dy_over_hand_dy": -0.0,
+            "base_yaw_deg_over_hand_dy_cm": -0.0,
+            "tcp_dr_over_hand_dz": 0.0,
+            "tcp_dx_over_hand_dz": 0.0,
+            "tool_roll_over_hand_roll": -0.0
+          },
+          "cartesian": {
+            "dx_over_dX": 0.0,
+            "dy_over_dY": -0.0,
+            "dz_over_dZ": -0.01,
+            "roll_over_roll": -0.0
+          }
+        },
+        "intended_sign_match": false,
+        "sign_detail": "mixed top axes ['hand_y_to_base_yaw', 'hand_z_to_reach_r']: {'hand_y_to_base_yaw': False, 'hand_z_to_reach_r': False}",
+        "per_axis_sign": {
+          "hand_x_to_tcp_z": true,
+          "hand_y_to_base_yaw": false,
+          "hand_z_to_reach_r": false,
+          "palm_roll_to_tool_roll": false
+        },
+        "mpc_feasible_ratio": 1.0,
+        "operator_frames": 154,
+        "mujoco_frames": 87,
+        "mp4_path": "/home/spot-teleop/clips_out/manual_clips/b1455a5e5235/simulation/clip_01.mp4",
+        "trace_path": "/home/spot-teleop/clips_out/manual_clips/b1455a5e5235/simulation/clip_01/trace.json",
+        "encoder": "cv2:mp4v",
+        "error": null
+      },
+      "measured_peak_to_peak_cm": [
+        0.0,
+        0.0,
+        0.01
+      ],
+      "validation": {
+        "stage": "00_neutro",
+        "source_rgb": 328,
+        "paired_frames": 325,
+        "position_fraction": 0.9815384615384616,
+        "orientation_fraction": 0.9753846153846154,
+        "original_emitted_orientation_fraction": 1.0,
+        "original_hand_hz": 4.33,
+        "capture_pair_hz": 17.41011332590966,
+        "original_real_span_cm": [
+          12.22,
+          10.08,
+          2.12
+        ],
+        "profile": "neutral",
+        "job_id": "b1455a5e5235",
+        "simulation_solver": "GPU IK / wrist-only; GPU PhysX measured feedback",
+        "active_status_polls": 239,
+        "paused_status_polls": 0,
+        "simulated_span_cm": [
+          0.002,
+          0.001,
+          0.014
+        ],
+        "off_axis_max_cm": 0.013584928512572203,
+        "isolated_translation_pass": true,
+        "orientation_excursion_deg": 0.05979651230126262,
+        "feasible_fraction": 1.0,
+        "gripper_measured_width_range_mm": [
+          80.0,
+          80.0
+        ],
+        "gripper_transitions": [
+          {
+            "t": -0.6704790592193604,
+            "command": "Open_Palm"
+          }
+        ],
+        "physics_hz_range": [
+          33.8,
+          42.6
+        ],
+        "robot_series_example": [
+          {
+            "t": 1793371504.2476535,
+            "dx_cm": 0.0,
+            "dy_cm": 0.0,
+            "dz_cm": 0.0,
+            "dr_cm": 0.0,
+            "yaw_deg": 0.0,
+            "roll_deg": 0.0
+          }
+        ]
+      },
+      "follower": "joint hold / wrist-only; measured GPU PhysX"
+    },
+    {
+      "source_id": "zed_protocol_20261030_01_giro_plano_imagem_reprocessed_v1",
+      "stage": "01_giro_plano_imagem",
+      "label": "ZED · Giro no plano da imagem",
+      "status": "done",
+      "expected": "Giro no plano → só giro da garra",
+      "profile": "roll",
+      "tracking": {
+        "frames": 460,
+        "position_valid": 454,
+        "orientation_valid": 425
+      },
+      "clip_id": "7a922f5a8b26",
+      "job_id": "f904c3d8a688",
+      "start_s": 3.568671941757202,
+      "end_s": 28.467963457107544,
+      "url": "/exports/f904c3d8a688/clip.mp4",
+      "manifest_url": "/exports/f904c3d8a688/simulation/summary.json",
+      "metrics": {
+        "id": 1,
+        "clip_name": "clip_01",
+        "label": "ZED RGBD · ZED · Giro no plano da imagem",
+        "start_s": 3.569,
+        "end_s": 28.468,
+        "duration": 24.899,
+        "active_after_s": 0.963,
+        "planned_hand_delta": {
+          "dx_cm": -3.799283283685795,
+          "dy_cm": -2.816866852211236,
+          "dz_cm": 2.479851058814772,
+          "roll_deg": -1.4022874444587254
+        },
+        "hand_delta": {
+          "dx_cm": -1.13,
+          "dy_cm": -5.92,
+          "dz_cm": 4.73,
+          "roll_deg": -31.82
+        },
+        "robot_tcp_delta": {
+          "dx_cm": 0.0,
+          "dy_cm": 0.0,
+          "dz_cm": -0.03,
+          "dr_cm": 0.0,
+          "yaw_deg": 0.0,
+          "roll_deg": -46.12
+        },
+        "ratio_robot_hand": {
+          "mapped": {
+            "tcp_dz_over_hand_dx": 0.027,
+            "tcp_dy_over_hand_dy": -0.0,
+            "base_yaw_deg_over_hand_dy_cm": -0.0,
+            "tcp_dr_over_hand_dz": 0.0,
+            "tcp_dx_over_hand_dz": 0.0,
+            "tool_roll_over_hand_roll": 1.449
+          },
+          "cartesian": {
+            "dx_over_dX": -0.0,
+            "dy_over_dY": -0.0,
+            "dz_over_dZ": -0.006,
+            "roll_over_roll": 1.449
+          }
+        },
+        "intended_sign_match": false,
+        "sign_detail": "mixed top axes ['palm_roll_to_tool_roll', 'hand_y_to_base_yaw']: {'palm_roll_to_tool_roll': True, 'hand_y_to_base_yaw': False}",
+        "per_axis_sign": {
+          "hand_x_to_tcp_z": false,
+          "hand_y_to_base_yaw": false,
+          "hand_z_to_reach_r": false,
+          "palm_roll_to_tool_roll": true
+        },
+        "mpc_feasible_ratio": 1.0,
+        "operator_frames": 344,
+        "mujoco_frames": 347,
+        "mp4_path": "/home/spot-teleop/clips_out/manual_clips/f904c3d8a688/simulation/clip_01.mp4",
+        "trace_path": "/home/spot-teleop/clips_out/manual_clips/f904c3d8a688/simulation/clip_01/trace.json",
+        "encoder": "cv2:mp4v",
+        "error": null
+      },
+      "measured_peak_to_peak_cm": [
+        0.0,
+        0.0,
+        0.01
+      ],
+      "validation": {
+        "stage": "01_giro_plano_imagem",
+        "source_rgb": 465,
+        "paired_frames": 460,
+        "position_fraction": 0.9869565217391304,
+        "orientation_fraction": 0.9239130434782609,
+        "original_emitted_orientation_fraction": 0.708,
+        "original_hand_hz": 4.05,
+        "capture_pair_hz": 15.626894442468245,
+        "original_real_span_cm": [
+          18.32,
+          16.65,
+          9.53
+        ],
+        "profile": "roll",
+        "job_id": "f904c3d8a688",
+        "simulation_solver": "GPU IK / wrist-only; GPU PhysX measured feedback",
+        "active_status_polls": 455,
+        "paused_status_polls": 0,
+        "simulated_span_cm": [
+          0.002,
+          0.002,
+          0.014
+        ],
+        "off_axis_max_cm": 0.013968863487245908,
+        "isolated_translation_pass": true,
+        "orientation_excursion_deg": 95.74965385432182,
+        "feasible_fraction": 1.0,
+        "robot_series_example": [
+          {
+            "t": 1793371396.8623552,
+            "dx_cm": 0.0,
+            "dy_cm": 0.0,
+            "dz_cm": 0.0,
+            "dr_cm": 0.0,
+            "yaw_deg": 0.0,
+            "roll_deg": 0.0
+          }
+        ]
+      },
+      "follower": "joint hold / wrist-only; measured GPU PhysX"
+    },
+    {
+      "source_id": "zed_protocol_20261030_02_inclinar_dedos_reprocessed_v1",
+      "stage": "02_inclinar_dedos",
+      "label": "ZED · Inclinar dedos para perto / longe",
+      "status": "done",
+      "expected": "Inclinar dedos → só inclinação da garra",
+      "profile": "pitch",
+      "tracking": {
+        "frames": 463,
+        "position_valid": 449,
+        "orientation_valid": 375
+      },
+      "clip_id": "ec9248650a59",
+      "job_id": "d314e2e05da2",
+      "start_s": 2.5660946369171143,
+      "end_s": 27.7227783203125,
+      "url": "/exports/d314e2e05da2/clip.mp4",
+      "manifest_url": "/exports/d314e2e05da2/simulation/summary.json",
+      "metrics": {
+        "id": 1,
+        "clip_name": "clip_01",
+        "label": "ZED RGBD · ZED · Inclinar dedos para perto / longe",
+        "start_s": 2.566,
+        "end_s": 27.723,
+        "duration": 25.157,
+        "active_after_s": 1.053,
+        "planned_hand_delta": {
+          "dx_cm": 21.599047745092538,
+          "dy_cm": 3.5509164457781237,
+          "dz_cm": -6.62144098290842,
+          "roll_deg": 24.523142712007377
+        },
+        "hand_delta": {
+          "dx_cm": 15.18,
+          "dy_cm": 2.54,
+          "dz_cm": -4.88,
+          "roll_deg": -0.33,
+          "review_angle_deg": -3.34
+        },
+        "robot_tcp_delta": {
+          "dx_cm": 0.0,
+          "dy_cm": 0.0,
+          "dz_cm": -0.03,
+          "dr_cm": 0.0,
+          "yaw_deg": 0.0,
+          "roll_deg": -0.0,
+          "review_angle_deg": -1.72
+        },
+        "ratio_robot_hand": {
+          "mapped": {
+            "tcp_dz_over_hand_dx": -0.002,
+            "tcp_dy_over_hand_dy": 0.0,
+            "base_yaw_deg_over_hand_dy_cm": 0.0,
+            "tcp_dr_over_hand_dz": -0.0,
+            "tcp_dx_over_hand_dz": -0.0,
+            "tool_roll_over_hand_roll": null
+          },
+          "cartesian": {
+            "dx_over_dX": 0.0,
+            "dy_over_dY": 0.0,
+            "dz_over_dZ": 0.006,
+            "roll_over_roll": null
+          }
+        },
+        "intended_sign_match": false,
+        "sign_detail": "mixed top axes ['hand_x_to_tcp_z', 'hand_z_to_reach_r']: {'hand_x_to_tcp_z': True, 'hand_z_to_reach_r': False}",
+        "per_axis_sign": {
+          "hand_x_to_tcp_z": true,
+          "hand_y_to_base_yaw": false,
+          "hand_z_to_reach_r": false,
+          "palm_roll_to_tool_roll": null
+        },
+        "mpc_feasible_ratio": 1.0,
+        "operator_frames": 213,
+        "mujoco_frames": 164,
+        "mp4_path": "/home/spot-teleop/clips_out/manual_clips/d314e2e05da2/simulation/clip_01.mp4",
+        "trace_path": "/home/spot-teleop/clips_out/manual_clips/d314e2e05da2/simulation/clip_01/trace.json",
+        "encoder": "cv2:mp4v",
+        "error": null
+      },
+      "measured_peak_to_peak_cm": [
+        0.1,
+        0.02,
+        0.2
+      ],
+      "validation": {
+        "stage": "02_inclinar_dedos",
+        "source_rgb": 474,
+        "paired_frames": 463,
+        "position_fraction": 0.9697624190064795,
+        "orientation_fraction": 0.8099352051835853,
+        "original_emitted_orientation_fraction": 0.381,
+        "original_hand_hz": 3.66,
+        "capture_pair_hz": 16.263999202185854,
+        "original_real_span_cm": [
+          19.2,
+          5.64,
+          16.07
+        ],
+        "profile": "pitch",
+        "job_id": "d314e2e05da2",
+        "simulation_solver": "GPU IK / wrist-only; GPU PhysX measured feedback",
+        "active_status_polls": 421,
+        "paused_status_polls": 0,
+        "simulated_span_cm": [
+          0.098,
+          0.016,
+          0.204
+        ],
+        "off_axis_max_cm": 0.2044687795639044,
+        "isolated_translation_pass": true,
+        "orientation_excursion_deg": 55.31917768724027,
+        "feasible_fraction": 1.0,
+        "gripper_measured_width_range_mm": [
+          79.999,
+          80.0
+        ],
+        "gripper_transitions": [
+          {
+            "t": -1.053438425064087,
+            "command": "Open_Palm"
+          }
+        ],
+        "physics_hz_range": [
+          28.9,
+          55.0
+        ],
+        "robot_series_example": [
+          {
+            "t": 1793371436.200931,
+            "dx_cm": 0.0,
+            "dy_cm": 0.0,
+            "dz_cm": 0.0,
+            "dr_cm": 0.0,
+            "yaw_deg": 0.0,
+            "roll_deg": 0.0,
+            "review_angle_deg": 0.0
+          }
+        ]
+      },
+      "follower": "GPU IK / measured GPU PhysX"
+    },
+    {
+      "source_id": "zed_protocol_20261030_03_virar_palma_reprocessed_v1",
+      "stage": "03_virar_palma",
+      "label": "ZED · Virar a palma para os lados",
+      "status": "done",
+      "expected": "Virar palma → só giro lateral da garra",
+      "profile": "yaw",
+      "tracking": {
+        "frames": 316,
+        "position_valid": 315,
+        "orientation_valid": 262
+      },
+      "clip_id": "57009bb76326",
+      "job_id": "ab95fd812675",
+      "start_s": 1.2555797100067139,
+      "end_s": 15.822225332260132,
+      "url": "/exports/ab95fd812675/clip.mp4",
+      "manifest_url": "/exports/ab95fd812675/simulation/summary.json",
+      "metrics": {
+        "id": 1,
+        "clip_name": "clip_01",
+        "label": "ZED RGBD · ZED · Virar a palma para os lados",
+        "start_s": 1.256,
+        "end_s": 15.822,
+        "duration": 14.565999999999999,
+        "active_after_s": 0.558,
+        "planned_hand_delta": {
+          "dx_cm": 13.54497093983802,
+          "dy_cm": 0.9684276566605782,
+          "dz_cm": 15.452789532739777,
+          "roll_deg": 7.221139379933092
+        },
+        "hand_delta": {
+          "dx_cm": 14.37,
+          "dy_cm": 1.21,
+          "dz_cm": 15.84,
+          "roll_deg": 9.0,
+          "review_angle_deg": 28.87
+        },
+        "robot_tcp_delta": {
+          "dx_cm": 0.0,
+          "dy_cm": 0.0,
+          "dz_cm": -0.03,
+          "dr_cm": 0.0,
+          "yaw_deg": 0.0,
+          "roll_deg": 0.01,
+          "review_angle_deg": 31.05
+        },
+        "ratio_robot_hand": {
+          "mapped": {
+            "tcp_dz_over_hand_dx": -0.002,
+            "tcp_dy_over_hand_dy": 0.0,
+            "base_yaw_deg_over_hand_dy_cm": 0.0,
+            "tcp_dr_over_hand_dz": 0.0,
+            "tcp_dx_over_hand_dz": 0.0,
+            "tool_roll_over_hand_roll": 0.001
+          },
+          "cartesian": {
+            "dx_over_dX": 0.0,
+            "dy_over_dY": 0.0,
+            "dz_over_dZ": -0.002,
+            "roll_over_roll": 0.001
+          }
+        },
+        "intended_sign_match": false,
+        "sign_detail": "mixed top axes ['hand_z_to_reach_r', 'hand_x_to_tcp_z']: {'hand_z_to_reach_r': False, 'hand_x_to_tcp_z': True}",
+        "per_axis_sign": {
+          "hand_x_to_tcp_z": true,
+          "hand_y_to_base_yaw": false,
+          "hand_z_to_reach_r": false,
+          "palm_roll_to_tool_roll": true
+        },
+        "mpc_feasible_ratio": 1.0,
+        "operator_frames": 190,
+        "mujoco_frames": 87,
+        "mp4_path": "/home/spot-teleop/clips_out/manual_clips/ab95fd812675/simulation/clip_01.mp4",
+        "trace_path": "/home/spot-teleop/clips_out/manual_clips/ab95fd812675/simulation/clip_01/trace.json",
+        "encoder": "cv2:mp4v",
+        "error": null
+      },
+      "measured_peak_to_peak_cm": [
+        0.02,
+        0.32,
+        0.04
+      ],
+      "validation": {
+        "stage": "03_virar_palma",
+        "source_rgb": 319,
+        "paired_frames": 316,
+        "position_fraction": 0.9968354430379747,
+        "orientation_fraction": 0.8291139240506329,
+        "original_emitted_orientation_fraction": 0.556,
+        "original_hand_hz": 5.06,
+        "capture_pair_hz": 18.692781823706834,
+        "original_real_span_cm": [
+          11.37,
+          10.74,
+          5.36
+        ],
+        "profile": "yaw",
+        "job_id": "ab95fd812675",
+        "simulation_solver": "GPU IK / wrist-only; GPU PhysX measured feedback",
+        "active_status_polls": 252,
+        "paused_status_polls": 0,
+        "simulated_span_cm": [
+          0.015,
+          0.322,
+          0.041
+        ],
+        "off_axis_max_cm": 0.32226846739649756,
+        "isolated_translation_pass": true,
+        "orientation_excursion_deg": 74.97107270867828,
+        "feasible_fraction": 1.0,
+        "gripper_measured_width_range_mm": [
+          80.0,
+          80.181
+        ],
+        "gripper_transitions": [
+          {
+            "t": -0.5582926273345947,
+            "command": "Open_Palm"
+          }
+        ],
+        "physics_hz_range": [
+          30.4,
+          42.4
+        ],
+        "robot_series_example": [
+          {
+            "t": 1793371477.291126,
+            "dx_cm": 0.0,
+            "dy_cm": 0.0,
+            "dz_cm": 0.0,
+            "dr_cm": 0.0,
+            "yaw_deg": 0.0,
+            "roll_deg": 0.0,
+            "review_angle_deg": 0.0
+          }
+        ]
+      },
+      "follower": "GPU IK / measured GPU PhysX"
+    },
+    {
+      "source_id": "zed_protocol_20261030_04_frente_tras_reprocessed_v1",
+      "stage": "04_frente_tras",
+      "label": "ZED · Frente / trás",
+      "status": "done",
+      "expected": "Frente/trás → só altura Y",
+      "profile": "height",
+      "tracking": {
+        "frames": 442,
+        "position_valid": 439,
+        "orientation_valid": 436
+      },
+      "clip_id": "71bb3e81a6df",
+      "job_id": "6351cd8de73e",
+      "start_s": 0,
+      "end_s": 23.635782957077026,
+      "url": "/exports/6351cd8de73e/clip.mp4",
+      "manifest_url": "/exports/6351cd8de73e/simulation/summary.json",
+      "metrics": {
+        "id": 1,
+        "clip_name": "clip_01",
+        "label": "ZED RGBD · ZED · Frente / trás",
+        "start_s": 0.0,
+        "end_s": 23.636,
+        "duration": 23.636,
+        "active_after_s": 0.462,
+        "planned_hand_delta": {
+          "dx_cm": 0.4303321004520244,
+          "dy_cm": 5.9686901527086516,
+          "dz_cm": -16.044301799705277,
+          "roll_deg": -6.308157134679677
+        },
+        "hand_delta": {
+          "dx_cm": -1.68,
+          "dy_cm": 7.55,
+          "dz_cm": -13.41,
+          "roll_deg": -8.51
+        },
+        "robot_tcp_delta": {
+          "dx_cm": -0.04,
+          "dy_cm": 0.0,
+          "dz_cm": -4.47,
+          "dr_cm": -0.04,
+          "yaw_deg": 0.01,
+          "roll_deg": -0.0
+        },
+        "ratio_robot_hand": {
+          "mapped": {
+            "tcp_dz_over_hand_dx": 2.661,
+            "tcp_dy_over_hand_dy": 0.0,
+            "base_yaw_deg_over_hand_dy_cm": 0.001,
+            "tcp_dr_over_hand_dz": 0.003,
+            "tcp_dx_over_hand_dz": 0.003,
+            "tool_roll_over_hand_roll": 0.0
+          },
+          "cartesian": {
+            "dx_over_dX": 0.024,
+            "dy_over_dY": 0.0,
+            "dz_over_dZ": 0.333,
+            "roll_over_roll": 0.0
+          }
+        },
+        "intended_sign_match": true,
+        "sign_detail": "mixed top axes ['hand_z_to_reach_r', 'hand_y_to_base_yaw']: {'hand_z_to_reach_r': True, 'hand_y_to_base_yaw': True}",
+        "per_axis_sign": {
+          "hand_x_to_tcp_z": false,
+          "hand_y_to_base_yaw": true,
+          "hand_z_to_reach_r": true,
+          "palm_roll_to_tool_roll": false
+        },
+        "mpc_feasible_ratio": 1.0,
+        "operator_frames": 291,
+        "mujoco_frames": 134,
+        "mp4_path": "/home/spot-teleop/clips_out/manual_clips/6351cd8de73e/simulation/clip_01.mp4",
+        "trace_path": "/home/spot-teleop/clips_out/manual_clips/6351cd8de73e/simulation/clip_01/trace.json",
+        "encoder": "cv2:mp4v",
+        "error": null
+      },
+      "measured_peak_to_peak_cm": [
+        0.45,
+        0.04,
+        40.0
+      ],
+      "validation": {
+        "stage": "04_frente_tras",
+        "source_rgb": 448,
+        "paired_frames": 442,
+        "position_fraction": 0.9932126696832579,
+        "orientation_fraction": 0.9864253393665159,
+        "original_emitted_orientation_fraction": 0.831,
+        "original_hand_hz": 3.97,
+        "capture_pair_hz": 17.893674812660915,
+        "original_real_span_cm": [
+          15.95,
+          4.25,
+          12.05
+        ],
+        "profile": "height",
+        "job_id": "6351cd8de73e",
+        "simulation_solver": "GPU IK / wrist-only; GPU PhysX measured feedback",
+        "active_status_polls": 404,
+        "paused_status_polls": 0,
+        "simulated_span_cm": [
+          0.449,
+          0.04,
+          39.997
+        ],
+        "off_axis_max_cm": 0.4485178695828651,
+        "isolated_translation_pass": true,
+        "orientation_excursion_deg": 1.3112977764854843,
+        "feasible_fraction": 1.0,
+        "signed_hand_robot_correlation": 0.78,
+        "robot_series_example": [
+          {
+            "t": 1793371255.2832491,
+            "dx_cm": 0.0,
+            "dy_cm": 0.0,
+            "dz_cm": 0.0,
+            "dr_cm": 0.0,
+            "yaw_deg": 0.0,
+            "roll_deg": 0.0
+          }
+        ]
+      },
+      "follower": "GPU IK / measured GPU PhysX"
+    },
+    {
+      "source_id": "zed_protocol_20261030_05_direita_esquerda_reprocessed_v1",
+      "stage": "05_direita_esquerda",
+      "label": "ZED · Direita / esquerda",
+      "status": "done",
+      "expected": "Esquerda/direita → só horizontal X",
+      "profile": "horizontal",
+      "tracking": {
+        "frames": 647,
+        "position_valid": 647,
+        "orientation_valid": 602
+      },
+      "clip_id": "e720fdcf12cc",
+      "job_id": "077e1661e79b",
+      "start_s": 1.1724727153778076,
+      "end_s": 34.12959289550781,
+      "url": "/exports/077e1661e79b/clip.mp4",
+      "manifest_url": "/exports/077e1661e79b/simulation/summary.json",
+      "metrics": {
+        "id": 1,
+        "clip_name": "clip_01",
+        "label": "ZED RGBD · ZED · Direita / esquerda",
+        "start_s": 1.172,
+        "end_s": 34.13,
+        "duration": 32.958000000000006,
+        "active_after_s": 0.533,
+        "planned_hand_delta": {
+          "dx_cm": -13.351755963981304,
+          "dy_cm": 24.549156947809823,
+          "dz_cm": -3.236342020360557,
+          "roll_deg": 28.808022101127445
+        },
+        "hand_delta": {
+          "dx_cm": -12.43,
+          "dy_cm": 29.24,
+          "dz_cm": -2.78,
+          "roll_deg": 30.44
+        },
+        "robot_tcp_delta": {
+          "dx_cm": -0.0,
+          "dy_cm": 20.01,
+          "dz_cm": -0.03,
+          "dr_cm": 5.95,
+          "yaw_deg": 33.1,
+          "roll_deg": -0.01
+        },
+        "ratio_robot_hand": {
+          "mapped": {
+            "tcp_dz_over_hand_dx": 0.002,
+            "tcp_dy_over_hand_dy": 0.684,
+            "base_yaw_deg_over_hand_dy_cm": 1.132,
+            "tcp_dr_over_hand_dz": -2.14,
+            "tcp_dx_over_hand_dz": 0.0,
+            "tool_roll_over_hand_roll": -0.0
+          },
+          "cartesian": {
+            "dx_over_dX": 0.0,
+            "dy_over_dY": 0.684,
+            "dz_over_dZ": 0.011,
+            "roll_over_roll": -0.0
+          }
+        },
+        "intended_sign_match": false,
+        "sign_detail": "mixed top axes ['hand_y_to_base_yaw', 'hand_x_to_tcp_z']: {'hand_y_to_base_yaw': True, 'hand_x_to_tcp_z': False}",
+        "per_axis_sign": {
+          "hand_x_to_tcp_z": false,
+          "hand_y_to_base_yaw": true,
+          "hand_z_to_reach_r": false,
+          "palm_roll_to_tool_roll": false
+        },
+        "mpc_feasible_ratio": 1.0,
+        "operator_frames": 478,
+        "mujoco_frames": 370,
+        "mp4_path": "/home/spot-teleop/clips_out/manual_clips/077e1661e79b/simulation/clip_01.mp4",
+        "trace_path": "/home/spot-teleop/clips_out/manual_clips/077e1661e79b/simulation/clip_01/trace.json",
+        "encoder": "cv2:mp4v",
+        "error": null
+      },
+      "measured_peak_to_peak_cm": [
+        0.33,
+        40.01,
+        0.06
+      ],
+      "validation": {
+        "stage": "05_direita_esquerda",
+        "source_rgb": 658,
+        "paired_frames": 647,
+        "position_fraction": 1.0,
+        "orientation_fraction": 0.9304482225656878,
+        "original_emitted_orientation_fraction": 0.765,
+        "original_hand_hz": 3.5,
+        "capture_pair_hz": 18.395061321230536,
+        "original_real_span_cm": [
+          14.54,
+          20.46,
+          11.65
+        ],
+        "profile": "horizontal",
+        "job_id": "077e1661e79b",
+        "simulation_solver": "GPU IK / wrist-only; GPU PhysX measured feedback",
+        "active_status_polls": 609,
+        "paused_status_polls": 0,
+        "simulated_span_cm": [
+          0.334,
+          40.009,
+          0.063
+        ],
+        "off_axis_max_cm": 0.334033110104498,
+        "isolated_translation_pass": true,
+        "orientation_excursion_deg": 0.8869445951540637,
+        "feasible_fraction": 1.0,
+        "gripper_measured_width_range_mm": [
+          79.978,
+          80.013
+        ],
+        "gripper_transitions": [
+          {
+            "t": -0.5326595306396484,
+            "command": "Open_Palm"
+          }
+        ],
+        "physics_hz_range": [
+          20.9,
+          86.5
+        ],
+        "signed_hand_robot_correlation": 0.934,
+        "robot_series_example": [
+          {
+            "t": 1793371691.2270665,
+            "dx_cm": 0.0,
+            "dy_cm": 0.0,
+            "dz_cm": 0.0,
+            "dr_cm": 0.0,
+            "yaw_deg": 0.0,
+            "roll_deg": 0.0
+          }
+        ]
+      },
+      "follower": "GPU IK / measured GPU PhysX"
+    },
+    {
+      "source_id": "zed_protocol_20261030_05_direita_esquerda_2_reprocessed_v1",
+      "stage": "05_direita_esquerda_2",
+      "label": "ZED · Direita / esquerda",
+      "status": "done",
+      "expected": "Esquerda/direita → só horizontal X",
+      "profile": "horizontal",
+      "tracking": {
+        "frames": 572,
+        "position_valid": 565,
+        "orientation_valid": 530
+      },
+      "clip_id": "4b8e35a03105",
+      "job_id": "8b53f1c33018",
+      "start_s": 2.564711093902588,
+      "end_s": 30.639593839645386,
+      "url": "/exports/8b53f1c33018/clip.mp4",
+      "manifest_url": "/exports/8b53f1c33018/simulation/summary.json",
+      "metrics": {
+        "id": 1,
+        "clip_name": "clip_01",
+        "label": "ZED RGBD · ZED · Direita / esquerda",
+        "start_s": 2.565,
+        "end_s": 30.64,
+        "duration": 28.075,
+        "active_after_s": 1.346,
+        "planned_hand_delta": {
+          "dx_cm": 41.66022071842652,
+          "dy_cm": -27.38727856833053,
+          "dz_cm": -3.732025849906383,
+          "roll_deg": -0.32129786561148677
+        },
+        "hand_delta": {
+          "dx_cm": 43.15,
+          "dy_cm": -26.75,
+          "dz_cm": -4.82,
+          "roll_deg": -1.15
+        },
+        "robot_tcp_delta": {
+          "dx_cm": 0.0,
+          "dy_cm": -20.0,
+          "dz_cm": -0.03,
+          "dr_cm": 5.94,
+          "yaw_deg": -33.09,
+          "roll_deg": 0.01
+        },
+        "ratio_robot_hand": {
+          "mapped": {
+            "tcp_dz_over_hand_dx": -0.001,
+            "tcp_dy_over_hand_dy": 0.748,
+            "base_yaw_deg_over_hand_dy_cm": 1.237,
+            "tcp_dr_over_hand_dz": -1.232,
+            "tcp_dx_over_hand_dz": -0.0,
+            "tool_roll_over_hand_roll": null
+          },
+          "cartesian": {
+            "dx_over_dX": 0.0,
+            "dy_over_dY": 0.748,
+            "dz_over_dZ": 0.006,
+            "roll_over_roll": null
+          }
+        },
+        "intended_sign_match": true,
+        "sign_detail": "mixed top axes ['hand_x_to_tcp_z', 'hand_y_to_base_yaw']: {'hand_x_to_tcp_z': True, 'hand_y_to_base_yaw': True}",
+        "per_axis_sign": {
+          "hand_x_to_tcp_z": true,
+          "hand_y_to_base_yaw": true,
+          "hand_z_to_reach_r": false,
+          "palm_roll_to_tool_roll": null
+        },
+        "mpc_feasible_ratio": 1.0,
+        "operator_frames": 319,
+        "mujoco_frames": 150,
+        "mp4_path": "/home/spot-teleop/clips_out/manual_clips/8b53f1c33018/simulation/clip_01.mp4",
+        "trace_path": "/home/spot-teleop/clips_out/manual_clips/8b53f1c33018/simulation/clip_01/trace.json",
+        "encoder": "cv2:mp4v",
+        "error": null
+      },
+      "measured_peak_to_peak_cm": [
+        0.33,
+        40.01,
+        0.06
+      ],
+      "validation": {
+        "stage": "05_direita_esquerda_2",
+        "source_rgb": 573,
+        "paired_frames": 572,
+        "position_fraction": 0.9877622377622378,
+        "orientation_fraction": 0.9265734265734266,
+        "original_emitted_orientation_fraction": 0.743,
+        "original_hand_hz": 4.37,
+        "capture_pair_hz": 17.986462105668828,
+        "original_real_span_cm": [
+          7.37,
+          31.84,
+          8.47
+        ],
+        "profile": "horizontal",
+        "job_id": "8b53f1c33018",
+        "simulation_solver": "GPU IK / wrist-only; GPU PhysX measured feedback",
+        "active_status_polls": 467,
+        "paused_status_polls": 0,
+        "simulated_span_cm": [
+          0.33,
+          40.006,
+          0.061
+        ],
+        "off_axis_max_cm": 0.3296517061674997,
+        "isolated_translation_pass": true,
+        "orientation_excursion_deg": 0.932300016753112,
+        "feasible_fraction": 1.0,
+        "signed_hand_robot_correlation": 0.923,
+        "robot_series_example": [
+          {
+            "t": 1793371214.7455776,
+            "dx_cm": 0.0,
+            "dy_cm": 0.0,
+            "dz_cm": 0.0,
+            "dr_cm": 0.0,
+            "yaw_deg": 0.0,
+            "roll_deg": 0.0
+          }
+        ]
+      },
+      "follower": "GPU IK / measured GPU PhysX"
+    },
+    {
+      "source_id": "zed_protocol_20261030_06_cima_baixo_reprocessed_v1",
+      "stage": "06_cima_baixo",
+      "label": "ZED · Cima / baixo",
+      "status": "done",
+      "expected": "Cima/baixo → só alcance Z",
+      "profile": "reach",
+      "tracking": {
+        "frames": 961,
+        "position_valid": 937,
+        "orientation_valid": 888
+      },
+      "clip_id": "b27c4100d716",
+      "job_id": "44e0c6cefdd7",
+      "start_s": 20.694474935531616,
+      "end_s": 52.41095805168152,
+      "url": "/exports/44e0c6cefdd7/clip.mp4",
+      "manifest_url": "/exports/44e0c6cefdd7/simulation/summary.json",
+      "metrics": {
+        "id": 1,
+        "clip_name": "clip_01",
+        "label": "ZED RGBD · ZED · Cima / baixo",
+        "start_s": 20.694,
+        "end_s": 52.411,
+        "duration": 31.717000000000002,
+        "active_after_s": 0.511,
+        "planned_hand_delta": {
+          "dx_cm": 29.828744157423603,
+          "dy_cm": 7.387049754286293,
+          "dz_cm": -5.004389985790378,
+          "roll_deg": 5.0554892076409
+        },
+        "hand_delta": {
+          "dx_cm": 30.44,
+          "dy_cm": 8.62,
+          "dz_cm": -4.76,
+          "roll_deg": 5.28
+        },
+        "robot_tcp_delta": {
+          "dx_cm": -3.94,
+          "dy_cm": 0.0,
+          "dz_cm": -0.02,
+          "dr_cm": -3.94,
+          "yaw_deg": 0.01,
+          "roll_deg": -0.0
+        },
+        "ratio_robot_hand": {
+          "mapped": {
+            "tcp_dz_over_hand_dx": -0.001,
+            "tcp_dy_over_hand_dy": 0.0,
+            "base_yaw_deg_over_hand_dy_cm": 0.001,
+            "tcp_dr_over_hand_dz": 0.828,
+            "tcp_dx_over_hand_dz": 0.828,
+            "tool_roll_over_hand_roll": -0.0
+          },
+          "cartesian": {
+            "dx_over_dX": -0.129,
+            "dy_over_dY": 0.0,
+            "dz_over_dZ": 0.004,
+            "roll_over_roll": -0.0
+          }
+        },
+        "intended_sign_match": true,
+        "sign_detail": "mixed top axes ['hand_x_to_tcp_z', 'hand_y_to_base_yaw']: {'hand_x_to_tcp_z': True, 'hand_y_to_base_yaw': True}",
+        "per_axis_sign": {
+          "hand_x_to_tcp_z": true,
+          "hand_y_to_base_yaw": true,
+          "hand_z_to_reach_r": true,
+          "palm_roll_to_tool_roll": false
+        },
+        "mpc_feasible_ratio": 1.0,
+        "operator_frames": 350,
+        "mujoco_frames": 174,
+        "mp4_path": "/home/spot-teleop/clips_out/manual_clips/44e0c6cefdd7/simulation/clip_01.mp4",
+        "trace_path": "/home/spot-teleop/clips_out/manual_clips/44e0c6cefdd7/simulation/clip_01/trace.json",
+        "encoder": "cv2:mp4v",
+        "error": null
+      },
+      "measured_peak_to_peak_cm": [
+        38.09,
+        0.1,
+        0.89
+      ],
+      "validation": {
+        "stage": "06_cima_baixo",
+        "source_rgb": 963,
+        "paired_frames": 961,
+        "position_fraction": 0.9750260145681582,
+        "orientation_fraction": 0.9240374609781478,
+        "original_emitted_orientation_fraction": 0.659,
+        "original_hand_hz": 2.95,
+        "capture_pair_hz": 17.950416243255074,
+        "original_real_span_cm": [
+          6.68,
+          4.36,
+          11.85
+        ],
+        "profile": "reach",
+        "job_id": "44e0c6cefdd7",
+        "simulation_solver": "GPU IK / wrist-only; GPU PhysX measured feedback",
+        "active_status_polls": 540,
+        "paused_status_polls": 0,
+        "simulated_span_cm": [
+          38.086,
+          0.102,
+          0.893
+        ],
+        "off_axis_max_cm": 0.8927956819534288,
+        "isolated_translation_pass": true,
+        "orientation_excursion_deg": 1.9363535668926033,
+        "feasible_fraction": 1.0,
+        "signed_hand_robot_correlation": 0.451,
+        "robot_series_example": [
+          {
+            "t": 1793371297.4014392,
+            "dx_cm": 0.0,
+            "dy_cm": 0.0,
+            "dz_cm": 0.0,
+            "dr_cm": 0.0,
+            "yaw_deg": 0.0,
+            "roll_deg": 0.0
+          }
+        ]
+      },
+      "follower": "GPU IK / measured GPU PhysX"
+    },
+    {
+      "source_id": "zed_protocol_20261030_07_abrir_fechar_reprocessed_v1",
+      "stage": "07_abrir_fechar",
+      "label": "ZED · Abrir / fechar",
+      "status": "done",
+      "expected": "Abrir/fechar → só garra",
+      "attempts": [
+        {
+          "source_id": "zed_protocol_20261030_07_abrir_fechar_reprocessed_v1",
+          "stage": "07_abrir_fechar",
+          "label": "ZED · Abrir / fechar",
+          "status": "done",
+          "expected": "Abrir/fechar → só garra",
+          "profile": "gripper",
+          "tracking": {
+            "frames": 590,
+            "position_valid": 583,
+            "orientation_valid": 582
+          },
+          "clip_id": "0831779f613b",
+          "job_id": "a1021c19df3f",
+          "start_s": 4.458984851837158,
+          "end_s": 31.073124170303345,
+          "url": "/exports/a1021c19df3f/clip.mp4",
+          "manifest_url": "/exports/a1021c19df3f/simulation/summary.json",
+          "metrics": {
+            "id": 1,
+            "clip_name": "clip_01",
+            "label": "ZED RGBD · ZED · Abrir / fechar",
+            "start_s": 4.459,
+            "end_s": 31.073,
+            "duration": 26.614,
+            "active_after_s": 0.914,
+            "planned_hand_delta": {
+              "dx_cm": 11.024143139728004,
+              "dy_cm": -8.00763260565886,
+              "dz_cm": 0.7441667992605677,
+              "roll_deg": -15.219413967818708
+            },
+            "hand_delta": {
+              "dx_cm": 17.23,
+              "dy_cm": -6.34,
+              "dz_cm": 2.39,
+              "roll_deg": -14.18
+            },
+            "robot_tcp_delta": {
+              "dx_cm": 0.0,
+              "dy_cm": 0.0,
+              "dz_cm": -0.03,
+              "dr_cm": 0.0,
+              "yaw_deg": 0.0,
+              "roll_deg": -0.0
+            },
+            "ratio_robot_hand": {
+              "mapped": {
+                "tcp_dz_over_hand_dx": -0.002,
+                "tcp_dy_over_hand_dy": -0.0,
+                "base_yaw_deg_over_hand_dy_cm": -0.0,
+                "tcp_dr_over_hand_dz": 0.0,
+                "tcp_dx_over_hand_dz": 0.0,
+                "tool_roll_over_hand_roll": 0.0
+              },
+              "cartesian": {
+                "dx_over_dX": 0.0,
+                "dy_over_dY": -0.0,
+                "dz_over_dZ": -0.013,
+                "roll_over_roll": 0.0
+              }
+            },
+            "intended_sign_match": false,
+            "sign_detail": "mixed top axes ['hand_x_to_tcp_z', 'hand_y_to_base_yaw']: {'hand_x_to_tcp_z': True, 'hand_y_to_base_yaw': False}",
+            "per_axis_sign": {
+              "hand_x_to_tcp_z": true,
+              "hand_y_to_base_yaw": false,
+              "hand_z_to_reach_r": false,
+              "palm_roll_to_tool_roll": false
+            },
+            "mpc_feasible_ratio": 1.0,
+            "operator_frames": 364,
+            "mujoco_frames": 301,
+            "mp4_path": "/home/spot-teleop/clips_out/manual_clips/a1021c19df3f/simulation/clip_01.mp4",
+            "trace_path": "/home/spot-teleop/clips_out/manual_clips/a1021c19df3f/simulation/clip_01/trace.json",
+            "encoder": "cv2:mp4v",
+            "error": null
+          },
+          "measured_peak_to_peak_cm": [
+            0.0,
+            0.0,
+            0.01
+          ]
+        }
+      ],
+      "profile": "gripper",
+      "tracking": {
+        "frames": 590,
+        "position_valid": 583,
+        "orientation_valid": 582
+      },
+      "clip_id": "49c18f87ab9f",
+      "job_id": "a55329f5bb07",
+      "start_s": 4.458984851837158,
+      "end_s": 31.073124170303345,
+      "url": "/exports/a55329f5bb07/clip.mp4",
+      "manifest_url": "/exports/a55329f5bb07/simulation/summary.json",
+      "metrics": {
+        "id": 1,
+        "clip_name": "clip_01",
+        "label": "ZED RGBD · ZED · Abrir / fechar",
+        "start_s": 4.459,
+        "end_s": 31.073,
+        "duration": 26.614,
+        "active_after_s": 0.905,
+        "planned_hand_delta": {
+          "dx_cm": 11.024143139728004,
+          "dy_cm": -8.00763260565886,
+          "dz_cm": 0.7441667992605677,
+          "roll_deg": -15.219413967818708
+        },
+        "hand_delta": {
+          "dx_cm": 17.23,
+          "dy_cm": -6.34,
+          "dz_cm": 2.39,
+          "roll_deg": -14.18
+        },
+        "robot_tcp_delta": {
+          "dx_cm": 0.0,
+          "dy_cm": 0.0,
+          "dz_cm": -0.03,
+          "dr_cm": 0.0,
+          "yaw_deg": 0.0,
+          "roll_deg": -0.0
+        },
+        "ratio_robot_hand": {
+          "mapped": {
+            "tcp_dz_over_hand_dx": -0.002,
+            "tcp_dy_over_hand_dy": -0.0,
+            "base_yaw_deg_over_hand_dy_cm": -0.0,
+            "tcp_dr_over_hand_dz": 0.0,
+            "tcp_dx_over_hand_dz": 0.0,
+            "tool_roll_over_hand_roll": 0.0
+          },
+          "cartesian": {
+            "dx_over_dX": 0.0,
+            "dy_over_dY": -0.0,
+            "dz_over_dZ": -0.013,
+            "roll_over_roll": 0.0
+          }
+        },
+        "intended_sign_match": false,
+        "sign_detail": "mixed top axes ['hand_x_to_tcp_z', 'hand_y_to_base_yaw']: {'hand_x_to_tcp_z': True, 'hand_y_to_base_yaw': False}",
+        "per_axis_sign": {
+          "hand_x_to_tcp_z": true,
+          "hand_y_to_base_yaw": false,
+          "hand_z_to_reach_r": false,
+          "palm_roll_to_tool_roll": false
+        },
+        "mpc_feasible_ratio": 1.0,
+        "operator_frames": 335,
+        "mujoco_frames": 287,
+        "mp4_path": "/home/spot-teleop/clips_out/manual_clips/a55329f5bb07/simulation/clip_01.mp4",
+        "trace_path": "/home/spot-teleop/clips_out/manual_clips/a55329f5bb07/simulation/clip_01/trace.json",
+        "encoder": "cv2:mp4v",
+        "error": null
+      },
+      "measured_peak_to_peak_cm": [
+        0.0,
+        0.0,
+        0.01
+      ],
+      "validation": {
+        "stage": "07_abrir_fechar",
+        "source_rgb": 591,
+        "paired_frames": 590,
+        "position_fraction": 0.988135593220339,
+        "orientation_fraction": 0.9864406779661017,
+        "original_emitted_orientation_fraction": 0.8,
+        "original_hand_hz": 2.93,
+        "capture_pair_hz": 18.359624782792412,
+        "original_real_span_cm": [
+          16.6,
+          7.54,
+          9.95
+        ],
+        "profile": "gripper",
+        "job_id": "a55329f5bb07",
+        "simulation_solver": "GPU IK / wrist-only; GPU PhysX measured feedback",
+        "active_status_polls": 475,
+        "paused_status_polls": 0,
+        "simulated_span_cm": [
+          0.002,
+          0.005,
+          0.014
+        ],
+        "off_axis_max_cm": 0.013670840263368955,
+        "isolated_translation_pass": true,
+        "orientation_excursion_deg": 0.06903599422852645,
+        "feasible_fraction": 1.0,
+        "gripper_measured_width_range_mm": [
+          0.0,
+          80.0
+        ],
+        "gripper_transitions": [
+          {
+            "t": -0.9045195579528809,
+            "command": "Open_Palm"
+          },
+          {
+            "t": 1.3462085723876953,
+            "command": "Closed_Fist"
+          },
+          {
+            "t": 2.363247871398926,
+            "command": "Open_Palm"
+          },
+          {
+            "t": 8.809806108474731,
+            "command": "Closed_Fist"
+          },
+          {
+            "t": 10.20257830619812,
+            "command": "Open_Palm"
+          },
+          {
+            "t": 11.66220235824585,
+            "command": "Closed_Fist"
+          },
+          {
+            "t": 13.400840997695923,
+            "command": "Open_Palm"
+          },
+          {
+            "t": 14.421499013900757,
+            "command": "Closed_Fist"
+          },
+          {
+            "t": 16.380321502685547,
+            "command": "Open_Palm"
+          },
+          {
+            "t": 18.000197887420654,
+            "command": "Closed_Fist"
+          },
+          {
+            "t": 19.581814527511597,
+            "command": "Open_Palm"
+          },
+          {
+            "t": 21.311315774917603,
+            "command": "Closed_Fist"
+          },
+          {
+            "t": 22.50986886024475,
+            "command": "Open_Palm"
+          },
+          {
+            "t": 24.174875020980835,
+            "command": "Closed_Fist"
+          }
+        ],
+        "physics_hz_range": [
+          33.2,
+          95.5
+        ],
+        "robot_series_example": [
+          {
+            "t": 1793371735.5282984,
+            "dx_cm": 0.0,
+            "dy_cm": 0.0,
+            "dz_cm": 0.0,
+            "dr_cm": 0.0,
+            "yaw_deg": 0.0,
+            "roll_deg": 0.0
+          }
+        ]
+      },
+      "follower": "joint hold / wrist-only; measured GPU PhysX"
+    },
+    {
+      "source_id": "zed_protocol_20261030_08_cruz_reprocessed_v1",
+      "stage": "08_cruz",
+      "label": "ZED · Cruz / trajetória composta",
+      "status": "done",
+      "expected": "Cruz → horizontal X e alcance Z",
+      "profile": "cross",
+      "tracking": {
+        "frames": 695,
+        "position_valid": 688,
+        "orientation_valid": 625
+      },
+      "clip_id": "73dca44be014",
+      "job_id": "32c761960508",
+      "start_s": 0,
+      "end_s": 36.700082302093506,
+      "url": "/exports/32c761960508/clip.mp4",
+      "manifest_url": "/exports/32c761960508/simulation/summary.json",
+      "metrics": {
+        "id": 1,
+        "clip_name": "clip_01",
+        "label": "ZED RGBD · ZED · Cruz / trajetória composta",
+        "start_s": 0.0,
+        "end_s": 36.7,
+        "duration": 36.7,
+        "active_after_s": 0.449,
+        "planned_hand_delta": {
+          "dx_cm": -16.08849355335378,
+          "dy_cm": 20.952339930692965,
+          "dz_cm": 4.3555639147331275,
+          "roll_deg": 15.173250667134116
+        },
+        "hand_delta": {
+          "dx_cm": -15.84,
+          "dy_cm": 19.97,
+          "dz_cm": 4.7,
+          "roll_deg": 15.57
+        },
+        "robot_tcp_delta": {
+          "dx_cm": 3.79,
+          "dy_cm": 19.23,
+          "dz_cm": -0.03,
+          "dr_cm": 8.79,
+          "yaw_deg": 29.15,
+          "roll_deg": 0.02
+        },
+        "ratio_robot_hand": {
+          "mapped": {
+            "tcp_dz_over_hand_dx": 0.002,
+            "tcp_dy_over_hand_dy": 0.963,
+            "base_yaw_deg_over_hand_dy_cm": 1.46,
+            "tcp_dr_over_hand_dz": 1.87,
+            "tcp_dx_over_hand_dz": 0.806,
+            "tool_roll_over_hand_roll": 0.001
+          },
+          "cartesian": {
+            "dx_over_dX": -0.239,
+            "dy_over_dY": 0.963,
+            "dz_over_dZ": -0.006,
+            "roll_over_roll": 0.001
+          }
+        },
+        "intended_sign_match": false,
+        "sign_detail": "mixed top axes ['hand_y_to_base_yaw', 'hand_x_to_tcp_z']: {'hand_y_to_base_yaw': True, 'hand_x_to_tcp_z': False}",
+        "per_axis_sign": {
+          "hand_x_to_tcp_z": false,
+          "hand_y_to_base_yaw": true,
+          "hand_z_to_reach_r": true,
+          "palm_roll_to_tool_roll": true
+        },
+        "mpc_feasible_ratio": 1.0,
+        "operator_frames": 422,
+        "mujoco_frames": 198,
+        "mp4_path": "/home/spot-teleop/clips_out/manual_clips/32c761960508/simulation/clip_01.mp4",
+        "trace_path": "/home/spot-teleop/clips_out/manual_clips/32c761960508/simulation/clip_01/trace.json",
+        "encoder": "cv2:mp4v",
+        "error": null
+      },
+      "measured_peak_to_peak_cm": [
+        28.09,
+        38.81,
+        0.87
+      ],
+      "validation": {
+        "stage": "08_cruz",
+        "source_rgb": 707,
+        "paired_frames": 695,
+        "position_fraction": 0.9899280575539569,
+        "orientation_fraction": 0.8992805755395683,
+        "original_emitted_orientation_fraction": 0.614,
+        "original_hand_hz": 3.01,
+        "capture_pair_hz": 18.36906636537521,
+        "original_real_span_cm": [
+          19.96,
+          36.82,
+          22.9
+        ],
+        "profile": "cross",
+        "job_id": "32c761960508",
+        "simulation_solver": "GPU IK / wrist-only; GPU PhysX measured feedback",
+        "active_status_polls": 634,
+        "paused_status_polls": 0,
+        "simulated_span_cm": [
+          28.088,
+          38.815,
+          0.866
+        ],
+        "off_axis_max_cm": 0.8660773324966453,
+        "isolated_translation_pass": true,
+        "orientation_excursion_deg": 3.202908354619611,
+        "feasible_fraction": 1.0,
+        "gripper_measured_width_range_mm": [
+          79.974,
+          80.023
+        ],
+        "gripper_transitions": [
+          {
+            "t": -0.44929075241088867,
+            "command": "Open_Palm"
+          }
+        ],
+        "physics_hz_range": [
+          29.9,
+          41.6
+        ],
+        "robot_series_example": [
+          {
+            "t": 1793371534.282725,
+            "dx_cm": 0.0,
+            "dy_cm": 0.0,
+            "dz_cm": 0.0,
+            "dr_cm": 0.0,
+            "yaw_deg": 0.0,
+            "roll_deg": 0.0
+          }
+        ]
+      },
+      "follower": "GPU IK / measured GPU PhysX"
+    },
+    {
+      "source_id": "zed_protocol_20261030_09_gesto_em_movimento_reprocessed_v1",
+      "stage": "09_gesto_em_movimento",
+      "label": "ZED · Abrir / fechar em movimento",
+      "status": "done",
+      "expected": "Translação e garra; orientação fixa · diagnóstico parcial: exercício real interrompido antes de enviar alvos",
+      "profile": "translation",
+      "tracking": {
+        "frames": 105,
+        "position_valid": 105,
+        "orientation_valid": 105
+      },
+      "clip_id": "3f4d62958e3b",
+      "job_id": "c62a3eec462f",
+      "start_s": 2.2722933292388916,
+      "end_s": 5.375852584838867,
+      "url": "/exports/c62a3eec462f/clip.mp4",
+      "manifest_url": "/exports/c62a3eec462f/simulation/summary.json",
+      "metrics": {
+        "id": 1,
+        "clip_name": "clip_01",
+        "label": "ZED RGBD · ZED · Abrir / fechar em movimento",
+        "start_s": 2.272,
+        "end_s": 5.376,
+        "duration": 3.1040000000000005,
+        "active_after_s": 0.52,
+        "planned_hand_delta": {
+          "dx_cm": 3.381123151615273,
+          "dy_cm": -6.198523391217775,
+          "dz_cm": 0.3027112395610383,
+          "roll_deg": -2.466509262037414
+        },
+        "hand_delta": {
+          "dx_cm": 3.22,
+          "dy_cm": -2.87,
+          "dz_cm": 0.22,
+          "roll_deg": 0.24
+        },
+        "robot_tcp_delta": {
+          "dx_cm": -0.0,
+          "dy_cm": -2.36,
+          "dz_cm": -3.06,
+          "dr_cm": -0.76,
+          "yaw_deg": -3.4,
+          "roll_deg": -0.01
+        },
+        "ratio_robot_hand": {
+          "mapped": {
+            "tcp_dz_over_hand_dx": -0.95,
+            "tcp_dy_over_hand_dy": 0.822,
+            "base_yaw_deg_over_hand_dy_cm": 1.185,
+            "tcp_dr_over_hand_dz": null,
+            "tcp_dx_over_hand_dz": null,
+            "tool_roll_over_hand_roll": null
+          },
+          "cartesian": {
+            "dx_over_dX": -0.0,
+            "dy_over_dY": 0.822,
+            "dz_over_dZ": null,
+            "roll_over_roll": null
+          }
+        },
+        "intended_sign_match": true,
+        "sign_detail": "mixed top axes ['hand_x_to_tcp_z', 'hand_y_to_base_yaw']: {'hand_x_to_tcp_z': True, 'hand_y_to_base_yaw': True}",
+        "per_axis_sign": {
+          "hand_x_to_tcp_z": true,
+          "hand_y_to_base_yaw": true,
+          "hand_z_to_reach_r": null,
+          "palm_roll_to_tool_roll": null
+        },
+        "mpc_feasible_ratio": 1.0,
+        "operator_frames": 40,
+        "mujoco_frames": 28,
+        "mp4_path": "/home/spot-teleop/clips_out/manual_clips/c62a3eec462f/simulation/clip_01.mp4",
+        "trace_path": "/home/spot-teleop/clips_out/manual_clips/c62a3eec462f/simulation/clip_01/trace.json",
+        "encoder": "cv2:mp4v",
+        "error": null
+      },
+      "measured_peak_to_peak_cm": [
+        0.34,
+        0.55,
+        1.64
+      ],
+      "validation": {
+        "stage": "09_gesto_em_movimento",
+        "source_rgb": 107,
+        "paired_frames": 105,
+        "position_fraction": 1.0,
+        "orientation_fraction": 1.0,
+        "original_emitted_orientation_fraction": null,
+        "original_hand_hz": 2.8,
+        "capture_pair_hz": 16.406073122024154,
+        "original_real_span_cm": [
+          0.0,
+          0.0,
+          0.01
+        ],
+        "profile": "translation",
+        "job_id": "c62a3eec462f",
+        "simulation_solver": "GPU IK / wrist-only; GPU PhysX measured feedback",
+        "active_status_polls": 52,
+        "paused_status_polls": 0,
+        "simulated_span_cm": [
+          0.343,
+          0.551,
+          1.639
+        ],
+        "off_axis_max_cm": null,
+        "isolated_translation_pass": null,
+        "orientation_excursion_deg": 0.040559001977678345,
+        "feasible_fraction": 1.0,
+        "gripper_measured_width_range_mm": [
+          79.993,
+          80.218
+        ],
+        "gripper_transitions": [
+          {
+            "t": -0.5195183753967285,
+            "command": "Open_Palm"
+          }
+        ],
+        "physics_hz_range": [
+          32.4,
+          35.4
+        ],
+        "robot_series_example": [
+          {
+            "t": 1793371586.7733595,
+            "dx_cm": 0.0,
+            "dy_cm": 0.0,
+            "dz_cm": 0.0,
+            "dr_cm": 0.0,
+            "yaw_deg": 0.0,
+            "roll_deg": 0.0
+          }
+        ]
+      },
+      "follower": "GPU IK / measured GPU PhysX"
+    },
+    {
+      "source_id": "zed_protocol_20261030_10_perda_retorno_reprocessed_v1",
+      "stage": "10_perda_retorno",
+      "label": "ZED · Sair do quadro e retornar",
+      "status": "done",
+      "expected": "Translação e garra; orientação fixa · retorno não foi gravado completo; punho do braço ainda visível pode manter translação",
+      "profile": "translation",
+      "tracking": {
+        "frames": 218,
+        "position_valid": 211,
+        "orientation_valid": 189
+      },
+      "clip_id": "7b58affb892c",
+      "job_id": "464befde0841",
+      "start_s": 1.330557107925415,
+      "end_s": 11.754026174545288,
+      "url": "/exports/464befde0841/clip.mp4",
+      "manifest_url": "/exports/464befde0841/simulation/summary.json",
+      "metrics": {
+        "id": 1,
+        "clip_name": "clip_01",
+        "label": "ZED RGBD · ZED · Sair do quadro e retornar",
+        "start_s": 1.331,
+        "end_s": 11.754,
+        "duration": 10.423,
+        "active_after_s": 0.636,
+        "planned_hand_delta": {
+          "dx_cm": 10.117549397528425,
+          "dy_cm": -14.704761162557459,
+          "dz_cm": 3.9649152415287103,
+          "roll_deg": -13.406083155399854
+        },
+        "hand_delta": {
+          "dx_cm": 10.87,
+          "dy_cm": -13.14,
+          "dz_cm": 4.68,
+          "roll_deg": -10.34
+        },
+        "robot_tcp_delta": {
+          "dx_cm": 3.88,
+          "dy_cm": -12.33,
+          "dz_cm": -10.1,
+          "dr_cm": 6.01,
+          "yaw_deg": -19.63,
+          "roll_deg": 0.01
+        },
+        "ratio_robot_hand": {
+          "mapped": {
+            "tcp_dz_over_hand_dx": -0.929,
+            "tcp_dy_over_hand_dy": 0.938,
+            "base_yaw_deg_over_hand_dy_cm": 1.494,
+            "tcp_dr_over_hand_dz": 1.284,
+            "tcp_dx_over_hand_dz": 0.829,
+            "tool_roll_over_hand_roll": -0.001
+          },
+          "cartesian": {
+            "dx_over_dX": 0.357,
+            "dy_over_dY": 0.938,
+            "dz_over_dZ": -2.158,
+            "roll_over_roll": -0.001
+          }
+        },
+        "intended_sign_match": true,
+        "sign_detail": "mixed top axes ['hand_y_to_base_yaw', 'hand_x_to_tcp_z']: {'hand_y_to_base_yaw': True, 'hand_x_to_tcp_z': True}",
+        "per_axis_sign": {
+          "hand_x_to_tcp_z": true,
+          "hand_y_to_base_yaw": true,
+          "hand_z_to_reach_r": true,
+          "palm_roll_to_tool_roll": false
+        },
+        "mpc_feasible_ratio": 1.0,
+        "operator_frames": 107,
+        "mujoco_frames": 66,
+        "mp4_path": "/home/spot-teleop/clips_out/manual_clips/464befde0841/simulation/clip_01.mp4",
+        "trace_path": "/home/spot-teleop/clips_out/manual_clips/464befde0841/simulation/clip_01/trace.json",
+        "encoder": "cv2:mp4v",
+        "error": null
+      },
+      "measured_peak_to_peak_cm": [
+        24.63,
+        20.02,
+        17.54
+      ],
+      "validation": {
+        "stage": "10_perda_retorno",
+        "source_rgb": 219,
+        "paired_frames": 218,
+        "position_fraction": 0.9678899082568807,
+        "orientation_fraction": 0.8669724770642202,
+        "original_emitted_orientation_fraction": 0.538,
+        "original_hand_hz": 2.25,
+        "capture_pair_hz": 16.854349121760844,
+        "original_real_span_cm": [
+          2.85,
+          6.86,
+          0.74
+        ],
+        "profile": "translation",
+        "job_id": "464befde0841",
+        "simulation_solver": "GPU IK / wrist-only; GPU PhysX measured feedback",
+        "active_status_polls": 174,
+        "paused_status_polls": 0,
+        "simulated_span_cm": [
+          24.634,
+          20.016,
+          17.544
+        ],
+        "off_axis_max_cm": null,
+        "isolated_translation_pass": null,
+        "orientation_excursion_deg": 1.3261121799412274,
+        "feasible_fraction": 1.0,
+        "gripper_measured_width_range_mm": [
+          79.984,
+          80.0
+        ],
+        "gripper_transitions": [
+          {
+            "t": -0.6364285945892334,
+            "command": "Open_Palm"
+          }
+        ],
+        "physics_hz_range": [
+          27.1,
+          36.2
+        ],
+        "robot_series_example": [
+          {
+            "t": 1793371598.6503377,
+            "dx_cm": 0.0,
+            "dy_cm": 0.0,
+            "dz_cm": 0.0,
+            "dr_cm": 0.0,
+            "yaw_deg": 0.0,
+            "roll_deg": 0.0
+          }
+        ]
+      },
+      "follower": "GPU IK / measured GPU PhysX"
+    },
+    {
+      "source_id": "zed_protocol_20261030_11_distancias_reprocessed_v1",
+      "stage": "11_distancias",
+      "label": "ZED · Perto / médio / longe",
+      "status": "done",
+      "expected": "Translação e garra; orientação fixa · replay das imagens; esta etapa não engatou no robô real",
+      "profile": "translation",
+      "tracking": {
+        "frames": 890,
+        "position_valid": 868,
+        "orientation_valid": 803
+      },
+      "clip_id": "42220950d108",
+      "job_id": "fbb64625b066",
+      "start_s": 0,
+      "end_s": 44.454023122787476,
+      "url": "/exports/fbb64625b066/clip.mp4",
+      "manifest_url": "/exports/fbb64625b066/simulation/summary.json",
+      "metrics": {
+        "id": 1,
+        "clip_name": "clip_01",
+        "label": "ZED RGBD · ZED · Perto / médio / longe",
+        "start_s": 0.0,
+        "end_s": 44.454,
+        "duration": 44.454,
+        "active_after_s": 2.404,
+        "planned_hand_delta": {
+          "dx_cm": 14.248021531305355,
+          "dy_cm": -12.507980749457042,
+          "dz_cm": -68.11367868094813,
+          "roll_deg": -37.95990979005617
+        },
+        "hand_delta": {
+          "dx_cm": -21.87,
+          "dy_cm": -16.82,
+          "dz_cm": -69.79,
+          "roll_deg": -33.94
+        },
+        "robot_tcp_delta": {
+          "dx_cm": -19.99,
+          "dy_cm": -16.02,
+          "dz_cm": 19.99,
+          "dr_cm": -11.43,
+          "yaw_deg": -56.24,
+          "roll_deg": -0.0
+        },
+        "ratio_robot_hand": {
+          "mapped": {
+            "tcp_dz_over_hand_dx": -0.914,
+            "tcp_dy_over_hand_dy": 0.952,
+            "base_yaw_deg_over_hand_dy_cm": 3.344,
+            "tcp_dr_over_hand_dz": 0.164,
+            "tcp_dx_over_hand_dz": 0.286,
+            "tool_roll_over_hand_roll": 0.0
+          },
+          "cartesian": {
+            "dx_over_dX": 0.914,
+            "dy_over_dY": 0.952,
+            "dz_over_dZ": -0.286,
+            "roll_over_roll": 0.0
+          }
+        },
+        "intended_sign_match": true,
+        "sign_detail": "mixed top axes ['hand_z_to_reach_r', 'hand_x_to_tcp_z']: {'hand_z_to_reach_r': True, 'hand_x_to_tcp_z': True}",
+        "per_axis_sign": {
+          "hand_x_to_tcp_z": true,
+          "hand_y_to_base_yaw": true,
+          "hand_z_to_reach_r": true,
+          "palm_roll_to_tool_roll": false
+        },
+        "mpc_feasible_ratio": 1.0,
+        "operator_frames": 589,
+        "mujoco_frames": 335,
+        "mp4_path": "/home/spot-teleop/clips_out/manual_clips/fbb64625b066/simulation/clip_01.mp4",
+        "trace_path": "/home/spot-teleop/clips_out/manual_clips/fbb64625b066/simulation/clip_01/trace.json",
+        "encoder": "cv2:mp4v",
+        "error": null
+      },
+      "measured_peak_to_peak_cm": [
+        23.37,
+        27.16,
+        40.13
+      ],
+      "validation": {
+        "stage": "11_distancias",
+        "source_rgb": 901,
+        "paired_frames": 890,
+        "position_fraction": 0.9752808988764045,
+        "orientation_fraction": 0.902247191011236,
+        "original_emitted_orientation_fraction": 0.746,
+        "original_hand_hz": 3.25,
+        "capture_pair_hz": 19.530873252335216,
+        "original_real_span_cm": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "profile": "translation",
+        "job_id": "fbb64625b066",
+        "simulation_solver": "GPU IK / wrist-only; GPU PhysX measured feedback",
+        "active_status_polls": 762,
+        "paused_status_polls": 0,
+        "simulated_span_cm": [
+          23.371,
+          27.164,
+          40.126
+        ],
+        "off_axis_max_cm": null,
+        "isolated_translation_pass": null,
+        "orientation_excursion_deg": 1.8367028086164612,
+        "feasible_fraction": 1.0,
+        "gripper_measured_width_range_mm": [
+          79.98,
+          80.041
+        ],
+        "gripper_transitions": [
+          {
+            "t": -2.4038562774658203,
+            "command": "Open_Palm"
+          }
+        ],
+        "physics_hz_range": [
+          28.2,
+          65.9
+        ],
+        "robot_series_example": [
+          {
+            "t": 1793371624.4551,
+            "dx_cm": 0.0,
+            "dy_cm": 0.0,
+            "dz_cm": 0.0,
+            "dr_cm": 0.0,
+            "yaw_deg": 0.0,
+            "roll_deg": 0.0
+          }
+        ]
+      },
+      "follower": "GPU IK / measured GPU PhysX"
+    }
+  ]
+}

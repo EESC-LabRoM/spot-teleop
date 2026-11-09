@@ -1,0 +1,29 @@
+##
+## Custom MPC override config for Spot Arm
+## Reduces oscillation and improves smoothness
+##
+
+model:
+  horizon: 24
+  state_filter_cfg:
+    filter_coeff:
+      position: 0.2    # Increased from 0.1 for more smoothing
+      velocity: 0.3    # Increased from 0.1 for more damping
+      acceleration: 0.1  # Added acceleration smoothing
+
+cost:
+  # Reduce collision weight slightly to avoid aggressive repulsion
+  primitive_collision_cfg:
+    weight: 50000.0    # Reduced from 100000.0
+    activation_distance: 0.025  # Increased from 0.025
+
+  # Increase smoothness weights
+  bound_cfg:
+    smooth_weight: [0.0, 100.0, 50.0, 0.0]  # Increased acc and jerk smoothing
+
+mppi:
+  step_size_mean: 0.7      # Reduced from 0.9 for smoother updates
+  step_size_cov: 0.05      # Increased from 0.01 for more exploration
+  gamma: 0.95              # Reduced from 0.98 for less aggressive
+  n_iters: 5               # Reduced iterations for less jitter
+  num_particles: 400       # Reduced from 400 to lower GPU load on RTX A2000

@@ -1,0 +1,7 @@
+# spot-isaac-sim:6.0.0 + the system libraries the Stereolabs ZED extension (v5.1.0, Isaac Sim 6.0) needs for its bundled
+# ZED SDK streamer (libsl_zed.so): libpng16, libjpeg8, libturbojpeg, libusb-1.0. libcuda/libnvcuvid/libnvidia-encode come
+# from the NVIDIA runtime (the base image already sets NVIDIA_DRIVER_CAPABILITIES=all).
+#   docker build -t spot-isaac-sim:6.0.0-zed -f Dockerfile.isaac-zed .
+FROM spot-isaac-sim:6.0.0
+RUN apt-get update && apt-get install -y --no-install-recommends libpng16-16t64 libjpeg-turbo8 libturbojpeg libusb-1.0-0 \
+ && rm -rf /var/lib/apt/lists/*

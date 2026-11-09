@@ -1,0 +1,31 @@
+{
+ "T_base_cam": [
+  [
+   -0.6344212889671326,
+   0.7722437381744385,
+   0.03390238434076309,
+   0.7147449254989624
+  ],
+  [
+   0.7724210023880005,
+   0.6350250840187073,
+   -0.010438979603350163,
+   -0.15666329860687256
+  ],
+  [
+   -0.02959030121564865,
+   0.019564200192689896,
+   -0.999370813369751,
+   0.9014236927032471
+  ],
+  [
+   0.0,
+   0.0,
+   0.0,
+   1.0
+  ]
+ ],
+ "description": "zed2 left rectified optical frame in fr3_link0. EasyHeC joint mask+depth on the 8 arm-visible frames PLUS an AprilTag id16 corner term (tag placed via the new zed1 fit). Stable to 3-5 mm / 0.2-0.4 deg across 3 frame subsets; accuracy bounded by zed1 and the unmeasured table height (~1-2 cm). CANDIDATE, NOT PUBLISHED.",
+ "date": "2026-10-31",
+ "method": "hec_live2_1031t.py --tag-json tag_corners.json --min-px 1500, 15 captures live_calib_1031_20261031_110325"
+}

@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<dds xmlns="http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles">
+  <profiles>
+    <transport_descriptors>
+      <transport_descriptor>
+        <transport_id>cable_udp</transport_id>
+        <type>UDPv4</type>
+        <interfaceWhiteList>
+          <address>10.0.0.3</address>
+        </interfaceWhiteList>
+      </transport_descriptor>
+      <transport_descriptor>
+        <transport_id>shm</transport_id>
+        <type>SHM</type>
+      </transport_descriptor>
+    </transport_descriptors>
+    <participant profile_name="cable" is_default_profile="true">
+      <rtps>
+        <userTransports>
+          <transport_id>cable_udp</transport_id>
+          <transport_id>shm</transport_id>
+        </userTransports>
+        <useBuiltinTransports>false</useBuiltinTransports>
+        <builtin>
+          <initialPeersList>
+            <locator>
+              <udpv4>
+                <address>10.0.0.2</address>
+              </udpv4>
+            </locator>
+            <locator>
+              <udpv4>
+                <address>10.0.0.3</address>
+              </udpv4>
+            </locator>
+          </initialPeersList>
+        </builtin>
+      </rtps>
+    </participant>
+  </profiles>
+</dds>

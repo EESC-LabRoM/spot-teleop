@@ -1,0 +1,5 @@
+legs 25, poses 24, duration 339 s (5.6 min), holds 25 x 3.0 s
+peak joint speed 0.250 rad/s (cap 0.25), peak accel 0.27 rad/s2, max step 0.0050 rad
+min distance of any sphere surface to the INFLATED boxes -13.0 cm (0 = at the margin), min height of any sphere surface above the table 12.0 cm
+real gap (buffer 0): to the map surface min -5.5 cm, to the raw depth points min -0.6 cm (margins used: map 8 cm, raw 6 cm)
+joint limit margin: 0.30 rad; start/end = home within 0.0000/0.0000 rad

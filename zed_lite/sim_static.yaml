@@ -1,0 +1,12 @@
+# Overrides for the Isaac Sim virtual ZED on a fixed stand: the stream carries no valid high-rate IMU data, so the
+# visual-inertial positional tracking cannot start (the node aborts); the camera pose comes from a static TF instead.
+/**:
+  ros__parameters:
+    pos_tracking:
+      pos_tracking_enabled: false
+    sensors:
+      publish_imu: false
+      publish_imu_raw: false
+    general:
+      pub_resolution: 'CUSTOM'       # publish 960x540 (from the 1920x1080 grab): lighter for nvblox and DDS
+      pub_downscale_factor: 2.0

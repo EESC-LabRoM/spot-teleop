@@ -1,0 +1,6 @@
+{
+ "starved": false,
+ "pool": 35,
+ "total": 200,
+ "gate": "fixed-tcp_of_pose"
+}

@@ -1,0 +1,61 @@
+{
+ "description": "Real lab camera poses in the FR3 base frame fr3_link0 (ZED 2i left rectified optical frame, OpenCV x right y down z forward), EasyHeC live fit 2026-10-20 (zed1) and EasyHeC + cloud registration onto zed1 (zed2), as published to the lab TF tree 2026-10-20 18:45 (the calibration /nvblox_human and /nvblox_curobo were fed). Replaces the 2026-10-16 fit (kept as real_cams.json.bak_1016). Sim: zed = lab zed1, zed2 = lab zed2.",
+ "zed": {
+  "real_name": "zed1",
+  "T_base_cam": [
+   [
+    0.9339392719473588,
+    -0.06053505527553156,
+    0.3522682832689112,
+    0.234700009226799
+   ],
+   [
+    -0.33983952701022857,
+    -0.455773424580338,
+    0.8226662028598081,
+    -0.6140425205230713
+   ],
+   [
+    0.11075437777307819,
+    -0.8880349613213993,
+    -0.44623690487788953,
+    0.6334071159362793
+   ],
+   [
+    0.0,
+    0.0,
+    0.0,
+    1.0
+   ]
+  ]
+ },
+ "zed2": {
+  "real_name": "zed2",
+  "T_base_cam": [
+   [
+    -0.1922596114628456,
+    0.9798191386792698,
+    -0.05468726796951689,
+    0.6459477599882544
+   ],
+   [
+    0.9811143634516368,
+    0.1907101572888408,
+    -0.03231472939320049,
+    0.006052289978794791
+   ],
+   [
+    -0.021233172844535807,
+    -0.05986728142048524,
+    -0.9979804912854131,
+    0.9005983254061469
+   ],
+   [
+    0.0,
+    0.0,
+    0.0,
+    1.0
+   ]
+  ]
+ }
+}

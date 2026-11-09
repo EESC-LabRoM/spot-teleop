@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  RETIRED 2026-11-03: the VM stack now uses default FastDDS transports
+  (multicast discovery like the lab) + 8 MB kernel socket buffers
+  (/etc/sysctl.d/60-dds-cable.conf). Kept for reference.
+
+  Why retired: unicast-only profiles break C++<->Python matching --
+  C++ participants (nvblox) only match multicast-speaking peers, and
+  RELIABLE readers over multicast collapse the lab sender with NACK
+  storms. The working combo is default transports + BE subscriptions
+  for cable topics (see cable_fanin.py) + single-reader fan-in.
+-->
+<dds xmlns="http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles">
+  <profiles>
+    <transport_descriptors>
+      <transport_descriptor>
+        <transport_id>cable_udp</transport_id>
+        <type>UDPv4</type>
+        <interfaceWhiteList>
+          <address>10.0.0.3</address>
+        </interfaceWhiteList>
+        <!-- 720p depth frames are ~2-4 MB bursts; default 212 KB socket
+             buffers drop fragments -> 'sequence size exceeds remaining
+             buffer' and 0 Hz large-image reception. 8 MB holds a full
+             frame burst. Requires net.core.rmem_max/wmem_max >= 8 MB. -->
+        <sendBufferSize>8388608</sendBufferSize>
+        <receiveBufferSize>8388608</receiveBufferSize>
+        <maxMessageSize>65500</maxMessageSize>
+      </transport_descriptor>
+      <transport_descriptor>
+        <transport_id>shm</transport_id>
+        <type>SHM</type>
+      </transport_descriptor>
+    </transport_descriptors>
+    <participant profile_name="cable" is_default_profile="true">
+      <rtps>
+        <userTransports>
+          <transport_id>cable_udp</transport_id>
+          <transport_id>shm</transport_id>
+        </userTransports>
+        <useBuiltinTransports>false</useBuiltinTransports>
+        <builtin>
+          <!-- Multicast SPDP on the cable interface: without it, C++
+               participants (nvblox) never match VM-local Python/Rust
+               participants (one-way unicast/SHM discovery stalls).
+               Discovery-only chatter; bulk data stays unicast. -->
+          <metatrafficMulticastLocatorList>
+            <locator>
+              <udpv4>
+                <address>239.255.0.1</address>
+                <port>9400</port>
+              </udpv4>
+            </locator>
+          </metatrafficMulticastLocatorList>
+          <initialPeersList>
+            <locator>
+              <udpv4>
+                <address>10.0.0.2</address>
+              </udpv4>
+            </locator>
+            <locator>
+              <udpv4>
+                <address>10.0.0.3</address>
+              </udpv4>
+            </locator>
+          </initialPeersList>
+        </builtin>
+      </rtps>
+    </participant>
+  </profiles>
+</dds>

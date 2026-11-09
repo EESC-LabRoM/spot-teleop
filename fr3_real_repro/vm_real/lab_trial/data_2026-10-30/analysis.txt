@@ -1,0 +1,15 @@
+run: 6969 rec rows over 70.0 s; modes ['2']; error flags ['0']; watchdog trips ['0']
+
+HOLD (20 s before the move): hand error to goal mean 1.65 mm max 1.65 mm; hand wander 0.008 mm; joint speed max 3.7 mrad/s
+OUT  (0 -> +5 cm, 3 s): hand error to goal mean 14.7 mm max 27.1 mm (x lag max 22.9 mm); peak hand speed (0.1 s mean) 4.4 cm/s (goal peak 3.1 cm/s); joint tracking err max 9.4 mrad; peak joint speed 0.110 rad/s
+BACK (+5 cm -> 0, 3 s): hand error to goal mean 14.4 mm max 27.2 mm (x lag max 26.8 mm); peak hand speed (0.1 s mean) 4.2 cm/s (goal peak 3.1 cm/s); joint tracking err max 10.6 mrad; peak joint speed 0.124 rad/s
+settle after OUT  (dwell, last 2 s): hand error mean 9.75 mm max 9.76 mm; wander 0.113 mm
+settle after BACK (tail, last 5 s): hand error mean 8.57 mm max 8.87 mm; wander 1.241 mm
+lag: goal passes +2.5 cm at 9.50 s, hand at 10.31 s -> 810 ms behind
+measured joint acceleration during moves (50 ms): p99 0.72 max 1.01 rad/s2 (limit 10)
+
+COMMANDS (cuRobo output, 892 msgs in 27.5 s): rate 32.4 Hz; inter-arrival p50 21.3 p99 117.0 max 140.1 ms; gaps>100 ms: 33
+  step between commands |dq| p99 3.03 max 3.76 mrad (clip backstop 30 mrad); commanded |v| max 0.208 rad/s (cap 1.2); max change of commanded v per command 0.023 rad/s
+  plan time vs wall time: MPC advances 20 ms per step -> at 32.4 Hz the plan runs at 65% of real time
+  fwd_a.log: forwarded 7383 refused 0 accel-limited 0; 'step above max-step' warnings: 0
+  fwd_lab.log: forwarded 7419 refused 0 accel-limited 0; 'step above max-step' warnings: 0

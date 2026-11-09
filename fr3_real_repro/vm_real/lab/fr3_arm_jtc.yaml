@@ -1,0 +1,35 @@
+# Native joint-space controller for the cuRobo path: ros2_controllers JointTrajectoryController on the EFFORT interface
+# (as franka_fr3_moveit_config's fr3_arm_controller), tuned for one-point trajectories streamed by the MPC at ~50 Hz.
+# Gains = our joint bridge's stiffness/damping (the moveit config's 600/30 is 4x stiffer). Safety: a joint more than
+# 0.08 rad (hybrid cuRobo reached 0.044 in Newton, 10-16) from its reference -> the controller holds the measured position (state tolerance); no new point for 0.2 s past
+# the last one -> holds the measured position (cmd_timeout). Torque = P e + D e_dot; gravity is the firmware's.
+#   spawn: ros2 run controller_manager spawner fr3_arm_controller -p fr3_arm_jtc.yaml --inactive
+fr3_arm_controller:
+  ros__parameters:
+    type: joint_trajectory_controller/JointTrajectoryController
+    joints: ['fr3_joint1', 'fr3_joint2', 'fr3_joint3', 'fr3_joint4', 'fr3_joint5', 'fr3_joint6', 'fr3_joint7']
+    command_interfaces: [effort]
+    state_interfaces: [position, velocity]
+    interpolation_method: splines
+    interpolate_from_desired_state: true
+    allow_nonzero_velocity_at_trajectory_end: true
+    allow_partial_joints_goal: false
+    cmd_timeout: 0.2
+    gains:
+      fr3_joint1: { p: 150.0, d: 15.0, i: 0.0, i_clamp: 0.0 }
+      fr3_joint2: { p: 150.0, d: 15.0, i: 0.0, i_clamp: 0.0 }
+      fr3_joint3: { p: 150.0, d: 15.0, i: 0.0, i_clamp: 0.0 }
+      fr3_joint4: { p: 150.0, d: 15.0, i: 0.0, i_clamp: 0.0 }
+      fr3_joint5: { p: 80.0, d: 8.0, i: 0.0, i_clamp: 0.0 }
+      fr3_joint6: { p: 60.0, d: 6.0, i: 0.0, i_clamp: 0.0 }
+      fr3_joint7: { p: 40.0, d: 4.0, i: 0.0, i_clamp: 0.0 }
+    constraints:
+      stopped_velocity_tolerance: 0.01
+      goal_time: 0.0
+      fr3_joint1: { trajectory: 0.08, goal: 0.0 }
+      fr3_joint2: { trajectory: 0.08, goal: 0.0 }
+      fr3_joint3: { trajectory: 0.08, goal: 0.0 }
+      fr3_joint4: { trajectory: 0.08, goal: 0.0 }
+      fr3_joint5: { trajectory: 0.08, goal: 0.0 }
+      fr3_joint6: { trajectory: 0.08, goal: 0.0 }
+      fr3_joint7: { trajectory: 0.08, goal: 0.0 }
