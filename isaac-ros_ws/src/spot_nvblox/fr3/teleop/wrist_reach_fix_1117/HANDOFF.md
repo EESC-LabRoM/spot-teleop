@@ -17,3 +17,17 @@ Final hardware: standard Home OK at23:58:45Z, effort JTC inactive, only state br
 Source and compact evidence are committed; large traces/recordings remain under /home/hipolito/franka_teleop_checks/wrist_reach_fix_1117 and wrist_pick_cycle_1117. Private test harnesses use the lab's /tmp runtime staging and ROS containers; inspect current state and claim resources before any replay. They do not launch themselves. Do not mistake historical profiles in sibling dated directories for this latest profile.
 
 The checked-in hardware probe profile intentionally retains floor z=0.25m and disables auto-grasp. The offline reach comparison used floor0.10m; that lower floor is NOT contact validated or approved for pickup by this test. No live hand consumer is left running.
+
+## Claude lane 1ca94120 addendum (2026-11-18)
+- Ran the offline re-anchor A/B that REANCHOR_AB_1117.md reports. Container: wrist-posture-sim-1117 on GPU1, network none. No robot commands.
+  - Runs: reanchor_g2, reanchor_g15_v15, reanchor_g2_v15, all on take live2330.
+  - Results: `results/reanchor_*_live2330/` and `replay_reanchor_*.log`.
+- Only edit: `candidate/consumer_kernel.py` reads the `PRESERVE_ANCHOR` env var, default 1 = old behaviour. Backup: `candidate/consumer_kernel.py.pre_reanchor`.
+- The Codex lane d3c1ddf1 resumed and owns the live tests, the autonomous grasp, the commit and the Murilo handoff. This lane holds no resources (GPU1 released).
+- Left open: the items in the AUTOMATIC PICKUP NOT VALIDATED paragraph above.
+  - ZED2 paired cloud and calibration with Murilo.
+  - Fresh grasp branches.
+  - Contact height at floor .10.
+  - Physical rotation test.
+  - Live closed-loop check of the gain 2 / vertical 1.5 / re-anchor profile at table height.
+- Commits to spot-teleop: author MHC-CodeSmith, no AI co-author trailer (user rule).
