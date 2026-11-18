@@ -1,0 +1,40 @@
+{
+  "bag": [
+    "/home/spot-teleop/bags/zed_only_20261113T201355Z_01_giro_plano_imagem_2586598/d8/d8_0.mcap",
+    "/home/spot-teleop/bags/zed_only_20261113T201426Z_04_frente_tras_2588637/d8/d8_0.mcap",
+    "/home/spot-teleop/bags/zed_only_20261113T201507Z_05_direita_esquerda_2591408/d8/d8_0.mcap",
+    "/home/spot-teleop/bags/zed_only_20261113T201545Z_06_cima_baixo_2593924/d8/d8_0.mcap",
+    "/home/spot-teleop/bags/zed_only_20261113T201612Z_07_abrir_fechar_2595771/d8/d8_0.mcap",
+    "/home/spot-teleop/bags/zed_only_20261113T201634Z_08_cruz_2597190/d8/d8_0.mcap",
+    "/home/spot-teleop/bags/zed_only_20261113T201717Z_09_gesto_em_movimento_2599811/d8/d8_0.mcap",
+    "/home/spot-teleop/bags/zed_only_20261113T201801Z_12_todos_combinados_2602550/d8/d8_0.mcap"
+  ],
+  "seed_arm_length_m": null,
+  "recorded_duration_s": 60.0,
+  "paired_frames": 6475,
+  "frames_processed": 6388,
+  "late_frames_dropped": 87,
+  "valid_positions": 6031,
+  "diagnostic_reasons": {
+    "Calibrando referencial corporal": 30,
+    "Mostre o braço direito para confirmar o operador após a perda": 86,
+    "Quadro atrasado ou repetido": 116,
+    "confirming reacquisition": 34,
+    "Mão direita 6D rastreada": 5977,
+    "implausible palm size": 6,
+    "RGB/model reprojection inconsistent": 1,
+    "Processamento atrasado; pose descartada": 5,
+    "confirming large rotation": 4,
+    "insufficient current palm depth": 38,
+    "Mão direita não corresponde ao braço calibrado": 9,
+    "palm depth has no consensus": 1,
+    "confirming position reacquisition": 4,
+    "Punho atual · translação ativa, giro mantido": 54,
+    "confirming depth jump": 6,
+    "Mão não detectada: mantenha dedos e punho visíveis acima da mesa": 17
+  },
+  "processing_median_ms": 14.24,
+  "processing_max_ms": 251.97,
+  "wall_elapsed_s": 285.78561674,
+  "note": "network isolated; CPU limited; actual tracker inference; no robot outputs"
+}

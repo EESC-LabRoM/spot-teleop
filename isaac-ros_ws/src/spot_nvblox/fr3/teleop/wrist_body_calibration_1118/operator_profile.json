@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "operator_id": "recorded_operator_20261113",
+  "arm_length_m": 0.5000556543182444,
+  "arm_upper_m": 0.27636708657703096,
+  "arm_forearm_m": 0.22888345879826125,
+  "robot_reach_m": 0.855,
+  "arm_scale": 1.7098096834154837,
+  "donor_bag": "zed_only_20261113T201426Z_04_frente_tras_2588637",
+  "calibrated_at_capture_s": 1794600878.1511827,
+  "valid_arm_observations": 46,
+  "postfit_check_length_m": 0.4606966971455344,
+  "note": "Arm lengths only; body axes and origin must be re-established from fresh landmarks. No robot/camera calibration."
+}

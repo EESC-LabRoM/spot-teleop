@@ -1,0 +1,24 @@
+{
+  "selected": "rgbd_body_safe",
+  "status": "offline checks passed; no live deployment",
+  "gates": {
+    "saved_profile_ready_under_3s": true,
+    "scale_latched": true,
+    "body_axes_latched": true,
+    "heldout_retention_at_least_95pct": true,
+    "updown_forward_excursion_no_more_than_10pct_above_baseline": true,
+    "no_increase_in_hand_equivalent_steps_over_5cm": true,
+    "processing_p95_under_50ms": true
+  },
+  "heldout": {
+    "matched_heldout_frames": 5536,
+    "baseline_valid": 5329,
+    "candidate_valid": 5251,
+    "candidate_valid_when_baseline_valid": 5208,
+    "donor_take": "04",
+    "initial_two_seconds_excluded": true,
+    "retention_vs_baseline": 0.9772940514167762
+  },
+  "updown_forward_range_ratio": 1.0127867600076865,
+  "hardware_executed": false
+}

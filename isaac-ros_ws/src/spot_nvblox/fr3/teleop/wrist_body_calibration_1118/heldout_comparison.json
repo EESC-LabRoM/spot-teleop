@@ -1,0 +1,9 @@
+{
+  "matched_heldout_frames": 5536,
+  "baseline_valid": 5329,
+  "candidate_valid": 5251,
+  "candidate_valid_when_baseline_valid": 5208,
+  "donor_take": "04",
+  "initial_two_seconds_excluded": true,
+  "retention_vs_baseline": 0.9772940514167762
+}

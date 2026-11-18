@@ -1,0 +1,33 @@
+{
+  "scope": "Offline validated candidate only. No live driver, controller, camera or tracker deployment.",
+  "tracker": {
+    "pose_source": "rgbd_body",
+    "calibrate_arm": true,
+    "body_frame": true,
+    "shoulder_mode": "follow",
+    "orientation_output": "full_6d",
+    "calibration_port": 0
+  },
+  "consumer_parameters": {
+    "zed_input_position_gain": 1.0,
+    "zed_scale": 1.0,
+    "zed_vertical_gain": 1.5,
+    "zed_translation_axes": "legacy",
+    "zed_preserve_workspace_anchor": false,
+    "zed_rotation_control": "rate_yaw",
+    "zed_yaw_rate_deg_s": 15.0,
+    "linear_speed": 0.3,
+    "vertical_speed": 0.2,
+    "zed_linear_accel": 0.5
+  },
+  "note": "Tracker already maps measured arm length into FR3 reach. Input divider 1.0 prevents a second normalization. zed_scale is a separate, explicit comfort gain; do not silently reuse fixed-camera divider 1.315. No contact-floor change is authorized by this profile.",
+  "operator_profile_file": "operator_profile.json",
+  "tracker_cli": [
+    "--pose-source",
+    "rgbd_body",
+    "--operator-profile",
+    "operator_profile.json",
+    "--orientation-output",
+    "full_6d"
+  ]
+}
