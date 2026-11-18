@@ -1,0 +1,24 @@
+{
+  "stamp": 1794955436.7159154,
+  "captured_wall": 1794955437.4539163,
+  "n": 2636,
+  "centroid": [
+    0.5932474979968925,
+    -0.24470532139639037,
+    0.07609098525709673
+  ],
+  "bounds": [
+    [
+      0.562789227864033,
+      -0.27299450938323827,
+      0.015686197879804086
+    ],
+    [
+      0.6984459773549297,
+      -0.09730389680680297,
+      0.12194109034084016
+    ]
+  ],
+  "calibration": "existing ZED1, known common error; NOT contact validated",
+  "source": "source-matched PNG mask and robot-filtered depth"
+}

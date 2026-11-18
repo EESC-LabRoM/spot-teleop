@@ -1,0 +1,39 @@
+model:
+  horizon: 24
+  state_filter_cfg:
+    filter_coeff:
+      position: 0.2
+      velocity: 0.3
+      acceleration: 0.1
+cost:
+  pose_cfg:
+    weight:
+    - 200.0
+    - 300.0
+    - 20
+    - 20
+    vec_weight:
+    - 4.0
+    - 4.0
+    - 1.0
+    - 1.0
+    - 1.0
+    - 1.0
+  primitive_collision_cfg:
+    weight: 50000.0
+    activation_distance: 0.05
+  bound_cfg:
+    smooth_weight:
+    - 0.0
+    - 100.0
+    - 50.0
+    - 0.0
+    null_space_weight:
+    - 100.0
+mppi:
+  step_size_mean: 0.7
+  step_size_cov: 0.05
+  sample_mode: MEAN
+  gamma: 0.95
+  n_iters: 5
+  num_particles: 400

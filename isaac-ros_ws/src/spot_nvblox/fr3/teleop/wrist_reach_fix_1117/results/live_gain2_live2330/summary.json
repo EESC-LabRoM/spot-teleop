@@ -1,0 +1,63 @@
+{
+  "mode": "continuous",
+  "take": "live2330",
+  "sim_seconds": 57.026549328,
+  "steps": 2852,
+  "feasible_fraction": 1.0,
+  "infeasible_steps": 0,
+  "q_span_deg": [
+    47.389112926803655,
+    109.52895762057896,
+    29.89767216763398,
+    105.39427138321797,
+    20.523054588637706,
+    59.945475403930566,
+    136.35330556729087
+  ],
+  "joint_travel_deg": [
+    212.19627971946605,
+    470.2236337130975,
+    195.59453155661288,
+    657.6608212495591,
+    149.19187798137366,
+    306.9979505743965,
+    341.6018433508803
+  ],
+  "proximal_travel_deg": 1535.6752662387355,
+  "max_joint_speed": 0.532019035139076,
+  "max_joint_accel": 3.7744819950280295,
+  "tcp_error_m": {
+    "p50": 0.05266785450179519,
+    "p95": 0.10981446971016673,
+    "max": 0.19181126398731252
+  },
+  "orientation_error_deg": {
+    "p50": 1.9164395157671485,
+    "p95": 3.816785555936763,
+    "max": 6.783505453925959
+  },
+  "effective_orientation_error_deg": {
+    "p50": 1.9164395157671485,
+    "p95": 3.816785555936763,
+    "max": 6.783505453925959
+  },
+  "table_tilt_deg": {
+    "p50": 1.633237442332879,
+    "p95": 2.910578320398391,
+    "max": 4.242931101007299
+  },
+  "contacts": [],
+  "solver_p95_ms": 11.65490076818969,
+  "fk_initial_error_m": 8.420273090599976e-08,
+  "translation_gain": 2.0,
+  "workspace_clamped_steps": 1821,
+  "intent_error_m": {
+    "p50": 0.3598114060091411,
+    "p95": 0.930859705215836,
+    "max": 1.0344670646636802
+  },
+  "consumer_start_s": 0.28,
+  "consumer_step_rejections": 321,
+  "consumer_active_frames": 2239,
+  "scope": "Recorded current tracker packets into exact staged consumer mapping/follower; native MPC; MuJoCo feedback; controlled table world; no ROS transport or raw retracking"
+}

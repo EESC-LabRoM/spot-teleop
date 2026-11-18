@@ -1,0 +1,1 @@
+{"goal": [0.59, -0.236, 0.32], "lower_stop_tcp_z": 0.25, "arrival_tolerance_m": 0.04, "contact": false, "close": false, "pf_max_delta_m": 0.02, "pf_max_delta_deg": 10}

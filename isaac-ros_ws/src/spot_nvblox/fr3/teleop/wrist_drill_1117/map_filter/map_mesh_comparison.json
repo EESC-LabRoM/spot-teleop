@@ -1,0 +1,25 @@
+{
+  "bounds_lo": [
+    0.5556,
+    -0.2783,
+    0.09
+  ],
+  "bounds_hi": [
+    0.689,
+    -0.1559,
+    0.2491
+  ],
+  "result": {
+    "before": {
+      "vertices": 13673,
+      "triangles": 18851,
+      "vertices_in_drill_aabb_above_9cm": 87
+    },
+    "after": {
+      "vertices": 12953,
+      "triangles": 17729,
+      "vertices_in_drill_aabb_above_9cm": 0
+    }
+  },
+  "scope": "Static mesh vertices within same-frame tracked drill AABB; not independent calibration validation"
+}

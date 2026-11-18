@@ -1,0 +1,19 @@
+{
+  "fr3_input_teleop_wrist_1117.py": "556a633ff54ddd6126df42b8e1fa9bafc99ddf4b0ccfd3c79771f2b2a695918c",
+  "wrist_motion_filter.py": "5dca4ffbbc041d53ff433c9ce25830e2a0c7f2bf6207af77bb4331f5d24658d5",
+  "table_facing.py": "dba01967c0205179873c1afa92c390b85597ae9318f962e2185a630203473045",
+  "wrist_yaw_bias.py": "754156173b14f8f243e39d0952b559ab1cdd4866a91832a67785c045c7848e8d",
+  "motion_preference.py": "9a5a10957d7c6f22d10a8b89e9b45e81190fa4bba8b6b8ec26f13a4cdf386b35",
+  "mpc_packet_gate.py": "74f82ff43ccd0c0335158467de756853051ad3c75f7403b17112e6ace232ac70",
+  "direct_topic_fwd.py": "49d1b69d71555001fee1a473534d5168f59f79b2a409b523abbf658dc47efc96",
+  "mpc_posture_1117.py": "c7dea6c66b63788ad7fcb475f9ef93b7cc48edbb4d9d3eda81fd898ca4262a76",
+  "mpc_entry_previous.py": "3bc22800b4d7b49cab6e61e286818eaf23b3a484461322e068f9ad2f735bd4d8",
+  "fr3_wrist_posture.yml": "d9f0e258228a81f38baf459d051cc89fc8ddaed04eb6e002b7febf081ceeb391",
+  "mpc_override.yml": "59e2966c8340d9ea27cb7516dd66268a986c20660f7f75114210d0548a4febd8",
+  "pf_wrist.yaml": "9988724eaeb611276317ac863fd1e3fd04505f9bada558daf4943776583c2588",
+  "consumer_launch_args.json": "45cdd5e6ac63220e2cb657ca75f54fa15d8d10c0be225f8f84659abcd5f4efe9",
+  "hand_only.yaml": "b43bc977aa0c6dd91e78bd9fc4fcae9bf7be84d2032f7761bf4334c01013cb1b",
+  "test_packet_gate.py": "795412a3073ee3a8a65a5cb5f206571f79906854c770d4b21963643e09136a87",
+  "test_metric_mapping.py": "bc555a71b1993f3c7e3063d3d435f56b4974dafbeebd49a5fa7dbedf81d2bc59",
+  "consumer_kernel.py": "4bd5b6be8ad8d459f60f63b6324623c9fc9a7df6fca36be9641b071ab3a6e4a0"
+}

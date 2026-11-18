@@ -1,0 +1,388 @@
+{
+  "pick": {
+    "pos": [
+      0.5949642062187195,
+      -0.24078084528446198,
+      0.21235263347625732
+    ],
+    "quat_xyzw": [
+      0.3610836446336449,
+      0.9277308735028494,
+      0.09258309222273209,
+      0.01903903316811809
+    ],
+    "conf": 0.7513810992240906,
+    "idx": 33,
+    "score": 0.5260096649908115,
+    "metrics": {
+      "off_xy_mm": 8.6,
+      "nnear": 972,
+      "bilateral": 0.636,
+      "wrap_mm": 65.9,
+      "vert": 0.982
+    },
+    "weights": {
+      "center_w": 0.984,
+      "density_w": 1.0,
+      "bilateral_w": 0.7455,
+      "wrap_w": 0.9544,
+      "contact_w": 0.7115
+    },
+    "n_total": 100,
+    "source": "regrasp select"
+  },
+  "plan": {
+    "run": "wristpick1117_fresh",
+    "grasp_pos": [
+      0.5939,
+      -0.2424,
+      0.2222
+    ],
+    "grasp_tcp": [
+      0.6045,
+      -0.226,
+      0.1206
+    ],
+    "approach": [
+      0.102,
+      0.158,
+      -0.982
+    ],
+    "map_z_bias": 0.0,
+    "depth": -0.01,
+    "flip_deg": 180.0,
+    "z_offset": 0.0,
+    "table_z": 0.03,
+    "ik_err_mm": 0.0,
+    "ik_err_deg": 0.0,
+    "stages": {
+      "S1_home_to_pre": {
+        "q": [
+          [
+            0.08493,
+            0.41799,
+            -0.58324,
+            -1.81896,
+            0.4965,
+            2.13804,
+            2.36509
+          ]
+        ],
+        "t": [
+          15.797
+        ]
+      },
+      "S2_pre_to_grasp": {
+        "q": [
+          [
+            0.0478,
+            0.61269,
+            -0.48186,
+            -1.83956,
+            0.64883,
+            2.32871,
+            2.27759
+          ]
+        ],
+        "t": [
+          6.0
+        ]
+      },
+      "S3_lift": {
+        "q": [
+          [
+            0.10288,
+            0.45116,
+            -0.56332,
+            -1.81826,
+            0.51958,
+            2.17236,
+            2.38215
+          ]
+        ],
+        "t": [
+          6.0
+        ]
+      },
+      "S4_put_back": {
+        "q": [
+          [
+            0.04855,
+            0.61293,
+            -0.48273,
+            -1.8395,
+            0.64949,
+            2.32844,
+            2.27723
+          ]
+        ],
+        "t": [
+          6.0
+        ]
+      },
+      "S5_grasp_to_pre": {
+        "q": [
+          [
+            0.08669,
+            0.4185,
+            -0.5853,
+            -1.81885,
+            0.49759,
+            2.13766,
+            2.36445
+          ]
+        ],
+        "t": [
+          6.0
+        ]
+      },
+      "S6_pre_to_home": {
+        "q": [
+          [
+            0.0,
+            -0.7854,
+            0.0,
+            -2.35619,
+            0.0,
+            1.5708,
+            0.7854
+          ]
+        ],
+        "t": [
+          15.791
+        ]
+      }
+    },
+    "checks": {
+      "S1_home_to_pre": {
+        "min_obstacle_m": 0.37,
+        "min_table_clear_m": 0.208,
+        "arm_links_in_drill_box": false,
+        "n_waypoints": 1,
+        "joint_limit_margin_rad": 0.645
+      },
+      "S2_pre_to_grasp": {
+        "min_obstacle_m": 0.384,
+        "min_table_clear_m": 0.091,
+        "arm_links_in_drill_box": false,
+        "n_waypoints": 1,
+        "joint_limit_margin_rad": 0.732
+      },
+      "S3_lift": {
+        "min_obstacle_m": 0.368,
+        "min_table_clear_m": 0.091,
+        "arm_links_in_drill_box": false,
+        "n_waypoints": 1,
+        "joint_limit_margin_rad": 0.628
+      },
+      "S4_put_back": {
+        "min_obstacle_m": 0.368,
+        "min_table_clear_m": 0.091,
+        "arm_links_in_drill_box": false,
+        "n_waypoints": 1,
+        "joint_limit_margin_rad": 0.733
+      },
+      "S5_grasp_to_pre": {
+        "min_obstacle_m": 0.384,
+        "min_table_clear_m": 0.091,
+        "arm_links_in_drill_box": false,
+        "n_waypoints": 1,
+        "joint_limit_margin_rad": 0.646
+      },
+      "S6_pre_to_home": {
+        "min_obstacle_m": 0.37,
+        "min_table_clear_m": 0.208,
+        "arm_links_in_drill_box": false,
+        "n_waypoints": 1,
+        "joint_limit_margin_rad": 0.684
+      },
+      "grasp_hand": {
+        "palm_pts_in_drill": 5,
+        "finger_body_pts": 0,
+        "pts_between_pads": 82,
+        "tcp_below_local_top_cm": 5.3,
+        "higher_tip_below_top_cm": 5.2
+      }
+    },
+    "problems": [],
+    "hand_R": [
+      [
+        -0.666452,
+        -0.738512,
+        0.102187
+      ],
+      [
+        -0.722094,
+        0.673502,
+        0.158035
+      ],
+      [
+        -0.185534,
+        0.031534,
+        -0.982132
+      ]
+    ]
+  },
+  "depth": -0.01,
+  "tried": [
+    {
+      "idx": 33,
+      "depth": 0.02,
+      "rung": 0,
+      "problems": [
+        "grasp_hand: palm/finger body inside the drill cloud (reduce --depth)"
+      ],
+      "pts": 224,
+      "tip_cm": 8.2,
+      "vert": 0.982,
+      "flat_cov": 0.156,
+      "flat_ang": 37.0,
+      "margin": 0.684,
+      "s1_t": 15.0,
+      "score": 0.5260096649908115
+    },
+    {
+      "idx": 33,
+      "depth": 0.03,
+      "rung": 0,
+      "problems": [
+        "grasp_hand: palm/finger body inside the drill cloud (reduce --depth)"
+      ],
+      "pts": 251,
+      "tip_cm": 9.1,
+      "vert": 0.982,
+      "flat_cov": 0.156,
+      "flat_ang": 20.7,
+      "margin": 0.684,
+      "s1_t": 14.7,
+      "score": 0.5260096649908115
+    },
+    {
+      "idx": 33,
+      "depth": 0.01,
+      "rung": 0,
+      "problems": [
+        "grasp_hand: palm/finger body inside the drill cloud (reduce --depth)"
+      ],
+      "pts": 201,
+      "tip_cm": 7.2,
+      "vert": 0.982,
+      "flat_cov": 0.133,
+      "flat_ang": 59.1,
+      "margin": 0.679,
+      "s1_t": 15.3,
+      "score": 0.5260096649908115
+    },
+    {
+      "idx": 33,
+      "depth": 0.0,
+      "rung": 0,
+      "problems": [
+        "grasp_hand: palm/finger body inside the drill cloud (reduce --depth)"
+      ],
+      "pts": 175,
+      "tip_cm": 6.2,
+      "vert": 0.982,
+      "flat_cov": 0.022,
+      "flat_ang": 66.6,
+      "margin": 0.684,
+      "s1_t": 14.1,
+      "score": 0.5260096649908115
+    },
+    {
+      "idx": 33,
+      "depth": -0.01,
+      "rung": 0,
+      "problems": [],
+      "pts": 82,
+      "tip_cm": 5.2,
+      "vert": 0.982,
+      "flat_cov": 0.0,
+      "flat_ang": 90.0,
+      "margin": 0.628,
+      "s1_t": 15.8,
+      "score": 0.5260096649908115
+    },
+    {
+      "idx": 61,
+      "depth": 0.02,
+      "rung": 0,
+      "problems": [
+        "grasp_hand: palm/finger body inside the drill cloud (reduce --depth)"
+      ],
+      "pts": 171,
+      "tip_cm": 6.0,
+      "vert": 0.97,
+      "flat_cov": 0.022,
+      "flat_ang": 85.5,
+      "margin": 0.684,
+      "s1_t": 11.8,
+      "score": 0.26723757903518147
+    },
+    {
+      "idx": 61,
+      "depth": 0.03,
+      "rung": 0,
+      "problems": [
+        "grasp_hand: palm/finger body inside the drill cloud (reduce --depth)"
+      ],
+      "pts": 182,
+      "tip_cm": 6.9,
+      "vert": 0.97,
+      "flat_cov": 0.133,
+      "flat_ang": 85.5,
+      "margin": 0.684,
+      "s1_t": 11.8,
+      "score": 0.26723757903518147
+    },
+    {
+      "idx": 61,
+      "depth": 0.01,
+      "rung": 0,
+      "problems": [
+        "grasp_hand: palm/finger body inside the drill cloud (reduce --depth)"
+      ],
+      "pts": 124,
+      "tip_cm": 5.0,
+      "vert": 0.97,
+      "flat_cov": 0.022,
+      "flat_ang": 78.6,
+      "margin": 0.684,
+      "s1_t": 11.7,
+      "score": 0.26723757903518147
+    },
+    {
+      "idx": 61,
+      "depth": 0.0,
+      "rung": 0,
+      "problems": [
+        "grasp_hand: only 4 cloud points between the pads (< 50): grasp would close on air or on an edge"
+      ],
+      "pts": 4,
+      "tip_cm": 4.0,
+      "vert": 0.97,
+      "flat_cov": 0.0,
+      "flat_ang": 90.0,
+      "margin": 0.684,
+      "s1_t": 11.6,
+      "score": 0.26723757903518147
+    },
+    {
+      "idx": 61,
+      "depth": -0.01,
+      "rung": 0,
+      "problems": [
+        "grasp_hand: only 4 cloud points between the pads (< 50): grasp would close on air or on an edge"
+      ],
+      "pts": 4,
+      "tip_cm": 3.0,
+      "vert": 0.97,
+      "flat_cov": 0.0,
+      "flat_ang": 90.0,
+      "margin": 0.684,
+      "s1_t": 11.4,
+      "score": 0.26723757903518147
+    }
+  ],
+  "contact_validated": false
+}

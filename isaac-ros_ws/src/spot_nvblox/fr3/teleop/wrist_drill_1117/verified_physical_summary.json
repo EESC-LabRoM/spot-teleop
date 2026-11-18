@@ -1,0 +1,22 @@
+{
+  "samples": 251,
+  "tcp_span_m": [
+    0.011159849189995796,
+    0.006550308549579361,
+    0.03855274198092995
+  ],
+  "end_delta_m": [
+    0.006930455700409566,
+    0.006460729771463362,
+    0.03347486498498775
+  ],
+  "rotation_max_deg": 7.4172780617561145,
+  "table_tilt_max_deg": 1.2212578833426282,
+  "forwarded": 592,
+  "refused": 0,
+  "refusal_reasons": {},
+  "cleanup_errors": [],
+  "final_robot_mode": 1,
+  "robot_errors": false,
+  "drill_region_map_vertices_after_motion": 0
+}

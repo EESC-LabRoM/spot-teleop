@@ -1,0 +1,3 @@
+fr3_joy_teleop:
+  ros__parameters:
+    joy_device: ""

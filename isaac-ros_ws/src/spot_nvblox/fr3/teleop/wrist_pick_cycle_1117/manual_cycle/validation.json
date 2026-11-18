@@ -1,0 +1,58 @@
+{
+  "actual_tcp_first": [
+    0.5907021580985335,
+    -0.22755047622286792,
+    0.29316334160227314
+  ],
+  "actual_tcp_last": [
+    0.6190788412278498,
+    -0.22703090623082117,
+    0.12981800454943476
+  ],
+  "actual_tcp_min": [
+    0.5878131400256558,
+    -0.2349607570017075,
+    0.12909262515469677
+  ],
+  "actual_tcp_max": [
+    0.6507603502408787,
+    -0.2188695886333878,
+    0.29839691914902766
+  ],
+  "tcp_speed_p95_m_s": 0.03258980920171736,
+  "tcp_speed_max_m_s": 0.2889180565859958,
+  "measured_samples": 622,
+  "controller_packets": 1446,
+  "gripper_result": [
+    {
+      "kind": "close_result",
+      "t": 1794956731.1114838,
+      "status": 4,
+      "success": true,
+      "error": "",
+      "width": 0.00171749759465456
+    }
+  ],
+  "payload_changes": [],
+  "failures": [
+    {
+      "kind": "failure",
+      "t": 1794956731.1115541,
+      "error": "grasp failed or empty",
+      "held": false,
+      "loaded": false
+    }
+  ],
+  "forwarder": {
+    "wall": 1794956731.1304026,
+    "engaged": false,
+    "measured_age_s": 0.009881152014713734,
+    "preview_age_s": 0.006714518996886909,
+    "metadata_ok": true,
+    "seed_deviation": 0.015487611293792725,
+    "ready": true,
+    "forwarded": 1446,
+    "refused": 0,
+    "reasons": {}
+  }
+}

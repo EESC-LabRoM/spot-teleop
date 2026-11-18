@@ -1,0 +1,8 @@
+# Wrist axis and yaw profile — 2026-11-17
+Requested mapping (after canonical hand axes): robot displacement=[-handZ,handY,-handX]. Hand down->forward; up->back; backward->up; forward->down. Translation gain0.5, acceleration0.5m/s², workspace and following guards retained. Quaternion mapping remains separate from translation mapping.
+
+Yaw cap45deg/s (previous22.5), paced by measured angular error independently of translational lag. Table-facing projection retained. MPC prefers measured recent posture with proximal null-space weights30 and a bounded joint7 yaw reference; roll/pitch pose-vector weights4 keep tool facing table. No joint is locked or directly commanded by this reference. Native ESDF/self-collision/limits/output guards unchanged.
+
+Selected pure-yaw/z08/z12 simulations used native MPC + MuJoCo measured feedback in a network-disabled GPU1 container; all steps feasible, zero contacts/rejected consumer steps, max table tilt<0.8deg. These are not raw-camera hardware tests. Prior eight-bag hardware validation applies to sibling wrist_paced_1117, not this changed profile. Real z12 raw RGBD follow-up completed:40.6s,2015 commands,9/9 gripper actions,zero following resets; TCPerrorp955.4cm, tabletiltmax1.9deg. Live hand window saw no hand and never engaged. Hardware report: /home/hipolito/franka_teleop_checks/wrist_axes_1117/hardware_paced/results/tabletop_real_1117.html. Robot returned Home; JTC inactive; physical writers stopped.
+
+Runtime consumer files live in fr3-ros2:/tmp/wrist_ready_1117. Separate MPC container codex-fr3-wrist-axes-1117 mounts local checks/wrist_axes_1117 read-only. Previous candidate codex-fr3-wrist-1117 remains stopped and preserved for rollback. No shared native MPC/config/TF/map edits.

@@ -1,0 +1,131 @@
+--- previous_validated/fr3_input_teleop_wrist_1117.py
++++ paced/fr3_input_teleop_wrist_1117.py
+@@ -150,6 +150,12 @@
+         self.zed_stable, self.zed_stable_stamp = [], -1
+         self.zed_loss_sample=None
+         self.roll_received = 0.0
++        self.zed_pacing_error=float(P("zed_pacing_error",.03))
++        if not math.isfinite(self.zed_pacing_error) or self.zed_pacing_error<=0:raise ValueError("positive finite pacing error required")
++        self.zed_linear_accel=float(P("zed_linear_accel",.5))
++        if not math.isfinite(self.zed_linear_accel) or self.zed_linear_accel<=0:raise ValueError("positive finite zed_linear_accel required")
++        self._zed_velocity=np.zeros(3)
++        self._zed_orientation_anchor_valid=False
+         self.zed_position_only_protocol=False;self.zed_orientation_valid=True;self.zed_rotation_pending=False;self.zed_recovery_pair=None
+         self.zed_require_roll = bool(P("zed_require_roll", True))
+         self.home_script = str(P("home_script", str(Path(__file__).with_name("fr3_home_safe.py"))))
+@@ -592,7 +598,7 @@
+                 control.sendto(b'{"action":"calibrate_arm","version":1}',('127.0.0.1',self.zed_calibration_port))
+             self.zed_sample=None;self.zed_received=0.;self.roll_received=0.
+         self.home_result = None
+-        self.zed_phase, self.zed_note = "calibrating", "Calibrando: mostre ombro, cotovelo e punho direitos; depois mantenha a mão parada"
++        self.zed_phase, self.zed_note = "calibrating", "Calibrando: mostre ombro, cotovelo e punho direitos; aguardando quadros atuais consistentes"
+         self.zed_deadline = time.monotonic() + 60.
+         self.zed_stable_stamp = self.zed_stamp  # only frames captured AFTER this click may arm
+         self.zed_stable = []
+@@ -605,12 +611,23 @@
+         if self.zed_stamp <= self.zed_stable_stamp: return False
+         self.zed_stable_stamp = self.zed_stamp
+         p, q = self.zed_sample
++        if self.zed_position_only_protocol:
++            # Fresh consecutive frames suffice: engage anchors the current hand
++            # to the measured TCP, so starting during motion causes no pose jump.
++            if self.zed_stable:
++                previous=self.zed_stable[-1]
++                dt=(self.zed_stamp-previous[3])*1e-9
++                if not 0<dt<=.35 or np.linalg.norm(p-previous[1])>.03+1.5*dt:
++                    self.zed_stable=[]
++            self.zed_stable.append((now,p.copy(),q.copy(),self.zed_stamp))
++            self.zed_stable=self.zed_stable[-8:]
++            return len(self.zed_stable)>=4 and (self.zed_stamp-self.zed_stable[0][3])*1e-9>=.12
+         if self.zed_stable and (now-self.zed_stable[-1][0] > 2.0 or
+-                any(np.linalg.norm(p-a[1]) > .04 or (not self.zed_position_only_protocol and self.zed_orientation_valid and qangle(q,a[2]) > math.radians(12))
++                any(np.linalg.norm(p-a[1]) > .04 or (self.zed_orientation_valid and qangle(q,a[2]) > math.radians(12))
+                     for a in self.zed_stable)):
+             self.zed_stable = []
+-        self.zed_stable.append((now, p.copy(), q.copy()))
+-        return len(self.zed_stable) >= 4 and now-self.zed_stable[0][0] >= .65
++        self.zed_stable.append((now,p.copy(),q.copy()))
++        return len(self.zed_stable)>=4 and now-self.zed_stable[0][0]>=.65
+ 
+     def _recover_moving_zed(self):
+         """Two fresh, consistent wrists can re-anchor without requiring a stationary hand."""
+@@ -665,6 +682,7 @@
+         with self.lock:
+             self.cmd_p, self.cmd_q, self.tgt_p, self.tgt_q, self.engaged = p.copy(), q.copy(), p.copy(), q.copy(), True
+             self.meas_p, self.meas_q = p.copy(), q.copy()
++            self._zed_velocity=np.zeros(3)
+             self.recenter_required = bool(via_service and self.input_source != "zed")
+             if self.input_source == "zed":
+                 if not self._zed_live():
+@@ -675,6 +693,7 @@
+                 if self.zed_table_facing:
+                     from table_facing import TableFacing
+                     self._table_profile = TableFacing(q)
++                self._zed_orientation_anchor_valid=self.zed_orientation_valid
+                 self.zed_rotation_pending=not self.zed_orientation_valid
+         if self.input_source == "zed":
+             self.zed_phase, self.zed_note = "active", "ZED ativa · translação e rotação 6D"
+@@ -694,6 +713,7 @@
+         with self.lock:
+             self.engaged = False; self.recenter_required = False
+             self._table_profile = None
++            self._zed_velocity=np.zeros(3)
+         self.engaged_pub.publish(Bool(data=False)); self.get_logger().info("disengaged: the controller holds the last pose")
+         return True, "disengaged"
+ 
+@@ -842,6 +862,7 @@
+                 self.zed_phase, self.zed_note = "paused", ("Pausado · aguardando punho atual para retomar" if self.zed_position_only_protocol else "Pausado · mostre a mão parada para retomar")
+                 self.grip_candidate, self.grip_frames = None, 0
+             if self.zed_loss_since is not None:
++                self._zed_velocity=np.zeros(3)
+                 if now-self.zed_loss_since > self.zed_recovery_timeout:
+                     self.disengage()
+                     self.zed_note = f"Rastreamento perdido por {self.zed_recovery_timeout:g} s · clique Start para recalibrar"
+@@ -875,6 +896,14 @@
+             if self.input_source == "zed":
+                 ap, aq, zp0, zq0 = self.zed_anchor
+                 zp, zq = self.zed_sample
++                if self.zed_orientation_valid and not self._zed_orientation_anchor_valid:
++                    # There was no orientation at engage. Bind its first valid
++                    # frame to the current command; never use the placeholder
++                    # quaternion as a measured reference. Later occlusions keep
++                    # this reference, preserving combined translation/rotation.
++                    aq=self.cmd_q.copy();zq0=zq.copy()
++                    self.zed_anchor=(ap,aq,zp0,zq0)
++                    self._zed_orientation_anchor_valid=True
+                 # Relative operator motion; the FR3 forward/backward convention is applied below.
+                 delta = zp-zp0
+                 # FR3 operator faces the table: reaching forward reverses the Spot
+@@ -925,20 +954,28 @@
+             a = -math.expm1(-dt / self.tau)                                    # their first-order follower
+             step = a * (self.tgt_p - self.cmd_p); n = np.linalg.norm(step)
+             if self.input_source == "zed":
++                # Follow the measured arm's available bandwidth without losing
++                # the absolute hand reference or raising the following leash.
++                following_scale=1./(1.+(np.linalg.norm(self.cmd_p-mp)/self.zed_pacing_error)**2)
+                 horizontal = np.linalg.norm(step[:2])
+-                horizontal_limit = self.v_lin * self.speed_scale * dt
++                horizontal_limit = self.v_lin * self.speed_scale * following_scale * dt
+                 if horizontal > horizontal_limit:
+                     step[:2] *= horizontal_limit / horizontal
+-                step[2] = np.clip(step[2], -self.v_z*self.speed_scale*dt, self.v_z*self.speed_scale*dt)
++                step[2] = np.clip(step[2], -self.v_z*self.speed_scale*following_scale*dt, self.v_z*self.speed_scale*following_scale*dt)
++                from wrist_motion_filter import bounded_step
++                step,self._zed_velocity=bounded_step(self._zed_velocity,step,dt,self.zed_linear_accel)
+                 n = np.linalg.norm(step)
+             if n > self.max_step: step *= self.max_step / n
+-            new_p = self.cmd_p + step                                          # no windup: never step further away
++            new_p = np.clip(self.cmd_p + step,self.box_lo,self.box_hi)                                          # no windup: never step further away
++            if self.input_source=="zed" and not np.array_equal(new_p,self.cmd_p+step):
++                self._zed_velocity=(new_p-self.cmd_p)/dt
+             if np.linalg.norm(new_p - mp) > self.max_error and np.linalg.norm(new_p - mp) > np.linalg.norm(self.cmd_p - mp):
+                 self.tgt_p = self.cmd_p.copy()                                 # from an arm that cannot follow
++                self._zed_velocity=np.zeros(3)
+                 self.get_logger().info(f"arm not following: target reset (error {1000 * np.linalg.norm(new_p - mp):.0f} mm > "
+                                        f"{1000 * self.max_error:.0f} mm leash) at {np.round(mp, 3).tolist()}", throttle_duration_sec=2.0)
+             else: self.cmd_p = new_p
+-            slew_limit = min(self.max_slew, self.w_ang * self.rot_scale * dt) if self.input_source == "zed" else self.max_slew
++            slew_limit = min(self.max_slew, self.w_ang * self.rot_scale * dt * following_scale) if self.input_source == "zed" else self.max_slew
+             new_q = toward(self.cmd_q, qslerp(self.cmd_q, self.tgt_q, a), slew_limit)
+             if qangle(new_q, mq) > self.max_rot_err and qangle(new_q, mq) > qangle(self.cmd_q, mq): self.tgt_q = self.cmd_q.copy()
+             else: self.cmd_q = new_q

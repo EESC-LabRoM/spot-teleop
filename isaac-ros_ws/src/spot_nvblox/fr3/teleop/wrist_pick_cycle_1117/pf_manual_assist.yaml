@@ -1,0 +1,20 @@
+fr3_joystick_mpc:
+  ros__parameters:
+    pf_mode: grasp
+    pf_dist_from: hand
+    pf_radius_m: 0.3
+    pf_full_radius_m: 0.03
+    pf_max_weight: 0.65
+    pf_max_weight_rot: 0.85
+    pf_weight_rate: 1.5
+    pf_rot_m_per_rad: 0.03
+    pf_grasp_timeout_s: 0.5
+    held_attach: true
+    target_clear_box_topic: /wrist_pick/clear_box
+    extra_collision_sphere_buffer: 0.0
+    pf_intent_escape_m: 0.1
+    pf_intent_reengage_m: 0.03
+    pf_grasp_topic: /wrist_pick/grasp_target
+    pf_hold_after_release: true
+    pf_hold_max_s: 3.0
+    pf_hold_fade_s: 2.0
