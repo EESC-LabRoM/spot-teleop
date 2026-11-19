@@ -49,6 +49,7 @@ setup(
             'fake_wrist_target = spot_operation_ros2.fake_wrist_target:main',
             'autonomous_grasp_node = spot_operation_ros2.autonomous_grasp_node:main',
             'wrist_arm_follower = spot_operation_ros2.wrist_arm_follower:main',
+            'multi_object_exclusion = spot_operation_ros2.multi_object_exclusion_node:main',
         ],
     },
 )

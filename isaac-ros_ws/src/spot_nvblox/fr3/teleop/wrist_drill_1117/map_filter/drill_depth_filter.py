@@ -26,6 +26,7 @@ def main():
     from rclpy.qos import qos_profile_sensor_data,QoSProfile,ReliabilityPolicy
     from sensor_msgs.msg import Image,CompressedImage
     rclpy.init();n=Node('wrist_drill_depth_filter');depths=collections.deque(maxlen=60);masks=collections.deque(maxlen=20);gate=Pairing(max_age=1.5);counts=collections.Counter();recent={}
+    mask_topic=n.declare_parameter('mask_topic','/wrist_map/drill_mask/compressed').value
     pub=n.create_publisher(Image,'/wrist_map/drill_free_depth',qos_profile_sensor_data)
     maskpub=n.create_publisher(Image,'/wrist_map/exclusion_mask',qos_profile_sensor_data)
     def stamp(m):return m.header.stamp.sec+m.header.stamp.nanosec*1e-9
@@ -61,7 +62,7 @@ def main():
         if a is None:counts['decode_refused']+=1;return
         raw=Image(header=m.header,height=a.shape[0],width=a.shape[1],encoding='mono8',step=a.shape[1],data=a.tobytes())
         counts['compressed_bytes']+=len(m.data);mask(raw)
-    n.create_subscription(CompressedImage,'/wrist_map/drill_mask/compressed',compressed,QoSProfile(depth=1,reliability=ReliabilityPolicy.RELIABLE))
+    n.create_subscription(CompressedImage,mask_topic,compressed,QoSProfile(depth=1,reliability=ReliabilityPolicy.RELIABLE))
     n.create_timer(2.,report)
     try:rclpy.spin(n)
     finally:report();n.destroy_node();rclpy.shutdown()

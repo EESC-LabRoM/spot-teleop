@@ -2,5 +2,5 @@
  {"id":"drill","name":"Drill","box_norm":[0.46,0.62,0.56,0.94],"color_bgr":[45,190,255]},
  {"id":"tennis_ball","name":"Tennis ball","box_norm":[0.412,0.506,0.45,0.576],"color_bgr":[80,230,100]},
  {"id":"sprite","name":"Sprite bottle","box_norm":[0.469,0.415,0.525,0.63],"color_bgr":[245,215,55]},
- {"id":"screwdriver","name":"Phillips screwdriver","box_norm":[0.329,0.573,0.482,0.705],"color_bgr":[225,115,220]}
+ {"id":"screwdriver","name":"Phillips screwdriver","box_norm":[0.38,0.59,0.49,0.71],"color_bgr":[225,115,220]}
 ]
