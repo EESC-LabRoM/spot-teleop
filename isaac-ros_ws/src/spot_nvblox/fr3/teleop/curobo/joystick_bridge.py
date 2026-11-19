@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Private MPC goal transport and guarded effort-JTC output. Starts DISARMED; never switches controllers."""
-import argparse,json,socket,time,threading
+import argparse,collections,json,socket,time,threading,os
+from pathlib import Path
+os.environ.setdefault('FASTRTPS_DEFAULT_PROFILES_FILE', str(Path(__file__).resolve().parent.parent/'live_transport.xml'))
 from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
 import numpy as np
 import rclpy
@@ -18,6 +20,7 @@ from command_guard import validate,ARM
 
 class Bridge(Node):
  def __init__(self,mode,goal_port=47828,packet_port=47827,status_port=8784):
+  self.rejections=collections.deque(maxlen=30)
   self.goal_port=goal_port
   super().__init__('fr3_curobo_'+mode);self.mode=mode;self.sock=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);self.sock.setblocking(False)
   self.armed=False;self.engaged=False;self.engaged_at=0.;self.source=None;self.status=None;self.status_at=0.;self.command=None;self.q=None;self.q_at=0.;self.last_packet=None;self.last_sent=None;self.last_previous=None;self.controllers={};self.controllers_at=0.;self.reason='disarmed';self.sent=0;self.goal_stamp=0
@@ -134,7 +137,21 @@ class Bridge(Node):
    q,v=self.current_packet(self.last_sent);message=JointTrajectory();message.joint_names=ARM
    point=JointTrajectoryPoint();point.positions=q;point.velocities=v;point.time_from_start.nanosec=20000000;message.points=[point]
    self.jtc.publish(message);self.last_previous=self.last_sent;self.last_sent=self.last_packet.copy();self.sent+=1;self.reason='active'
-  except (ValueError,KeyError,TypeError,OverflowError) as error:self.reason=str(error)
+  except (ValueError,KeyError,TypeError,OverflowError) as error:
+   self.reason=str(error)
+   # Retain the FIRST guard failure before interruption recovery changes its
+   # label. Diagnostics only: never modify or bypass the rejected command.
+   if not self.rejections or self.rejections[-1]['reason']!=self.reason:
+    sample=dict(reason=self.reason,at_ns=self.get_clock().now().nanoseconds,sent=self.sent)
+    try:
+     sample['packet_ns']=self.last_packet['stamp_ns']
+     sample['q_error']=float(np.max(np.abs(np.asarray(self.last_packet['q'])-self.q)))
+     if self.last_sent is not None:
+      sample['dt']=(self.last_packet['stamp_ns']-self.last_sent['stamp_ns'])*1e-9
+      sample['dv']=float(np.max(np.abs(np.asarray(self.last_packet['v'])-self.last_sent['v'])))
+    except (TypeError,KeyError,ValueError):pass
+    self.rejections.append(sample)
+    self.get_logger().warn('guard rejection '+json.dumps(sample))
  def publish_status(self):
   packet_ready=False;packet_reason=None
   # Recheck a sent packet against its original predecessor, without replaying it.
@@ -148,7 +165,7 @@ class Bridge(Node):
   ownership=self.controller_ready()
   ready_reason=packet_reason or self.controller_reason() or ('cuRobo output disarmed' if not self.armed else None)
   mode_ready=self.armed and ownership and packet_ready and self.last_packet is not None and 0<=(self.get_clock().now().nanoseconds-self.last_packet.get('stamp_ns',0))*1e-9<.3
-  self.http_state=dict(armed=self.armed,controller_ready=ownership,ready_reason=ready_reason,mode_ready=mode_ready,command_ready=packet_ready,reason=self.reason,packet_reason=packet_reason,sent=self.sent,controllers=self.controllers,controllers_age_ms=round((time.monotonic()-self.controllers_at)*1000),joint_feedback_age_ms=round((time.monotonic()-self.q_at)*1000) if self.q_at else None,hardware_publisher_count=len(self.get_publishers_info_by_topic('/fr3_arm_controller/joint_trajectory')))
+  self.http_state=dict(rejections=list(self.rejections),armed=self.armed,controller_ready=ownership,ready_reason=ready_reason,mode_ready=mode_ready,command_ready=packet_ready,reason=self.reason,packet_reason=packet_reason,sent=self.sent,controllers=self.controllers,controllers_age_ms=round((time.monotonic()-self.controllers_at)*1000),joint_feedback_age_ms=round((time.monotonic()-self.q_at)*1000) if self.q_at else None,hardware_publisher_count=len(self.get_publishers_info_by_topic('/fr3_arm_controller/joint_trajectory')))
   self.state_pub.publish(String(data=json.dumps(self.http_state)))
  def destroy_node(self):self.sock.close();return super().destroy_node()
 if __name__=='__main__':

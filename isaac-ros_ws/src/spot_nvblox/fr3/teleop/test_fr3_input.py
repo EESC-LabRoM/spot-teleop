@@ -296,7 +296,7 @@ class InputTests(unittest.TestCase):
 
     def test_home_cancels_calibration_and_stop_signals_home(self):
         self.n.start_zed()
-        with patch.object(T.subprocess,'Popen') as launch:
+        with patch.object(T.subprocess,'Popen') as launch, patch('builtins.open', unittest.mock.mock_open()):
             self.assertTrue(self.n.start_home()[0])
             launch.assert_called_once_with(['python3',self.n.home_script], stdout=self.n.home_output, stderr=T.subprocess.STDOUT)
             self.n.home_output.close(); self.n.home_output=None

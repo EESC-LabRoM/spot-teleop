@@ -89,6 +89,8 @@ details summary { cursor:pointer; color:var(--muted); font-size:13px; }
       <label><input type="checkbox" id="height"> colour by height</label>
       <label><input type="checkbox" id="showMap" checked> map</label>
       <label><input type="checkbox" id="showRobot" checked> robot</label>
+      <label title="drill model box (carved from the mesh) + pick/TCP markers"><input type="checkbox" id="showDrill" checked> drill</label>
+      <label title="grasp cloud points (masked ZED depth, fr3_link0)"><input type="checkbox" id="showCloud" checked> cloud</label>
       <label><input type="checkbox" id="wire"> wireframe</label>
       <button type="button" id="reset">reset view</button>
     </div>
@@ -181,6 +183,32 @@ details summary { cursor:pointer; color:var(--muted); font-size:13px; }
     <figcaption><div><div class="name">Camera 2 · segmented</div><div class="sub">/franka_seg_zed2/overlay</div></div><button type="button" data-cam="seg2">Reconnect</button></figcaption></figure>
 </section>
 
+<h2>Grasp lane (VM103) · SAM2 drill mask + chosen grasp vs cloud</h2>
+<section class="grid">
+  <figure id="gseg"><div class="frame"><img alt="sam2 drill mask live"><div class="offline">Segmentation viewer unavailable. Retrying…</div></div>
+    <figcaption><div><div class="name">Drill mask · live</div><div class="sub">/zed1/segmentation_overlay</div></div><button type="button" id="gsegBtn">Reconnect</button></figcaption></figure>
+  <figure id="ggrasp"><div class="frame"><canvas id="g3d" style="width:100%;height:320px;display:block"></canvas><div class="offline">Loading 3D grasp…</div></div>
+    <figcaption><div><div class="name">Grasp vs cloud · 3D</div><div class="sub">drag orbit · wheel zoom · double-click resets</div></div><button type="button" id="ggraspBtn">Reload</button></figcaption></figure>
+</section>
+
+<script>
+// ---- grasp lane (VM103, murilo 2026-11-03): same snap-when-arrived discipline as the cameras ----
+(function(){
+  const lean = () => window.remotePadOn && window.remotePadOn();
+  const fig = document.getElementById('gseg'), img = fig.querySelector('img'), frame = fig.querySelector('.frame');
+  let gen = 0;
+  function chain(){
+    const g = ++gen;
+    img.onload = () => { frame.classList.remove('down'); setTimeout(next, lean() ? 2000 : 400); };
+    img.onerror = () => { frame.classList.add('down'); setTimeout(next, 4000); };
+    function next(){ if (g !== gen) return; img.src = 'segsnap?_=' + Date.now(); }
+    next();
+  }
+  document.getElementById('gsegBtn').addEventListener('click', chain);
+  chain();
+})();
+</script>
+
 <script>
 // ---- camera streams (web_video_server on :8787) ---------------------------------------------------------------------
 const HTTPS = location.protocol === 'https:';                  // via nexus:8443: cameras and the robot panel come through this server
@@ -256,7 +284,7 @@ const pill = (id, text, cls) => { $(id).textContent = text; $(id).className = 'p
 // ---- 3D scene ---------------------------------------------------------------------------------------------------------
 const view = $('view');
 THREE.Object3D.DEFAULT_UP.set(0, 0, 1);                       // ROS: z up
-const scene = new THREE.Scene(); scene.background = new THREE.Color(0x10151c);
+const scene = new THREE.Scene(); scene.background = new THREE.Color(0x10151c); window.__mapScene = scene; // cloud overlay hook (dashboard lane): read-only scene handle for the isolated block below
 const cam = new THREE.PerspectiveCamera(45, 1, 0.02, 50); cam.up.set(0, 0, 1);
 const HOME = { pos: [1.7, -1.4, 1.2], target: [0.45, 0, 0.2] };
 cam.position.set(...HOME.pos);
@@ -369,6 +397,51 @@ async function loadRobot() {
   })));
 }
 loadRobot();
+
+// ---- grasp lane drill overlay (murilo 2026-11-03): drill model box + pick/TCP markers, map frame -------------------------
+const drillG = new THREE.Group(); scene.add(drillG);
+$('showDrill').onchange = () => { drillG.visible = $('showDrill').checked; };
+const drillBoxMat = new THREE.MeshBasicMaterial({ color: 0xe8801c, transparent: true, opacity: 0.18, depthWrite: false });
+const drillEdgeMat = new THREE.LineBasicMaterial({ color: 0xe8801c });
+let drillMesh = null, drillEdge = null;
+function drawDrillBox(lo, hi, stale) {
+  if (drillMesh) { drillG.remove(drillMesh); drillMesh.geometry.dispose(); drillMesh = null; }
+  if (drillEdge) { drillG.remove(drillEdge); drillEdge.geometry.dispose(); drillEdge = null; }
+  const g = new THREE.BoxGeometry(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]);
+  drillBoxMat.color.set(stale ? 0xe83c3c : 0xe8801c);
+  drillEdgeMat.color.set(stale ? 0xe83c3c : 0xe8801c);
+  drillMesh = new THREE.Mesh(g, drillBoxMat);
+  drillMesh.position.set((lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, (lo[2] + hi[2]) / 2);
+  drillEdge = new THREE.LineSegments(new THREE.EdgesGeometry(g), drillEdgeMat);
+  drillEdge.position.copy(drillMesh.position);
+  drillG.add(drillMesh); drillG.add(drillEdge);
+}
+async function pollDrill() {
+  try {
+    const r = await fetch('drilljson', { cache: 'no-store' });
+    if (r.ok) {
+      const d = await r.json();
+      if (d.ok) drawDrillBox(d.aabb_min, d.aabb_max, d.status !== 'live');
+    }
+  } catch (e) {}
+  setTimeout(pollDrill, 2000);
+}
+pollDrill();
+(async function loadTarget() {
+  try {
+    const r = await fetch('targetjson', { cache: 'no-store' });
+    if (!r.ok) return;
+    const t = await r.json();
+    const dot = (p, rad, color) => { const m = new THREE.Mesh(new THREE.SphereGeometry(rad, 16, 12), new THREE.MeshBasicMaterial({ color })); m.position.set(p[0], p[1], p[2]); drillG.add(m); };
+    dot(t.pick, 0.008, 0xff22ff);
+    dot(t.tcp, 0.005, 0xff2222);
+    const line = new THREE.Line(
+      new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(...t.pick), new THREE.Vector3(...t.tcp)]),
+      new THREE.LineDashedMaterial({ color: 0xff2222, dashSize: 0.008, gapSize: 0.006 }));
+    line.computeLineDistances();
+    drillG.add(line);
+  } catch (e) {}
+})();
 
 // ---- side panel ---------------------------------------------------------------------------------------------------------
 const LAYOUTS = {
@@ -493,6 +566,131 @@ connect();
 setInterval(() => { if (lastMsg && Date.now() - lastMsg > 3000) pill('pRobot', 'robot: no data ' + ((Date.now() - lastMsg) / 1000).toFixed(0) + ' s', 'bad'); }, 1000);
 </script>
 
+<script type="module">
+// ---- drill cloud overlay (dashboard lane 2026-11-04): masked grasp cloud as points in the map scene ----
+// Separate block on purpose: a failure here must not touch the map/robot scene above.
+// Data: 'graspjson' (cloud per grasp run) + 'drilljson' (live_3d tracked point + moved/stale status).
+// Box overlay untouched as fallback. Follow math: D = T*live - box center (drill.json center; grasp.json centroid is floor-polluted, +58mm Z bias 2026-11-04), applied to the whole group.
+import * as THREE from 'three';
+(function(){
+  const box = document.getElementById('showCloud');
+  const OPTICAL = 'zed1_left_camera_optical_frame';
+  // Static optical->fr3_link0 transform from grasp_loop/static_tf_zed1_link0.json (4 hops composed,
+  // verified 2026-11-04: translation matches tf2 echo [0.238,-0.594,0.632] to ~1e-3). Camera is bolted;
+  // if the camera is ever recalibrated, grasp lane must flag new numbers here.
+  const TF_R = [[0.9317,-0.0598,0.3582],[-0.3448,-0.4554,0.8208],[0.1141,-0.8883,-0.4449]];
+  const TF_T = [0.2377,-0.5938,0.6321];
+  const FOLLOW_MAX_AGE_S = 3;
+  // EMA smoothing for the follow offset: the live_3d source wanders on a static
+  // scene (grasp lane 2026-11-04: ~19px lateral + ~73mm depth drift on dark drill).
+  // Alpha 0.35 at 2s poll ~= 70% converged in ~6s; jumps > SNAP_M snap (real move).
+  const FOLLOW_EMA_ALPHA = 0.35;
+  const FOLLOW_SNAP_M = 0.15;
+  let followEMA = null;
+  const STOPS = [[0.27,0.08,0.33],[0.23,0.32,0.55],[0.13,0.57,0.55],[0.37,0.79,0.38],[0.99,0.91,0.15]];
+  function zcolor(t, out){
+    const x = Math.min(1, Math.max(0, t)) * (STOPS.length - 1);
+    const i = Math.min(STOPS.length - 2, Math.floor(x)), u = x - i;
+    for (let k = 0; k < 3; k++) out[k] = STOPS[i][k] + (STOPS[i+1][k] - STOPS[i][k]) * u;
+  }
+  const ptsMat = new THREE.PointsMaterial({ size: 0.0035, vertexColors: true, sizeAttenuation: true });
+  const pickMat = new THREE.MeshBasicMaterial({ color: 0xff22ff });
+  const tcpMat = new THREE.MeshBasicMaterial({ color: 0xff2222 });
+  let cloudG = null, lastRun = null, GDATA = null, DDATA = null;
+  function setVisible(){ if (cloudG && box) cloudG.visible = box.checked; }
+  if (box) box.onchange = setVisible;
+  function setStale(stale){ ptsMat.color.set(stale ? 0xe83c3c : 0xffffff); }
+  function tfm(p){
+    return [TF_R[0][0]*p[0]+TF_R[0][1]*p[1]+TF_R[0][2]*p[2]+TF_T[0],
+            TF_R[1][0]*p[0]+TF_R[1][1]*p[1]+TF_R[1][2]*p[2]+TF_T[1],
+            TF_R[2][0]*p[0]+TF_R[2][1]*p[1]+TF_R[2][2]*p[2]+TF_T[2]];
+  }
+  function applyFollow(){
+    if (!cloudG) return;
+    const L3 = DDATA && DDATA.live_3d;
+    const fresh = L3 && L3.ok && L3.frame === OPTICAL && typeof L3.age_s === 'number' && L3.age_s <= FOLLOW_MAX_AGE_S
+      && Array.isArray(L3.point_m) && L3.point_m.length === 3
+      && GDATA && DDATA.source_run === GDATA.run && DDATA.status === 'live' && Array.isArray(DDATA.center) && DDATA.center.length === 3;
+    if (!fresh){ cloudG.position.set(0, 0, 0); followEMA = null; return; }
+    const w = tfm(L3.point_m), c = DDATA.center;
+    const raw = [w[0]-c[0], w[1]-c[1], w[2]-c[2]];
+    if (!followEMA){ followEMA = raw.slice(); }
+    else {
+      const dx = raw[0]-followEMA[0], dy = raw[1]-followEMA[1], dz = raw[2]-followEMA[2];
+      if (Math.hypot(dx, dy, dz) > FOLLOW_SNAP_M){ followEMA = raw.slice(); }
+      else {
+        followEMA = [followEMA[0]+FOLLOW_EMA_ALPHA*dx, followEMA[1]+FOLLOW_EMA_ALPHA*dy, followEMA[2]+FOLLOW_EMA_ALPHA*dz];
+      }
+    }
+    cloudG.position.set(followEMA[0], followEMA[1], followEMA[2]);
+  }
+  function build(scene, d){
+    if (cloudG){
+      scene.remove(cloudG);
+      cloudG.traverse(o => { if (o.geometry) o.geometry.dispose(); });
+      cloudG = null;
+    }
+    followEMA = null;
+    cloudG = new THREE.Group();
+    const pos = new Float32Array(d.cloud.flat());
+    const n = Math.min(d.n_points, d.cloud.length);
+    let zmin = 1e9, zmax = -1e9;
+    for (let i = 2; i < pos.length; i += 3){ if (pos[i] < zmin) zmin = pos[i]; if (pos[i] > zmax) zmax = pos[i]; }
+    const col = new Float32Array(n * 3), c = [0, 0, 0];
+    for (let i = 0; i < n; i++){ zcolor((pos[3*i+2] - zmin) / Math.max(1e-6, zmax - zmin), c); col[3*i] = c[0]; col[3*i+1] = c[1]; col[3*i+2] = c[2]; }
+    const pg = new THREE.BufferGeometry();
+    pg.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    pg.setAttribute('color', new THREE.BufferAttribute(col, 3));
+    cloudG.add(new THREE.Points(pg, ptsMat));
+    const tcp = new THREE.Vector3(d.tcp[0], d.tcp[1], d.tcp[2]);
+    const pick = new THREE.Vector3(d.pick[0], d.pick[1], d.pick[2]);
+    const tdot = new THREE.Mesh(new THREE.SphereGeometry(0.004, 20, 14), tcpMat);
+    tdot.position.copy(tcp); cloudG.add(tdot);
+    const pk = new THREE.Mesh(new THREE.OctahedronGeometry(0.007), pickMat);
+    pk.position.copy(pick); cloudG.add(pk);
+    setVisible();
+    scene.add(cloudG);
+  }
+  async function pollStatus(){
+    try {
+      const r = await fetch('drilljson', { cache: 'no-store' });
+      if (r.ok){
+        const d = await r.json();
+        if (d && d.ok){ DDATA = d; setStale(d.status !== 'live'); applyFollow(); }
+      }
+    } catch (e) {}
+    setTimeout(pollStatus, 2000);
+  }
+  async function poll(scene){
+    try {
+      const r = await fetch('graspjson', { cache: 'no-store' });
+      if (r.ok){
+        const d = await r.json();
+        if (d && Array.isArray(d.cloud) && d.cloud.length){
+          GDATA = d;
+          if (d.run !== lastRun){ lastRun = d.run; build(scene, d); }
+          applyFollow();
+        }
+      }
+    } catch (e) {}
+    setTimeout(() => poll(scene), 10000);
+  }
+  (async function init(){
+    try {
+      let scene = null;
+      for (let i = 0; i < 120 && !scene; i++){
+        scene = window.__mapScene || null;
+        if (!scene) await new Promise(r => setTimeout(r, 500));
+      }
+      if (!scene) return;
+      poll(scene);
+      pollStatus();
+    } catch (e) {}
+  })();
+})();
+</script>
+
+
 <script>
 // ---- remote PS4: Gamepad API (standard mapping) -> WebSocket /ws -> remote-pad dashboard on the lab PC (:8089, via mesh_server).
 // Same page logic as fr3_dashboard.html's remote card. Everything starts OFF: the operator presses Enable, and any loss (tab hidden,
@@ -583,6 +781,99 @@ setInterval(() => { if (lastMsg && Date.now() - lastMsg > 3000) pill('pRobot', '
   fetch('padcfg').then(r => r.ok ? r.json() : Promise.reject(r.status)).then(c => {
     if (c.remote) init(); else { $('rinsecure').hidden = false; $('rinsecure').textContent = 'The remote-pad server on the lab PC runs without remote_pad:=true.'; }
   }).catch(e => { $('rinsecure').hidden = false; $('rinsecure').textContent = 'Remote-pad server on the lab PC not reachable (' + e + '); the watchdog on nexus restarts it.'; });
+})();
+</script>
+
+<script type="module">
+// ---- grasp lane 3D panel (murilo 2026-11-03): reuses this page's three.js ----
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+(function(){
+  const fig = document.getElementById('ggrasp'), canvasEl = document.getElementById('g3d'),
+        frame = fig.querySelector('.frame'), off = fig.querySelector('.offline');
+  const down = on => frame.classList.toggle('down', on);
+  const renderer = new THREE.WebGLRenderer({ canvas: canvasEl, antialias: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x0f1214);
+  const camera = new THREE.PerspectiveCamera(45, 2, 0.005, 60);
+  const controls = new OrbitControls(camera, canvasEl);
+  controls.enableDamping = true;
+  controls.minDistance = 0.03;
+  controls.maxDistance = 4;
+  scene.add(new THREE.HemisphereLight(0xffffff, 0x223344, 0.9));
+  const key = new THREE.DirectionalLight(0xffffff, 1.4);
+  key.position.set(0.4, -0.5, 0.9);
+  scene.add(key);
+  const grid = new THREE.GridHelper(0.6, 12, 0x2a3137, 0x1d2328);
+  grid.rotation.x = Math.PI / 2;
+  scene.add(grid);
+  const STOPS = [[0.27,0.08,0.33],[0.23,0.32,0.55],[0.13,0.57,0.55],[0.37,0.79,0.38],[0.99,0.91,0.15]];
+  function zcolor(t, out){
+    const x = Math.min(1, Math.max(0, t)) * (STOPS.length - 1);
+    const i = Math.min(STOPS.length - 2, Math.floor(x)), u = x - i;
+    for (let k = 0; k < 3; k++) out[k] = STOPS[i][k] + (STOPS[i+1][k] - STOPS[i][k]) * u;
+  }
+  let group = null, homePos = null, homeTgt = null;
+  function sizeCanvas(){
+    const w = canvasEl.clientWidth, h = canvasEl.clientHeight, pr = renderer.getPixelRatio();
+    if (canvasEl.width !== Math.floor(w * pr) || canvasEl.height !== Math.floor(h * pr)){
+      renderer.setSize(w, h, false);
+      camera.aspect = w / h;
+      camera.updateProjectionMatrix();
+    }
+  }
+  window.addEventListener('resize', sizeCanvas);
+  function build(d){
+    if (group){ scene.remove(group); group.traverse(o => { if (o.geometry) o.geometry.dispose(); }); }
+    group = new THREE.Group();
+    const pos = new Float32Array(d.cloud.flat());
+    let zmin = 1e9, zmax = -1e9;
+    for (let i = 2; i < pos.length; i += 3){ if (pos[i] < zmin) zmin = pos[i]; if (pos[i] > zmax) zmax = pos[i]; }
+    const col = new Float32Array(d.n_points * 3), c = [0, 0, 0];
+    for (let i = 0; i < d.n_points; i++){ zcolor((pos[3*i+2] - zmin) / Math.max(1e-6, zmax - zmin), c); col[3*i] = c[0]; col[3*i+1] = c[1]; col[3*i+2] = c[2]; }
+    const pg = new THREE.BufferGeometry();
+    pg.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    pg.setAttribute('color', new THREE.BufferAttribute(col, 3));
+    group.add(new THREE.Points(pg, new THREE.PointsMaterial({ size: 0.0035, vertexColors: true, sizeAttenuation: true })));
+    for (const part of d.gripper){
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(part.tris.flat()), 3));
+      g.computeVertexNormals();
+      group.add(new THREE.Mesh(g, new THREE.MeshStandardMaterial({
+        color: part.kind === 'hand' ? 0xcfd4d9 : 0xe8b86d, roughness: 0.55, metalness: 0.08 })));
+    }
+    const tcp = new THREE.Vector3(...d.tcp), pick = new THREE.Vector3(...d.pick);
+    const dot = (p, r, color) => { const m = new THREE.Mesh(new THREE.SphereGeometry(r, 20, 14), new THREE.MeshBasicMaterial({ color })); m.position.copy(p); group.add(m); };
+    dot(tcp, 0.004, 0xff2222);
+    const pk = new THREE.Mesh(new THREE.OctahedronGeometry(0.007), new THREE.MeshBasicMaterial({ color: 0xff22ff }));
+    pk.position.copy(pick); group.add(pk);
+    const R = d.R, axc = [0xff2222, 0x22ff22, 0x2266ff];
+    for (let i = 0; i < 3; i++)
+      group.add(new THREE.ArrowHelper(new THREE.Vector3(R[0][i], R[1][i], R[2][i]), tcp, 0.05, axc[i], 0.012, 0.007));
+    grid.position.set(tcp.x, tcp.y, 0);
+    scene.add(group);
+    homePos = new THREE.Vector3(tcp.x + 0.28, tcp.y - 0.32, tcp.z + 0.24);
+    homeTgt = tcp.clone();
+    camera.position.copy(homePos);
+    controls.target.copy(homeTgt);
+    controls.update();
+    down(false);
+  }
+  async function load(){
+    try {
+      const r = await fetch('graspjson', { cache: 'no-store' });
+      if (!r.ok) throw new Error('graspjson ' + r.status);
+      build(await r.json());
+    } catch (e) { off.textContent = 'Grasp data unavailable (' + e + '). Retry…'; down(true); }
+  }
+  document.getElementById('ggraspBtn').addEventListener('click', load);
+  canvasEl.addEventListener('dblclick', () => {
+    if (!homePos) return;
+    camera.position.copy(homePos); controls.target.copy(homeTgt); controls.update();
+  });
+  renderer.setAnimationLoop(() => { sizeCanvas(); controls.update(); renderer.render(scene, camera); });
+  load();
 })();
 </script>
 </body>

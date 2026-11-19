@@ -136,7 +136,60 @@ class H(BaseHTTPRequestHandler):
 
     def do_GET(self):
         u = urlparse(self.path); path = u.path
-        if path == "/snap": return self.pipe(a.cam_port, "/snapshot?" + u.query)
+        if path == "/snap":
+            # The ROS overlay is a 2 Hz diagnostics feed; operator video has its
+            # own fresh JPEG producer so drawing cannot block control callbacks.
+            topic = parse_qs(u.query).get("topic", [""])[0]
+            if topic == "/fr3_operator/wrist_overlay":
+                return self.pipe(8786, "/snapshot")
+            return self.pipe(a.cam_port, "/snapshot?" + u.query)
+        if path == "/segsnap":
+            # Grasp lane (murilo, 2026-11-03): latest SAM2 overlay JPEG from the
+            # VM103 viewer, proxied so the https page can load it (it cannot
+            # reach :8791 directly, same reason /snap exists).
+            try:
+                with urllib.request.urlopen("http://10.0.0.3:8791/snap.jpg",
+                                            timeout=8) as r:
+                    return self.send(200, r.read(), "image/jpeg")
+            except Exception as e:
+                return self.send(502, f"seg viewer unreachable: {e}".encode())
+        if path == "/graspsnap":
+            # Grasp lane (murilo, 2026-11-03): grasp-vs-cloud render, proxied.
+            # ?run=<id> overrides the latest loop run. Render takes ~10 s.
+            run = parse_qs(u.query).get("run", [""])[0]
+            url = "http://10.0.0.3:8791/grasp.png" + (f"?run={run}" if run else "")
+            try:
+                with urllib.request.urlopen(url, timeout=90) as r:
+                    return self.send(200, r.read(), "image/png")
+            except Exception as e:
+                return self.send(502, f"grasp render failed: {e}".encode())
+        if path == "/graspjson":
+            # Grasp lane 3D panel (murilo, 2026-11-03): data behind the render.
+            run = parse_qs(u.query).get("run", [""])[0]
+            url = "http://10.0.0.3:8791/grasp.json" + (f"?run={run}" if run else "")
+            try:
+                with urllib.request.urlopen(url, timeout=30) as r:
+                    return self.send(200, r.read(), "application/json")
+            except Exception as e:
+                return self.send(502, f"grasp data failed: {e}".encode())
+        if path == "/drilljson":
+            # Grasp lane drill overlay (murilo, 2026-11-03): drill model box
+            # for the map scene (carved from the mesh, shown as its own box).
+            try:
+                with urllib.request.urlopen("http://10.0.0.3:8791/drill.json",
+                                            timeout=8) as r:
+                    return self.send(200, r.read(), "application/json")
+            except Exception as e:
+                return self.send(502, f"drill data failed: {e}".encode())
+        if path == "/targetjson":
+            # Grasp lane drill overlay (murilo, 2026-11-03): pick/TCP marker.
+            try:
+                with urllib.request.urlopen(
+                        "http://10.0.0.3:8791/grasp_target.json",
+                        timeout=8) as r:
+                    return self.send(200, r.read(), "application/json")
+            except Exception as e:
+                return self.send(502, f"target data failed: {e}".encode())
         if path in ("/ws", "/padcfg") or path.startswith("/fr3/"): return self.pad_route(path)
         if path in ("/", "/index.html"):
             return self.send(200, open(os.path.join(HERE, "lab_dashboard.html"), "rb").read(), "text/html; charset=utf-8")

@@ -46,7 +46,7 @@ def _emit_guarded(node,joints,goal,feasible,names,state,positions,velocities,res
  for _ in range(32):
   try:
    health=json.loads(node.depth_socket.recv(2048));ns=int(health['stamp_ns']);age=(node.get_clock().now().nanoseconds-ns)*1e-9
-   if health.get('kind')=='segmented_depth' and 0<=age<.7:node.safe_depth_ns=max(node.safe_depth_ns,ns)
+   if health.get('kind')=='segmented_depth' and health.get('camera')=='zed1' and 0<=age<.7:node.safe_depth_ns=max(node.safe_depth_ns,ns)
   except BlockingIOError:break
   except (ValueError,KeyError,TypeError):continue
  coverage=False
