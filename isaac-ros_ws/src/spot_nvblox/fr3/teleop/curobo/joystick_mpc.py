@@ -115,7 +115,9 @@ class CuroboMpcNode(Node):
         # Optional static table collision overlay. Current estimated bounds are
         # mesh-derived and must be physically verified before enabling on hardware.
         self.declare_parameter('table_collision_enabled', False)
-        self.declare_parameter('table_collision_bounds_m', [0.25, 0.95, -0.55, 0.60, 0.0294, 0.10])
+        # Preview top z=0.040 m includes ~5 mm above the highest fingertip touch
+        # reading (0.0347 m); XY extents remain mesh estimates pending tape check.
+        self.declare_parameter('table_collision_bounds_m', [0.25, 0.95, -0.55, 0.60, 0.040, 0.10])
         # Target ESDF clear (cuMotion-style "GIGO" catch-all). On every ESDF request,
         # clear an object-sized region so any residual leak that slipped past the SAM2
         # dynamic mask (e.g. the one-frame re-entry leak before a secondary predictor

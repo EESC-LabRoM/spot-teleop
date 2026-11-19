@@ -23,12 +23,12 @@ args+=['-v',str(HERE)+':/zed_mpc:ro','-v',str(out)+':/out', '--entrypoint','bash
  '/isaac-sim/python.sh /zed_mpc/joystick_mpc.py --ros-args -r __node:=fr3_joystick_mpc '
  '-p robot:=franka -p base_frame:=fr3_link0 -p robot_config:=/workspace/franka_mpc/node_config/fr3_vcap1.2_acc10.yml '
  '-p use_sim:=false -p use_sim_time:=false -p use_ros2_control:=false -p use_esdf:=true '
- '-p voxel_size:=0.05 -p grid_center_m:=[0.35,0.0,0.55] -p grid_size_m:=[1.4,1.6,1.2] '
+ '-p voxel_size:=0.02 -p grid_center_m:=[0.35,0.0,0.55] -p grid_size_m:=[1.4,1.6,1.2] '
  # Candidate extents are estimates from the ZED1 mesh; this preview is passive.
  # Do not copy them to the live MPC until tape-measured bounds are confirmed.
- '-p table_collision_enabled:=true -p table_collision_bounds_m:=[0.25,0.95,-0.55,0.60,0.0294,0.10] '
+ '-p table_collision_enabled:=true -p table_collision_bounds_m:=[0.25,0.95,-0.55,0.60,0.040,0.10] '
  '-p esdf_service_name:=/nvblox_curobo/get_esdf_and_gradient -p esdf_frame_id:=fr3_link0 -p esdf_global_frame:=fr3_link0 '
- '-p target_clear_frame:=fr3_hand -p target_clear_radius_m:=0.15 -p target_clear_box_topic:=/fr3_joystick_mpc/unused_clear_box '  # self-clear: residual hand/finger/wrist-camera voxels made every state infeasible (5 cm map, 10-23)
+ '-p target_clear_radius_m:=0.0 -p target_clear_box_topic:=/fr3_joystick_mpc/unused_clear_box '
  '-p safe_packet_port:=0 -p feedback_mode:=measured -p joint_stale_s:=0.4 -p pf_mode:=off -p log_csv_path:=/out/mpc_node.csv '
  '-r /wrist_pose:=/fr3_joystick_mpc/wrist_goal -r /arm/joint_command:=/fr3_joystick_mpc/joint_preview '
  '> /out/stdout.log 2>&1']

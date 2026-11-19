@@ -3,7 +3,8 @@ import unittest
 from table_collision import build_world_config_data
 
 
-PROPOSED_MESH_BOUNDS = [0.25, 0.95, -0.55, 0.60, 0.0294, 0.10]
+# Conservative preview height above the highest fingertip-touch estimate.
+PROPOSED_MESH_BOUNDS = [0.25, 0.95, -0.55, 0.60, 0.040, 0.10]
 
 
 class TableCollisionWorldTest(unittest.TestCase):
@@ -20,7 +21,7 @@ class TableCollisionWorldTest(unittest.TestCase):
         self.assertEqual(table["dims"], [0.70, 1.15, 0.10])
         self.assertAlmostEqual(table["pose"][0], 0.60)
         self.assertAlmostEqual(table["pose"][1], 0.025)
-        self.assertAlmostEqual(table["pose"][2] + table["dims"][2] / 2, 0.0294)
+        self.assertAlmostEqual(table["pose"][2] + table["dims"][2] / 2, 0.040)
         self.assertTrue(0.472 >= 0.60 - 0.35 and 0.472 <= 0.60 + 0.35)
         self.assertTrue(-0.18 >= 0.025 - 0.575 and -0.18 <= 0.025 + 0.575)
 
