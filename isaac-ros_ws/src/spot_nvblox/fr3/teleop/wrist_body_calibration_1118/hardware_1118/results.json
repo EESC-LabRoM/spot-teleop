@@ -1,0 +1,76 @@
+{
+  "z06": {
+    "case": "z06",
+    "scope": "raw RGBD inference -> fixed orientation adapter -> normal consumer/MPC/nvblox/feasible gated JTC; no grasp",
+    "status": "completed",
+    "tracker_packets": 546,
+    "sent_positions": 546,
+    "wall_s": 46.73893158097053,
+    "cleanup_errors": [],
+    "final_mode": 1,
+    "forwarded_commands": 958,
+    "following_resets": 3,
+    "workspace_clamp_log_lines": 7,
+    "error_samples": 427,
+    "command_to_TCP_error_m": {
+      "p50": 0.059027220492706596,
+      "p95": 0.07512383888780513,
+      "max": 0.07940972338993281
+    },
+    "TCP_span_m": [
+      0.1599154790555551,
+      0.1486298075191507,
+      0.31436620293421114
+    ],
+    "orientation_change_max_deg": 2.048110914517963,
+    "joint_span_deg": [
+      54.535916821264614,
+      39.06616512776379,
+      25.894289494418707,
+      73.37175670592039,
+      10.237192222008483,
+      36.94744386232041,
+      28.714955384001517
+    ],
+    "input_capture_age_ms": {
+      "p50": 79.5177955,
+      "p95": 104.485476
+    }
+  },
+  "z12": {
+    "case": "z12",
+    "scope": "raw RGBD inference -> fixed orientation adapter -> normal consumer/MPC/nvblox/feasible gated JTC; no grasp",
+    "status": "aborted",
+    "error": "AssertionError('joint excursion envelope')",
+    "cleanup_errors": [],
+    "final_mode": 1,
+    "forwarded_commands": 1137,
+    "following_resets": 7,
+    "workspace_clamp_log_lines": 7,
+    "error_samples": 495,
+    "command_to_TCP_error_m": {
+      "p50": 0.06684586064150111,
+      "p95": 0.07736734615015677,
+      "max": 0.07988642555156274
+    },
+    "TCP_span_m": [
+      0.19290955109753424,
+      0.5480198504143312,
+      0.39018114685996746
+    ],
+    "orientation_change_max_deg": 2.317307627130574,
+    "joint_span_deg": [
+      43.68012610551571,
+      56.7879572961694,
+      45.377785845421656,
+      84.33863628637302,
+      22.20568681428834,
+      55.83464495526569,
+      67.21078648257772
+    ],
+    "input_capture_age_ms": {
+      "p50": 80.297066,
+      "p95": 234.04136339999977
+    }
+  }
+}

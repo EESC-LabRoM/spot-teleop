@@ -1,0 +1,7 @@
+[0m[INFO] [1795046399.435835013] [fr3_home]: start [0.514, -0.122, -0.032, -1.126, -0.003, 0.986, 1.281][0m
+[0m[INFO] [1795046399.436476660] [fr3_home]: home  [0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785]  max joint change 71 deg, 4.7 s (+1 s settle)[0m
+[0m[INFO] [1795046399.454495038] [fr3_home]: path model: lowest arm point +44.7 cm above the table plane, tightest self-collision gap +16.5 cm[0m
+[0m[INFO] [1795046399.456649742] [fr3_home]: HOME: fr3_arm_controller already active, cartesian_impedance_target_controller not holding: home through the live controller, no swap (do not press Start during home)[0m
+[0m[INFO] [1795046405.159076283] [fr3_home]: HOME OK: home complete; teleop stays disengaged (press Start to engage)[0m
+HOME_CONFIRMED
+JTC inactive; no wrist forwarders

@@ -1,0 +1,15 @@
+{
+  "test_arm_calibration.py": "e27b3367db700974e55bf75ced8b9719cb720ef82bbcb4dc2568d6a68a585653",
+  "test_operator_reference.py": "c269092c5f840fb9484c52339b34af6de3c39938abebfd262ad6ddd0cd8fcc4a",
+  "palm_orientation.py": "f36fb6757d15dd8028417b963e00aa47bc763fa024d6743e2d2f64ffe8a0c781",
+  "body_wrist_reference.py": "8ab88de6213c5211505061a6841f921eeeb63455a6282cc83f18125e8ef6a3ea",
+  "solution_hand_detector.py": "45fa48736900538f1d2268cea2848a92fe891e5ed6838793d896ce827f909934",
+  "stable_palm_pose.py": "c86fd8e10e741e15c217fa1e9b1a9e98aba67c887b420e47f28061894cb6ca3c",
+  "body_frame.py": "cbe98b9d9f6e75ed6fe083e1317ebbcfbfaeef0e66cdb06aa17bb3be716ce28a",
+  "operator_reference.py": "886e36246c49eab984c3e6e233a33bc7ac1e725f9da25b6ac2e703af0fd84ae1",
+  "arm_calibration.py": "00942d3c685a6424bd9187eda5f0668b5111575e88ac8a0d6b577af296620929",
+  "operator_hand_tracker_debug.py": "0f66f769a0c1816f3fcb68133cd89feab4103f28c92d9ac53b2e7e7c19e114ae",
+  "rgbd_pose.py": "091031297086474f8fa73175a7533eeb05ae89bc5a5101151bd46cd56a654b74",
+  "hand_tracking_math.py": "5df7dab136c9d20c799d5c927bf278699f7dd9a75b433d4f03cdc2d380fe45b8",
+  "debug_recovery_detector.py": "b726df89e362e7377c0ec12e7130c3491550f6a0a894719d6b3a0323a5aa5f66"
+}
