@@ -35,14 +35,17 @@ DEFAULT_OBJECTS = [
 class MultiObjectExclusionNode(Node):
     def __init__(self):
         super().__init__("zed1_multi_object_exclusion")
-        self.declare_parameter("rgb_topic", "/vm/cable/rgb")
+        self.declare_parameter("rgb_topic", "/zed1/zed_node/rgb/image_rect_color")
         self.declare_parameter("model_path", "/tmp/trackpkg/sam2.1_t.pt")
         self.declare_parameter("device", "0")
-        self.declare_parameter("imgsz", 1024)
+        self.declare_parameter("imgsz", 640)
         self.declare_parameter("max_input_age_s", 1.25)
         self.declare_parameter("max_output_age_s", 1.40)
         self.declare_parameter("minimum_inference_interval_s", 0.75)
         self.declare_parameter("objects_json", json.dumps(DEFAULT_OBJECTS))
+        self.declare_parameter("selection_topic", "/wrist_map/target_selection")
+        self.declare_parameter("target_state_topic", "/wrist_map/target_state")
+        self.declare_parameter("selection_timeout_s", 1.0)
         self.declare_parameter("union_topic", "/zed1/object_exclusion_mask/compressed")
         self.declare_parameter("diagnostics_topic", "/zed1/object_exclusion_status")
         self.declare_parameter("debug_prefix", "/zed1/object_masks")
@@ -58,15 +61,19 @@ class MultiObjectExclusionNode(Node):
         self.max_age = float(self.get_parameter("max_input_age_s").value)
         self.max_output_age = float(self.get_parameter("max_output_age_s").value)
         self.min_interval = float(self.get_parameter("minimum_inference_interval_s").value)
+        self.selection_timeout = float(self.get_parameter("selection_timeout_s").value)
         self.latest: Image | None = None
         self.last_infer_wall = 0.0
         self.busy = False
         self.model = None
+        self.selection = {"value": None, "received": 0.0}
 
         self.union_pub = self.create_publisher(
             CompressedImage, str(self.get_parameter("union_topic").value), 1)
         self.diag_pub = self.create_publisher(
             String, str(self.get_parameter("diagnostics_topic").value), 10)
+        self.target_state_pub = self.create_publisher(
+            String, str(self.get_parameter("target_state_topic").value), 10)
         prefix = str(self.get_parameter("debug_prefix").value).rstrip("/")
         self.object_pubs = {
             spec.object_id: self.create_publisher(
@@ -75,6 +82,9 @@ class MultiObjectExclusionNode(Node):
         }
         self.create_subscription(Image, str(self.get_parameter("rgb_topic").value),
                                  self._on_image, 1)
+        self.create_subscription(
+            String, str(self.get_parameter("selection_topic").value),
+            self._on_selection, 10)
         self.create_timer(0.05, self._infer_latest)
         self.get_logger().info("ready; model loads on first fresh RGB frame")
 
@@ -84,6 +94,27 @@ class MultiObjectExclusionNode(Node):
 
     def _on_image(self, msg: Image) -> None:
         self.latest = msg
+
+    def _on_selection(self, msg: String) -> None:
+        self.selection.update(value=msg.data.strip(), received=time.monotonic())
+
+    def _selection_fresh(self) -> bool:
+        return (self.selection["value"] is not None and
+                time.monotonic() - self.selection["received"] <= self.selection_timeout)
+
+    def _publish_state(self, state: str) -> None:
+        self.target_state_pub.publish(String(data=state))
+
+    def _publish_safe_state_after_failure(self) -> None:
+        if not self._selection_fresh():
+            return
+        value = self.selection["value"]
+        if value == "NONE":
+            self._publish_state("NO_TARGET")
+        elif value in {spec.object_id for spec in self.specs}:
+            self._publish_state(f"LOST:{value}")
+        else:
+            self._publish_state("UNKNOWN")
 
     def _status(self, state: str, stamp: float, detail: str = "", stats=None) -> None:
         self.diag_pub.publish(String(data=json.dumps({
@@ -112,19 +143,25 @@ class MultiObjectExclusionNode(Node):
         age = now - stamp
         if age < 0 or age > self.max_age:
             self._status("STALE_INPUT", stamp, f"age_s={age:.3f}")
+            self._publish_safe_state_after_failure()
             return
         self.busy = True
         self.latest = None
         self.last_infer_wall = now
         try:
-            if src.encoding.lower() not in ("bgr8", "rgb8"):
+            encoding = src.encoding.lower()
+            if encoding not in ("bgr8", "rgb8", "bgra8", "rgba8"):
                 raise MaskRejected(f"unsupported RGB encoding {src.encoding}")
             dtype = np.uint8
-            channels = 3
+            channels = 4 if encoding in ("bgra8", "rgba8") else 3
             row = np.frombuffer(src.data, dtype=dtype).reshape(src.height, src.step)[:, :src.width * channels]
             image = row.reshape(src.height, src.width, channels).copy()
-            if src.encoding.lower() == "rgb8":
+            if encoding == "rgb8":
                 image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+            elif encoding == "rgba8":
+                image = cv2.cvtColor(image, cv2.COLOR_RGBA2BGR)
+            elif encoding == "bgra8":
+                image = cv2.cvtColor(image, cv2.COLOR_BGRA2BGR)
 
             if self.model is None:
                 torch.set_num_threads(2)
@@ -147,7 +184,27 @@ class MultiObjectExclusionNode(Node):
                 if m.shape != (h, w):
                     m = cv2.resize(m, (w, h), interpolation=cv2.INTER_NEAREST)
                 masks[spec.object_id] = m
-            union, stats = union_object_masks(masks, self.specs, (h, w))
+            # Validate and publish IDs independently. A failed non-target mask
+            # must not suppress a valid selected drill mask.
+            stats = {}
+            valid_masks = {}
+            spec_by_id = {spec.object_id: spec for spec in self.specs}
+            for object_id, mask in masks.items():
+                try:
+                    _, object_stats = union_object_masks(
+                        {object_id: mask}, [spec_by_id[object_id]], (h, w))
+                    valid_masks[object_id] = mask
+                    stats[object_id] = object_stats[object_id]
+                except MaskRejected as exc:
+                    stats[object_id] = {"rejected": str(exc)}
+
+            union = None
+            if len(valid_masks) == len(self.specs):
+                try:
+                    union, union_stats = union_object_masks(valid_masks, self.specs, (h, w))
+                    stats["_union"] = union_stats["_union"]
+                except MaskRejected as exc:
+                    stats["_union_rejected"] = {"reason": str(exc)}
 
             # Inference can be slower than a single RGB interval. Never publish
             # a geometrically valid but already-stale exclusion mask.
@@ -157,11 +214,24 @@ class MultiObjectExclusionNode(Node):
 
             # Per-object topics preserve IDs for later cloud/grasp consumers.
             # Union is published only after every required mask passes.
-            for object_id, mask in masks.items():
+            for object_id, mask in valid_masks.items():
                 self.object_pubs[object_id].publish(self._compressed_png(mask * 255, src))
-            self.union_pub.publish(self._compressed_png(union, src))
-            self._status("OK", stamp, f"age_s={output_age:.3f}", stats)
+            if union is not None:
+                self.union_pub.publish(self._compressed_png(union, src))
+            if self._selection_fresh():
+                selected = self.selection["value"]
+                if selected == "NONE":
+                    self._publish_state("NO_TARGET")
+                elif selected in valid_masks:
+                    self._publish_state(f"ACTIVE:{selected}")
+                elif selected in spec_by_id:
+                    self._publish_state(f"LOST:{selected}")
+                else:
+                    self._publish_state("UNKNOWN")
+            self._status("OK" if union is not None else "PARTIAL", stamp,
+                         f"age_s={output_age:.3f}", stats)
         except Exception as exc:
+            self._publish_safe_state_after_failure()
             self._status("REJECTED", stamp, f"{type(exc).__name__}: {exc}")
             self.get_logger().warn(f"withholding union mask for source frame {stamp:.3f}: {exc}",
                                    throttle_duration_sec=1.0)
