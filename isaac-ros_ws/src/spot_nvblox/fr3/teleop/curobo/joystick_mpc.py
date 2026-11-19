@@ -41,6 +41,7 @@ from curobo.util_file import load_yaml
 from curobo.wrap.reacher.mpc import MpcSolver, MpcSolverConfig
 
 from nvblox_msgs.srv import EsdfAndGradients
+from table_collision import build_world_config_data
 
 try:
     from spot_msgs.msg import JointCommand
@@ -111,6 +112,10 @@ class CuroboMpcNode(Node):
         self.declare_parameter('grid_size_m', [4.0, 4.0, 2.0])
         self.declare_parameter('esdf_frame_id', 'body')   # robot base frame (cuRobo planning frame)
         self.declare_parameter('esdf_global_frame', 'odom')  # nvblox global frame (odom in sim, vision on real)
+        # Optional static table collision overlay. Current estimated bounds are
+        # mesh-derived and must be physically verified before enabling on hardware.
+        self.declare_parameter('table_collision_enabled', False)
+        self.declare_parameter('table_collision_bounds_m', [0.25, 0.95, -0.55, 0.60, 0.0294, 0.10])
         # Target ESDF clear (cuMotion-style "GIGO" catch-all). On every ESDF request,
         # clear an object-sized region so any residual leak that slipped past the SAM2
         # dynamic mask (e.g. the one-frame re-entry leak before a secondary predictor
@@ -164,6 +169,10 @@ class CuroboMpcNode(Node):
         self.__voxel_size = self.get_parameter('voxel_size').get_parameter_value().double_value
         self.__grid_center_m = self.get_parameter('grid_center_m').get_parameter_value().double_array_value
         self.__grid_size_m = list(self.get_parameter('grid_size_m').get_parameter_value().double_array_value)
+        self._table_collision_enabled = self.get_parameter('table_collision_enabled').get_parameter_value().bool_value
+        self._table_collision_bounds_m = list(
+            self.get_parameter('table_collision_bounds_m').get_parameter_value().double_array_value
+        )
         self.target_frame = self.get_parameter('base_frame').get_parameter_value().string_value  # Frame for target object transforms
         self._esdf_query_frame = self.get_parameter('esdf_frame_id').get_parameter_value().string_value
         self._esdf_global_frame = self.get_parameter('esdf_global_frame').get_parameter_value().string_value
@@ -269,16 +278,21 @@ class CuroboMpcNode(Node):
 
         # Voxel world: pre-allocates the GPU ESDF buffer — update_voxel_data() fills it in-place
         # Use identity pose - ESDF data coordinates are transformed during AABB query
-        world_cfg = WorldConfig.from_dict({
-            'voxel': {
-                'world_voxel': {
-                    'dims': self.__grid_size_m,
-                    'pose': [0, 0, 0, 1, 0, 0, 0],  # Identity pose
-                    'voxel_size': self.__voxel_size,
-                    'feature_dtype': torch.float32,
-                },
-            },
-        })
+        world_data = build_world_config_data(
+            self.__grid_size_m,
+            self.__voxel_size,
+            self._table_collision_bounds_m if self._table_collision_enabled else None,
+        )
+        world_data['voxel']['world_voxel']['feature_dtype'] = torch.float32
+        world_cfg = WorldConfig.from_dict(world_data)
+        if self._table_collision_enabled:
+            self._log_info(
+                f"static table collision enabled in {self.target_frame}: "
+                f"bounds={self._table_collision_bounds_m} m",
+                event='config',
+            )
+        else:
+            self._log_info('static table collision disabled; voxel ESDF only', event='config')
 
         self._log_info('Loading MPC solver...', event='mpc')
         mpc_config = MpcSolverConfig.load_from_robot_config(
