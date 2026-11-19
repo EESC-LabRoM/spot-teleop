@@ -5,7 +5,9 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from drill_depth_filter import IntegrationPaused, apply_target_gate
+from drill_depth_filter import IntegrationPaused, apply_target_gate, scale_depth
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from state_logic import resolve_map_state
 
 
 class TargetDepthGateTests(unittest.TestCase):
@@ -49,6 +51,29 @@ class TargetDepthGateTests(unittest.TestCase):
     def test_empty_depth_pauses_instead_of_building_empty_map(self):
         with self.assertRaises(IntegrationPaused):
             apply_target_gate(np.zeros_like(self.depth), "NO_TARGET")
+
+
+    def test_depth_scale_changes_only_valid_positive_ranges(self):
+        depth = np.array([[0.0, np.nan, 1.2], [0.25, -1.0, np.inf]], dtype=np.float32)
+        scaled = scale_depth(depth, 0.9755371809)
+        self.assertEqual(scaled[0, 0], 0.0)
+        self.assertTrue(np.isnan(scaled[0, 1]))
+        self.assertAlmostEqual(float(scaled[0, 2]), 1.2 * 0.9755371809, places=6)
+        self.assertAlmostEqual(float(scaled[1, 0]), 0.25 * 0.9755371809, places=6)
+        self.assertEqual(scaled[1, 1], -1.0)
+        self.assertTrue(np.isinf(scaled[1, 2]))
+
+    def test_invalid_depth_scale_refused(self):
+        for scale in (0.0, -1.0, float("nan"), float("inf")):
+            with self.subTest(scale=scale), self.assertRaises(ValueError):
+                scale_depth(self.depth, scale)
+
+    def test_target_selection_and_tracker_state_are_distinct(self):
+        self.assertEqual(resolve_map_state("", "LOST", 0.0), "NO_TARGET")
+        self.assertEqual(resolve_map_state("drill", "TRACKING", 0.2), "ACTIVE:drill")
+        self.assertEqual(resolve_map_state("drill", "LOST", 0.2), "LOST:drill")
+        self.assertEqual(resolve_map_state("drill", "TRACKING", 4.0), "LOST:drill")
+        self.assertEqual(resolve_map_state("drill", "UNKNOWN", 0.2), "UNKNOWN:UNKNOWN")
 
 
 if __name__ == "__main__":

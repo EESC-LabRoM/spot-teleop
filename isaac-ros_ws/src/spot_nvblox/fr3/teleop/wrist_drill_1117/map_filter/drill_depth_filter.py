@@ -19,6 +19,17 @@ class IntegrationPaused(ValueError):
     """Selection or mask state is unsafe for map integration."""
 
 
+def scale_depth(depth: np.ndarray, scale: float) -> np.ndarray:
+    """Apply a positive depth scale to finite positive ranges, preserving 0/NaN."""
+    if not math.isfinite(scale) or scale <= 0:
+        raise ValueError("depth scale must be finite and positive")
+    out = depth.copy()
+    valid = np.isfinite(depth) & (depth > 0)
+    out[valid] = depth[valid] * scale
+    assert np.array_equal(out[~valid], depth[~valid], equal_nan=True)
+    return out
+
+
 def carve(depth: np.ndarray, mask: np.ndarray, dilate: int = 8):
     if depth.ndim != 2 or mask.ndim != 2:
         raise ValueError("2D images required")
@@ -85,7 +96,7 @@ def main():
     import rclpy
     from rclpy.node import Node
     from rclpy.qos import qos_profile_sensor_data, QoSProfile, ReliabilityPolicy
-    from sensor_msgs.msg import Image, CompressedImage
+    from sensor_msgs.msg import Image
     from std_msgs.msg import String
 
     rclpy.init()
@@ -96,12 +107,13 @@ def main():
     counts = collections.Counter()
     recent = {}
     mask_topic = n.declare_parameter(
-        "mask_topic", "/zed1/object_masks/drill/compressed").value
+        "mask_topic", "/vm/view_mask").value
     state_topic = n.declare_parameter(
         "target_state_topic", "/wrist_map/target_state").value
     mask_object_id = n.declare_parameter("mask_object_id", "drill").value
     state_timeout = float(n.declare_parameter("state_timeout_s", 3.0).value)
-    dilation_px = int(n.declare_parameter("dilation_px", 8).value)
+    dilation_px = int(n.declare_parameter("dilation_px", 0).value)
+    depth_scale = float(n.declare_parameter("depth_scale", 0.9755371809).value)
     min_remaining = int(n.declare_parameter("min_remaining_depth_pixels", 100).value)
     pub = n.create_publisher(Image, "/wrist_map/drill_free_depth",
                              qos_profile_sensor_data)
@@ -127,6 +139,8 @@ def main():
         outside = ~removed
         recent.update(
             mode=mode,
+            depth_scale=depth_scale,
+            mask_topic=mask_topic,
             depth_mask_delta_ms=(stamp(d) - mask_stamp) * 1000 if mask_stamp else None,
             target_state_age_ms=(time.monotonic() - selected["received"]) * 1000,
             removed_fraction=float(removed.mean()),
@@ -161,12 +175,13 @@ def main():
             dtype = np.dtype(">f4" if d.is_bigendian else "<f4")
             dep = np.frombuffer(d.data, dtype=dtype).reshape(
                 d.height, d.step // 4)[:, :d.width]
+            scaled = scale_depth(dep, depth_scale)
             try:
                 if state == "NO_TARGET":
                     out, removed = apply_target_gate(
-                        dep, state, dilate=dilation_px,
+                        scaled, state, dilate=dilation_px,
                         min_remaining_pixels=min_remaining)
-                    publish_depth(d, dep, out, removed, "no_target_full_depth", now=now)
+                    publish_depth(d, scaled, out, removed, "no_target_full_depth", now=now)
                     depths.remove(d)
                     continue
                 if state.startswith("LOST:"):
@@ -193,9 +208,9 @@ def main():
                 mask = np.frombuffer(m.data, np.uint8).reshape(
                     m.height, m.step)[:, :m.width]
                 out, removed = apply_target_gate(
-                    dep, state, mask, dilate=dilation_px,
+                    scaled, state, mask, dilate=dilation_px,
                     min_remaining_pixels=min_remaining)
-                publish_depth(d, dep, out, removed, "target_carved", stamp(m), now)
+                publish_depth(d, scaled, out, removed, "target_carved", stamp(m), now)
                 depths.remove(d)
                 masks.remove(m)
             except (ValueError, AssertionError) as exc:
@@ -208,18 +223,11 @@ def main():
         counts["depth"] += 1
         process()
 
-    def compressed_cb(msg):
-        if "png" not in msg.format.lower():
-            counts["non_png_refused"] += 1
+    def mask_cb(msg):
+        if msg.encoding != "mono8" or msg.step < msg.width or len(msg.data) < msg.step * msg.height:
+            counts["refused_mask_encoding"] += 1
             return
-        arr = cv2.imdecode(np.frombuffer(msg.data, np.uint8), cv2.IMREAD_GRAYSCALE)
-        if arr is None:
-            counts["decode_refused"] += 1
-            return
-        raw = Image(header=msg.header, height=arr.shape[0], width=arr.shape[1],
-                    encoding="mono8", step=arr.shape[1], data=arr.tobytes())
-        counts["compressed_bytes"] += len(msg.data)
-        masks.append(raw)
+        masks.append(msg)
         process()
 
     def state_cb(msg):
@@ -237,8 +245,8 @@ def main():
 
     n.create_subscription(Image, "/franka_seg_zed1/depth", depth_cb,
                           qos_profile_sensor_data)
-    n.create_subscription(CompressedImage, mask_topic, compressed_cb,
-                          QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE))
+    n.create_subscription(Image, mask_topic, mask_cb,
+                          QoSProfile(depth=2, reliability=ReliabilityPolicy.RELIABLE))
     n.create_subscription(String, state_topic, state_cb, 10)
     n.create_timer(2.0, report)
     try:
