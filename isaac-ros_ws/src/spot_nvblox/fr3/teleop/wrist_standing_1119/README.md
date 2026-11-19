@@ -1,5 +1,7 @@
 # Standing hand teleop readiness, 2026-11-19
 
+**Current operational state: see CURRENT_STATUS.md. Warm candidates were stopped for the calibration lane; observations below describe the completed passive preparation.**
+
 Prepared for Hipolito's standing test. No physical motion, controller activation, gesture/gripper action or live target reseed was performed during preparation.
 
 Warm perception: `wrist-standing-perception-1119`, CPU-only, domain8, `/wrist_standing/{sample,tracking,overlay}`, ZED3 serial34046618. Same9c2b0e0 operator reference source, rgbd_body, fresh shoulder/elbow/wrist calibration; no bag person's saved profile. Fresh samples at about30Hz; capture age ~60-95ms. Preview http://100.88.134.127:47814/snapshot. TCP47814 preview and UDP47814 person calibration. The old `/wrist_debug_v8` tracker/dashboard remains intact and is NOT the standing candidate's data source.
