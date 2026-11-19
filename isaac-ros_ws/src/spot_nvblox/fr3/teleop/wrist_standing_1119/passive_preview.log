@@ -1,0 +1,8 @@
+Type: trajectory_msgs/msg/JointTrajectory
+Publisher count: 0
+Subscription count: 1
+[0m[INFO] [1795109414.337658600] [_ros2cli_9692]: waiting for service /controller_manager/list_controllers to become available...[0m
+[96mfr3_arm_controller            [0m joint_trajectory_controller/JointTrajectoryController       [96minactive[0m
+[92mfranka_robot_state_broadcaster[0m franka_robot_state_broadcaster/FrankaRobotStateBroadcaster  [92mactive  [0m
+[92mjoint_state_broadcaster       [0m joint_state_broadcaster/JointStateBroadcaster               [92mactive  [0m
+{"samples": 50, "accepted": 50, "refused": 0, "max_joint_deviation_rad": 0.00037097930908203125, "scope": "JTC inactive; no physical writer; real measured joints into private MPC preview plus fresh feasible exact packet match"}

@@ -1,0 +1,11 @@
+# Murilo VM object segmentation assessment, Nov19
+
+Read-only observation at~17:23Z: VM103 ubuntu-gpu, two RTX A2000 12GB, GPU0 ~5.4GiB/100% from simulation, GPU1 ~25MiB/0%. Host47GiB RAM,22GiB used,24GiB available. vm-tracker-prod is assigned GPU1, up, ~581MiB host RAM, waiting for a new seed. Spare VRAM is not a four-target throughput benchmark.
+
+Live source: /home/nexus/spot-teleop/spot-ros2_ws/src/spot_operation_ros2/spot_operation_ros2/sam2_tracker_node.py. Model SAM2 `sam2.1_t.pt`, configured image size1024. `_apply_seed_command` accepts generic bbox_1000, grasp points, optional label/confidence and exact frame stamp. It does not require class drill. Therefore tennis ball, small Sprite bottle and Phillips screwdriver are eligible as selected box/point-seeded objects; segmentation quality must be checked on the actual views. Recognizing the Sprite brand or screwdriver tip type is a detection/selection task, not guaranteed by a generic pixel seed.
+
+Current integration is single selected target: one target_object frame, one tracking3d point, best mask selected from predictor results. Multiple on-object seed points are NOT multiple object instances. Grasp/regrasp/viewer paths remain drill-specific (drill.json, drill loop, held binding). No live target was reseeded and no VM source/container/settings were changed by this assessment.
+
+Capability verdict: VM has an appropriate existing SAM2 pipeline and available GPU1 for testing each selected object. Simultaneously tracking all4 is a proposed extension requiring persistent object IDs, per-object masks/status/TF and explicit active target selection, followed by measured FPS/latency/memory testing. Do not claim that4 simultaneous streams already run or promise a frame rate from idle VRAM.
+
+Object-dependent depth issue: current seg_view.py drill cloud erodes the mask with5x5 kernel and requires150 points in several stages. A thin screwdriver shaft can disappear under that erosion. Bottle depth and mask support should also be measured on the actual object; do not treat RGB segmentation as a valid grasp cloud. Ball/drill should be evaluated too. Keep nonselected objects in the collision map; only the explicitly selected grasp target should receive the existing exclusion/carving policy. Camera->robot extrinsics remain independently unvalidated and ZED2 is intentionally unposed.

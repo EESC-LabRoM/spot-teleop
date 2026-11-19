@@ -1,0 +1,6 @@
+[96mfr3_arm_controller            [0m joint_trajectory_controller/JointTrajectoryController       [96minactive[0m
+[92mfranka_robot_state_broadcaster[0m franka_robot_state_broadcaster/FrankaRobotStateBroadcaster  [92mactive  [0m
+[92mjoint_state_broadcaster       [0m joint_state_broadcaster/JointStateBroadcaster               [92mactive  [0m
+Type: trajectory_msgs/msg/JointTrajectory
+Publisher count: 0
+Subscription count: 1
