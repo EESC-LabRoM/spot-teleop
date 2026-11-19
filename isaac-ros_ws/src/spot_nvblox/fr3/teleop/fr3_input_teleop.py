@@ -46,6 +46,7 @@ from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from rcl_interfaces.msg import SetParametersResult
 from rclpy.time import Time
 from sensor_msgs.msg import Joy
+from trajectory_msgs.msg import JointTrajectory
 import json
 from std_msgs.msg import Bool, Float32MultiArray, String
 from std_srvs.srv import Trigger
@@ -184,6 +185,14 @@ class Fr3JoyTeleop(Node):
         self.mpc_routed=self.pub.topic_name.startswith('/fr3_curobo/')
         self.curobo_status=None;self.curobo_status_at=0.
         self.create_subscription(String,'/fr3_curobo/status',self._on_curobo_status,1)
+        # Direct-MPC A/B (Murilo): with direct_mpc:=true the engage gate checks the live
+        # direct path (JTC active + planner preview fresh) instead of the bridge status.
+        # Default false = today's bridge behavior, byte for byte.
+        self.direct_mpc=bool(P("direct_mpc",False))
+        self.preview_topic=str(P("preview_topic","/fr3_joystick_mpc/joint_preview"))
+        self.preview_at=0.
+        self.direct_jtc_active,self.direct_jtc_checked,self.direct_future=False,0.,None
+        self.create_subscription(JointTrajectory,self.preview_topic,self._on_preview,1)
         self.engaged_pub = self.create_publisher(Bool, "/teleop/engaged", 1)
         self.scale_pub = self.create_publisher(Float32MultiArray, "/teleop/speed_scale",
                                                QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL, reliability=ReliabilityPolicy.RELIABLE))
@@ -196,7 +205,7 @@ class Fr3JoyTeleop(Node):
         self.create_service(Trigger, "/teleop/zed_start", lambda rq, rs: self._srv(rs, self.start_zed()))
         self.create_service(Trigger, "/teleop/stop", lambda rq, rs: self._srv(rs, self.stop_teleop()))
         self.create_service(Trigger, "/teleop/zed_engage", lambda rq, rs: self._srv(rs, self.engage_zed()))
-        self.create_service(Trigger, "/teleop/engage", lambda rq, rs: self._srv(rs, self.engage()))
+        self.create_service(Trigger, "/teleop/engage", lambda rq, rs: self._srv(rs, self.engage(via_service=True)))
         self.create_service(Trigger, "/teleop/disengage", lambda rq, rs: self._srv(rs, self.disengage()))
         self.create_service(Trigger, "/teleop/home", lambda rq, rs: self._srv(rs, self.start_home()))
         gns = P("gripper_ns", "/franka_gripper").rstrip("/")
@@ -204,6 +213,7 @@ class Fr3JoyTeleop(Node):
         self.move_ac = ActionClient(self, Move, f"{gns}/move") if Move else None
         self.tf = Buffer(); TransformListener(self.tf, self)
         self.axes, self.buttons, self.prev_buttons, self.last_input = {}, {}, {}, 0.0
+        self.recenter_required = False
         self.lock = threading.Lock(); self.engaged = False; self.cmd_p = self.cmd_q = self.tgt_p = self.tgt_q = None
         self.n_pub = self.n_hold = 0
         self.pad_layout = ""
@@ -219,6 +229,7 @@ class Fr3JoyTeleop(Node):
         self.cm_client = self.create_client(ListControllers, "/controller_manager/list_controllers")
         self.cm_future = None
         self.create_timer(0.5, self._check_controller)
+        self.create_timer(0.5, self._poll_direct_jtc)
         self.create_timer(0.5, lambda: self.engaged_pub.publish(Bool(data=self.engaged)))
         self.zed_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.zed_socket.bind(("127.0.0.1", int(P("zed_port", 47813))))
@@ -391,8 +402,37 @@ class Fr3JoyTeleop(Node):
         try:self.curobo_status=json.loads(message.data);self.curobo_status_at=time.monotonic()
         except (ValueError,TypeError):self.curobo_status=None
 
+    def _on_preview(self,message):
+        del message
+        self.preview_at=time.monotonic()
+
+    def _poll_direct_jtc(self):
+        # Async JTC poll for direct mode (mirrors _check_controller; never blocks engage).
+        if self.direct_future is not None and not self.direct_future.done():
+            if time.monotonic()-getattr(self,'direct_sent',0.0)<2.0:return
+            try:self.cm_client.remove_pending_request(self.direct_future)
+            except Exception:pass
+            self.direct_future=None
+        if self.direct_future is not None or not self.cm_client.service_is_ready():
+            if self.direct_future is None:self.direct_jtc_active=False
+            return
+        self.direct_future=self.cm_client.call_async(ListControllers.Request())
+        self.direct_sent=time.monotonic()
+        def done(f):
+            try:self.direct_jtc_active=any(c.name=='fr3_arm_controller' and c.state=='active' for c in f.result().controller)
+            except Exception:self.direct_jtc_active=False
+            self.direct_jtc_checked=time.monotonic()
+        self.direct_future.add_done_callback(done)
+
+    def _direct_ready(self):
+        # Engage gate for the direct MPC->JTC path: truthful local checks only, no bridge.
+        if not self.direct_jtc_active:return 'direct path: fr3_arm_controller not active'
+        if self.preview_at<=0 or time.monotonic()-self.preview_at>.6:return 'direct path: planner preview absent/stale'
+        return None
+
     def _zed_controller_ready(self):
         if self.mpc_routed:
+            if self.direct_mpc:return self._direct_ready()
             if self.curobo_status is None or time.monotonic()-self.curobo_status_at>.6:return 'cuRobo bridge absent/stale'
             status=self.curobo_status
             if status.get('mode_ready') and status.get('command_ready'):return None
@@ -586,7 +626,7 @@ class Fr3JoyTeleop(Node):
         if self.input_source != "zed": return False, "Select ZED3 first"
         return self.engage()
 
-    def engage(self):
+    def engage(self, via_service=False):
         if self.mpc_routed:
             why=self._zed_controller_ready()
             if why:return False,why
@@ -607,6 +647,7 @@ class Fr3JoyTeleop(Node):
         with self.lock:
             self.cmd_p, self.cmd_q, self.tgt_p, self.tgt_q, self.engaged = p.copy(), q.copy(), p.copy(), q.copy(), True
             self.meas_p, self.meas_q = p.copy(), q.copy()
+            self.recenter_required = bool(via_service and self.input_source != "zed")
             if self.input_source == "zed":
                 if not self._zed_live():
                     self.engaged = False
@@ -628,7 +669,7 @@ class Fr3JoyTeleop(Node):
         self.zed_loss_sample=None
         self.grip_candidate, self.grip_since, self.grip_frames = None, 0., 0
         self.grip_last, self.grip_sent = None, self.zed_stamp
-        with self.lock: self.engaged = False
+        with self.lock: self.engaged = False; self.recenter_required = False
         self.engaged_pub.publish(Bool(data=False)); self.get_logger().info("disengaged: the controller holds the last pose")
         return True, "disengaged"
 
@@ -707,9 +748,16 @@ class Fr3JoyTeleop(Node):
         z = (float(buttons.get(btn["z_up"], 0)) - self._axis(ax["z"], axes, trig)) if live else 0.0
         yaw = (float(buttons.get(btn["yaw_ccw"], 0)) - self._axis(ax["yaw"], axes, trig)) if live else 0.0
         k = self.speed_scale; v = np.array([x * self.v_lin, y * self.v_lin, z * self.v_z]) * k; w = np.array([r, p, yaw]) * self.w_ang * self.rot_scale
+        if self.input_source != "zed" and self.recenter_required:
+            if x == y == r == p == z == yaw == 0.0:
+                self.recenter_required = False
+                self.get_logger().info("sticks re-centered after service engage: driving enabled")
+            else:
+                v, w = np.zeros(3), np.zeros(3)
         if self.input_source == "zed":
             why = self._zed_controller_ready()
             if why:
+                self.get_logger().warn('ZED controller stop: '+why)
                 self.disengage(); self.zed_note = why; self.zed_controller_note = why
                 return
             # A brief dropout freezes commands immediately; never extrapolate a stale hand.
