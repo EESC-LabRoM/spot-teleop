@@ -59,4 +59,4 @@ Dashboard GET returned 200 (about 100 KB); same-origin ZED1 and ZED2 snapshot pr
 
 **Useful references:** this handoff; `remote_sim/run/bagtest_20261119/` (stale `fr3-bag-control` inspect/log snapshot; old container exit 143, not removed); `teleop/curobo/table_collision.py`; `joystick_mpc.py`; `spot-ros2_ws/src/spot_operation_ros2/tools/patch_lab_dashboard.py`. Table preview bounds are x=[0.25,0.95], y=[-0.55,0.60], top z=0.040 m, thickness 0.10 m; XY still needs tape verification. Passive check: ROS domain 8, safe packet port 0, joint preview remapped away from hardware; ESDF calls 15–32 ms, combined voxel+primitive checker enabled, solver OK. Preview stopped afterwards.
 
-**Repository:** worktree `/tmp/wrist-publish-20261119`, branch `wrist-publish-20261119`, remote `origin` (`EESC-LabRoM/spot-teleop`); last pushed commit before this note: `82352d0`. Commit author rule: MHC-CodeSmith, no AI co-author trailer.
+**Repository:** worktree `/tmp/wrist-publish-20261119`, branch `wrist-publish-20261119`, remote `origin` (`EESC-LabRoM/spot-teleop`); latest pushed handoff commit: `410e352`. Commit author rule: MHC-CodeSmith, no AI co-author trailer.
