@@ -60,3 +60,9 @@ Dashboard GET returned 200 (about 100 KB); same-origin ZED1 and ZED2 snapshot pr
 **Useful references:** this handoff; `remote_sim/run/bagtest_20261119/` (stale `fr3-bag-control` inspect/log snapshot; old container exit 143, not removed); `teleop/curobo/table_collision.py`; `joystick_mpc.py`; `spot-ros2_ws/src/spot_operation_ros2/tools/patch_lab_dashboard.py`. Table preview bounds are x=[0.25,0.95], y=[-0.55,0.60], top z=0.040 m, thickness 0.10 m; XY still needs tape verification. Passive check: ROS domain 8, safe packet port 0, joint preview remapped away from hardware; ESDF calls 15–32 ms, combined voxel+primitive checker enabled, solver OK. Preview stopped afterwards.
 
 **Repository:** worktree `/tmp/wrist-publish-20261119`, branch `wrist-publish-20261119`, remote `origin` (`EESC-LabRoM/spot-teleop`); handoff commits: `410e352` (preflight handoff), `7abb94a` (this note correction); both pushed. Commit author rule: MHC-CodeSmith, no AI co-author trailer.
+
+## 2026-11-19 live readiness recheck
+
+At ~21:55Z on the tower, `fr3-ros2` was up; `fr3_arm_controller` was INACTIVE, broadcasters ACTIVE, and `/fr3_arm_controller/joint_trajectory` had 0 publishers (read-only ROS checks). A lane read `robot_mode=1` (Idle), no current errors; FCI had been enabled by Murilo earlier. No physical bag follower/replay process was running. The robot resource was released after the check.
+
+Murilo coordination request routed to the real-calibration lane at 21:54Z: confirm current mode/FCI, physically clear/table bounds (touch measurements if needed), and give direct go/no-go for guarded bag replay. No reply was present at 21:55Z. XY bounds remain unmeasured; table clearance is unconfirmed. The current grasp broker supports the drill only, so other-object grasp attempts remain unsupported. No activation or movement was attempted.
