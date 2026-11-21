@@ -1,0 +1,192 @@
+{
+ "run": "20261121_052029_drill_loop_regen",
+ "grasp_pos": [
+  0.4117,
+  -0.1606,
+  0.2967
+ ],
+ "grasp_tcp": [
+  0.4196,
+  -0.1451,
+  0.1948
+ ],
+ "approach": [
+  0.077,
+  0.15,
+  -0.986
+ ],
+ "map_z_bias": 0.0,
+ "depth": 0.03,
+ "flip_deg": 0.0,
+ "z_offset": 0.0,
+ "table_z": 0.0291,
+ "ik_err_mm": 0.09,
+ "ik_err_deg": 0.003,
+ "stages": {
+  "S1_home_to_pre": {
+   "q": [
+    [
+     -0.27902,
+     -0.30792,
+     -0.15122,
+     -2.44642,
+     0.14758,
+     2.14554,
+     1.75357
+    ]
+   ],
+   "t": [
+    9.682
+   ]
+  },
+  "S2_pre_to_grasp": {
+   "q": [
+    [
+     -0.23168,
+     -0.09548,
+     -0.13985,
+     -2.57277,
+     0.25473,
+     2.48006,
+     1.68482
+    ]
+   ],
+   "t": [
+    6.0
+   ]
+  },
+  "S3_lift": {
+   "q": [
+    [
+     -0.25461,
+     -0.28021,
+     -0.1299,
+     -2.47217,
+     0.16527,
+     2.20381,
+     1.78004
+    ]
+   ],
+   "t": [
+    6.0
+   ]
+  },
+  "S4_put_back": {
+   "q": [
+    [
+     -0.23015,
+     -0.09551,
+     -0.14141,
+     -2.57279,
+     0.25449,
+     2.4801,
+     1.685
+    ]
+   ],
+   "t": [
+    6.0
+   ]
+  },
+  "S5_grasp_to_pre": {
+   "q": [
+    [
+     -0.27615,
+     -0.30805,
+     -0.15397,
+     -2.44644,
+     0.14658,
+     2.14565,
+     1.75436
+    ]
+   ],
+   "t": [
+    6.0
+   ]
+  },
+  "S6_pre_to_home": {
+   "q": [
+    [
+     0.0,
+     -0.7854,
+     0.0,
+     -2.35619,
+     0.0,
+     1.5708,
+     0.7854
+    ]
+   ],
+   "t": [
+    9.69
+   ]
+  }
+ },
+ "checks": {
+  "S1_home_to_pre": {
+   "min_obstacle_m": 0.221,
+   "min_table_clear_m": 0.284,
+   "arm_links_in_drill_box": false,
+   "n_waypoints": 1,
+   "joint_limit_margin_rad": 0.594
+  },
+  "S2_pre_to_grasp": {
+   "min_obstacle_m": 0.118,
+   "min_table_clear_m": 0.166,
+   "arm_links_in_drill_box": false,
+   "n_waypoints": 1,
+   "joint_limit_margin_rad": 0.467
+  },
+  "S3_lift": {
+   "min_obstacle_m": 0.118,
+   "min_table_clear_m": 0.166,
+   "arm_links_in_drill_box": false,
+   "n_waypoints": 1,
+   "joint_limit_margin_rad": 0.568
+  },
+  "S4_put_back": {
+   "min_obstacle_m": 0.118,
+   "min_table_clear_m": 0.166,
+   "arm_links_in_drill_box": false,
+   "n_waypoints": 1,
+   "joint_limit_margin_rad": 0.467
+  },
+  "S5_grasp_to_pre": {
+   "min_obstacle_m": 0.118,
+   "min_table_clear_m": 0.166,
+   "arm_links_in_drill_box": false,
+   "n_waypoints": 1,
+   "joint_limit_margin_rad": 0.594
+  },
+  "S6_pre_to_home": {
+   "min_obstacle_m": 0.221,
+   "min_table_clear_m": 0.284,
+   "arm_links_in_drill_box": false,
+   "n_waypoints": 1,
+   "joint_limit_margin_rad": 0.684
+  },
+  "grasp_hand": {
+   "palm_pts_in_drill": 0,
+   "finger_body_pts": 0,
+   "pts_between_pads": 125,
+   "tcp_below_local_top_cm": 4.9,
+   "higher_tip_below_top_cm": 4.5
+  }
+ },
+ "problems": [],
+ "hand_R": [
+  [
+   0.104435,
+   -0.991536,
+   0.077139
+  ],
+  [
+   -0.984371,
+   -0.091998,
+   0.150166
+  ],
+  [
+   -0.141798,
+   -0.091616,
+   -0.985647
+  ]
+ ]
+}

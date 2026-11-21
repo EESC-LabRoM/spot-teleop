@@ -1,0 +1,33 @@
+{
+ "run": "20261121_050322_drill_oneshot_regen",
+ "frame": "fr3_hand",
+ "spheres": [
+  [
+   0.0115,
+   0.0044,
+   0.0681,
+   0.0703
+  ],
+  [
+   0.013,
+   0.0037,
+   0.0779,
+   0.0882
+  ],
+  [
+   -0.0128,
+   -0.0107,
+   0.1701,
+   0.12
+  ],
+  [
+   -0.0331,
+   0.0044,
+   0.1701,
+   0.12
+  ]
+ ],
+ "margin_m": 0.012,
+ "coverage": 0.982,
+ "source": "v3: 3 searched cuts along hand z, box-centre spheres, r = p97 + margin <= 0.12, far end capped at bottom + 1.5 cm"
+}

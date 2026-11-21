@@ -1,0 +1,38 @@
+{
+  "scope": "snapshot_preview_only_not_routed_to_map",
+  "targets": [
+    {
+      "id": "tennis_ball",
+      "name": "Tennis ball",
+      "pixels": 962,
+      "coverage_pct": 0.4175347222222222,
+      "survives_drill_erosion_pixels": 692,
+      "status": "preview_needs_visual_check",
+      "box_norm": [
+        0.48,
+        0.3,
+        0.545,
+        0.43
+      ]
+    },
+    {
+      "id": "sprite",
+      "name": "Sprite bottle",
+      "pixels": 3370,
+      "coverage_pct": 1.4626736111111112,
+      "survives_drill_erosion_pixels": 2753,
+      "status": "preview_needs_visual_check",
+      "box_norm": [
+        0.23,
+        0.31,
+        0.34,
+        0.62
+      ]
+    }
+  ],
+  "image_width": 640,
+  "image_height": 360,
+  "model_load_s": 0.6049820800544694,
+  "inference_s": 1.072093580965884,
+  "gpu_peak_mb": 482.83837890625
+}

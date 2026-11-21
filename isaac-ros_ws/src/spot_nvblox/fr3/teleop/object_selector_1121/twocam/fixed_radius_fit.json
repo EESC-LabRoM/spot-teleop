@@ -1,0 +1,24 @@
+{
+  "1": {
+    "xy": [
+      0.4057247871510652,
+      -0.2554011528240356
+    ],
+    "rms_m": 0.004508945989305374,
+    "median_abs_m": 0.0034673473174935965,
+    "p90_abs_m": 0.007626776698151306
+  },
+  "2": {
+    "xy": [
+      0.4169076472334947,
+      -0.2673197648689871
+    ],
+    "rms_m": 0.006524511700163093,
+    "median_abs_m": 0.005354765897638444,
+    "p90_abs_m": 0.01055528320703127
+  },
+  "xy_gap_m": 0.01634349022397785,
+  "radius_m": 0.0335,
+  "assumed_table_m": 0.0287,
+  "interpretation": "Model-constrained diagnostic only; camera calibration, stereo bias, partial surface, and object motion remain possible contributors."
+}
