@@ -1,3 +1,20 @@
+# STATUS — 2026-11-21 ~09:00Z (Claude lane cc29b70d)
+
+- No VLM in the live path: dashboard button = identity, ZED1 click = SAM2 seed
+  (`/perception/seed_command`, confidence 1.0). Gemini seed hooks exist but are unused.
+- Commit 86b3513: selector `/object-target` reports `y_enabled` only while the tracker is
+  TRACKING and the map gate is `ACTIVE:<selected>`; `y_armed` and `y_block` give the policy
+  and the reason (e.g. Sprite LOST -> "reselect it"). Deployed on the VM (vm-object-selector).
+- Robot left at Home, gripper open, all resource claims released. Sprite selected but LOST.
+- Ball next steps (Y stays locked for the ball until all are done):
+  1. Spot C held-out check with `object_selector_1121/ball_truth/carry_BC.json` (needs operator go).
+  2. `PLANNERS['tennis_ball']`: ZED2 ray-on-plane centre with mean-bias correction, vertical
+     grasp, TCP 6 mm below centre, 1 cm waypoints, 15 N grasp (see `ball_calib/ball_plan.py`).
+  3. Planning-only check against A/B/C; enable Y only if error <= ~3 mm, after a held-out replay.
+- Do not use the wrist RealSense for the ball: hand-eye is not rigid (5-15 mm, ball_calib/RESULTS.md).
+
+---
+
 # BALL GROUND TRUTH + COMMIT — 2026-11-21 ~08:40Z (Claude lane cc29b70d)
 
 - Ball centred by gripper at A (0.420,-0.270); carried+placed at B (0.38,-0.15): first
