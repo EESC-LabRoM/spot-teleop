@@ -1,0 +1,271 @@
+{
+ "20261121_053830_drill_loop_regen": [
+  {
+   "model": "live_v3",
+   "n_spheres": 4,
+   "coverage_margin": 0.9697,
+   "coverage_inside": 0.9952,
+   "worst_point_outside_mm": 4.9,
+   "support_coverage": 0.2308,
+   "base_band_uncovered_mm": 10.5,
+   "grasp_floor_mm": -34.7,
+   "lift_floor_min_mm": -34.7,
+   "lift_floor_end_mm": 65.2,
+   "lateral_overhang_max_mm": 60.8,
+   "lateral_overhang_sum_mm": 192.9,
+   "volume_l": 13.57,
+   "n_points": 3758,
+   "n_support": 156,
+   "pass": false,
+   "reasons": [
+    "coverage 0.9697 < 0.98",
+    "points outside model (worst 4.9 mm)",
+    "below table at grasp by 34.7 mm"
+   ]
+  },
+  {
+   "model": "milp_n4_supportNone",
+   "fit": {
+    "status": 1,
+    "message": "Time limit reached. (HiGHS Status 13: model_status is Time limit reached; primal_status is None)",
+    "candidates": 38919,
+    "points": 837,
+    "support_points": 0,
+    "support_floor_mm": null
+   },
+   "pass": false,
+   "reasons": [
+    "infeasible or no solution: Time limit reached. (HiGHS Status 13: model_status is Time limit reached; primal_status is None)"
+   ]
+  },
+  {
+   "model": "milp_n4_support10",
+   "fit": {
+    "status": 1,
+    "message": "Time limit reached. (HiGHS Status 13: model_status is Time limit reached; primal_status is None)",
+    "candidates": 38915,
+    "points": 837,
+    "support_points": 12,
+    "support_floor_mm": 10
+   },
+   "pass": false,
+   "reasons": [
+    "infeasible or no solution: Time limit reached. (HiGHS Status 13: model_status is Time limit reached; primal_status is None)"
+   ]
+  },
+  {
+   "model": "milp_n4_support5",
+   "fit": {
+    "status": 0,
+    "message": "Optimization terminated successfully. (HiGHS Status 7: Optimal)",
+    "candidates": 40878,
+    "points": 837,
+    "support_points": 12,
+    "support_floor_mm": 5,
+    "objective_max_overhang_mm": 104.6
+   },
+   "n_spheres": 4,
+   "coverage_margin": 0.9973,
+   "coverage_inside": 1.0,
+   "worst_point_outside_mm": 0.0,
+   "support_coverage": 0.6667,
+   "base_band_uncovered_mm": 0.5,
+   "grasp_floor_mm": 0.5,
+   "lift_floor_min_mm": 0.5,
+   "lift_floor_end_mm": 100.4,
+   "lateral_overhang_max_mm": 104.6,
+   "lateral_overhang_sum_mm": 348.0,
+   "volume_l": 19.37,
+   "n_points": 3758,
+   "n_support": 156,
+   "spheres_hand": [
+    [
+     -0.1836,
+     0.0773,
+     0.2283,
+     0.11
+    ],
+    [
+     0.0343,
+     0.0616,
+     0.1613,
+     0.11
+    ],
+    [
+     -0.0833,
+     0.1295,
+     0.1189,
+     0.12
+    ],
+    [
+     -0.0627,
+     0.0221,
+     0.1441,
+     0.12
+    ]
+   ],
+   "pass": true,
+   "reasons": []
+  },
+  {
+   "model": "milp_n6_supportNone",
+   "fit": {
+    "status": 1,
+    "message": "Time limit reached. (HiGHS Status 13: model_status is Time limit reached; primal_status is None)",
+    "candidates": 38919,
+    "points": 837,
+    "support_points": 0,
+    "support_floor_mm": null
+   },
+   "pass": false,
+   "reasons": [
+    "infeasible or no solution: Time limit reached. (HiGHS Status 13: model_status is Time limit reached; primal_status is None)"
+   ]
+  },
+  {
+   "model": "milp_n6_support10",
+   "fit": {
+    "status": 1,
+    "message": "Time limit reached. (HiGHS Status 13: model_status is Time limit reached; primal_status is None)",
+    "candidates": 38915,
+    "points": 837,
+    "support_points": 12,
+    "support_floor_mm": 10
+   },
+   "pass": false,
+   "reasons": [
+    "infeasible or no solution: Time limit reached. (HiGHS Status 13: model_status is Time limit reached; primal_status is None)"
+   ]
+  },
+  {
+   "model": "milp_n6_support5",
+   "fit": {
+    "status": 1,
+    "message": "Time limit reached. (HiGHS Status 13: model_status is Time limit reached; primal_status is None)",
+    "candidates": 40878,
+    "points": 837,
+    "support_points": 12,
+    "support_floor_mm": 5
+   },
+   "pass": false,
+   "reasons": [
+    "infeasible or no solution: Time limit reached. (HiGHS Status 13: model_status is Time limit reached; primal_status is None)"
+   ]
+  }
+ ],
+ "20261121_050322_drill_oneshot_regen": [
+  {
+   "model": "live_v3",
+   "n_spheres": 4,
+   "coverage_margin": 0.9655,
+   "coverage_inside": 0.9836,
+   "worst_point_outside_mm": 42.2,
+   "support_coverage": 0.643,
+   "base_band_uncovered_mm": 0.5,
+   "grasp_floor_mm": -14.8,
+   "lift_floor_min_mm": -14.8,
+   "lift_floor_end_mm": 85.2,
+   "lateral_overhang_max_mm": 49.8,
+   "lateral_overhang_sum_mm": 107.3,
+   "volume_l": 9.69,
+   "n_points": 6203,
+   "n_support": 465,
+   "pass": false,
+   "reasons": [
+    "coverage 0.9655 < 0.98",
+    "points outside model (worst 42.2 mm)",
+    "below table at grasp by 14.8 mm"
+   ]
+  },
+  {
+   "model": "milp_n4_supportNone",
+   "fit": {
+    "status": 2,
+    "message": "The problem is infeasible. (HiGHS Status 8: model_status is Infeasible; primal_status is None)",
+    "candidates": 28695,
+    "points": 1300,
+    "support_points": 0,
+    "support_floor_mm": null
+   },
+   "pass": false,
+   "reasons": [
+    "infeasible or no solution: The problem is infeasible. (HiGHS Status 8: model_status is Infeasible; primal_status is None)"
+   ]
+  },
+  {
+   "model": "milp_n4_support10",
+   "fit": {
+    "status": 2,
+    "message": "The problem is infeasible. (HiGHS Status 8: model_status is Infeasible; primal_status is None)",
+    "candidates": 28695,
+    "points": 1300,
+    "support_points": 0,
+    "support_floor_mm": 10
+   },
+   "pass": false,
+   "reasons": [
+    "infeasible or no solution: The problem is infeasible. (HiGHS Status 8: model_status is Infeasible; primal_status is None)"
+   ]
+  },
+  {
+   "model": "milp_n4_support5",
+   "fit": {
+    "status": 2,
+    "message": "The problem is infeasible. (HiGHS Status 8: model_status is Infeasible; primal_status is None)",
+    "candidates": 28695,
+    "points": 1300,
+    "support_points": 0,
+    "support_floor_mm": 5
+   },
+   "pass": false,
+   "reasons": [
+    "infeasible or no solution: The problem is infeasible. (HiGHS Status 8: model_status is Infeasible; primal_status is None)"
+   ]
+  },
+  {
+   "model": "milp_n6_supportNone",
+   "fit": {
+    "status": 2,
+    "message": "The problem is infeasible. (HiGHS Status 8: model_status is Infeasible; primal_status is None)",
+    "candidates": 28695,
+    "points": 1300,
+    "support_points": 0,
+    "support_floor_mm": null
+   },
+   "pass": false,
+   "reasons": [
+    "infeasible or no solution: The problem is infeasible. (HiGHS Status 8: model_status is Infeasible; primal_status is None)"
+   ]
+  },
+  {
+   "model": "milp_n6_support10",
+   "fit": {
+    "status": 2,
+    "message": "The problem is infeasible. (HiGHS Status 8: model_status is Infeasible; primal_status is None)",
+    "candidates": 28695,
+    "points": 1300,
+    "support_points": 0,
+    "support_floor_mm": 10
+   },
+   "pass": false,
+   "reasons": [
+    "infeasible or no solution: The problem is infeasible. (HiGHS Status 8: model_status is Infeasible; primal_status is None)"
+   ]
+  },
+  {
+   "model": "milp_n6_support5",
+   "fit": {
+    "status": 2,
+    "message": "The problem is infeasible. (HiGHS Status 8: model_status is Infeasible; primal_status is None)",
+    "candidates": 28695,
+    "points": 1300,
+    "support_points": 0,
+    "support_floor_mm": 5
+   },
+   "pass": false,
+   "reasons": [
+    "infeasible or no solution: The problem is infeasible. (HiGHS Status 8: model_status is Infeasible; primal_status is None)"
+   ]
+  }
+ ]
+}
