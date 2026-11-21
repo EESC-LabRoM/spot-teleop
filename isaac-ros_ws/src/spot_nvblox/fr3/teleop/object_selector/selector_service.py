@@ -122,6 +122,11 @@ def click_to_bbox_1000(click, half):
     return [max(0, cx - half), max(0, cy - half), min(1000, cx + half), min(1000, cy + half)]
 
 
+def publish_seed(publish, message):
+    """Exactly one seed per attempt; a duplicate can crash active SAM2 tracking."""
+    publish(message)
+
+
 def parse_teleop(text, now):
     """(ok, reason, flags) from the two `ros2 topic echo --once` outputs."""
     blocks = [b for b in text.split('---') if 'data:' in b]
@@ -566,9 +571,7 @@ class RosIO:
         self.seed3d = None
         s3 = None
         for attempt in range(3):
-            for _ in range(2):
-                self.seed_pub.publish(self.String(data=seed))
-                time.sleep(0.7)
+            publish_seed(self.seed_pub.publish, self.String(data=seed))
             log(f'seed sent (try {attempt + 1}) {seed}')
             t0 = time.time()
             while self.seed3d is None and time.time() - t0 < 25:

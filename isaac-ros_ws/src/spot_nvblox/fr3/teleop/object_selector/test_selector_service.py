@@ -1,5 +1,6 @@
 import time
 import unittest
+from unittest.mock import Mock
 
 import numpy as np
 
@@ -10,6 +11,30 @@ GS = ('data: \'{"enabled": true, "phase": "idle", "held": false, "busy": false}\
 
 
 class Pure(unittest.TestCase):
+    def test_publish_seed_once(self):
+        publish = Mock()
+        message = object()
+        S.publish_seed(publish, message)
+        publish.assert_called_once_with(message)
+
+    def test_seed_method_uses_one_publish_per_attempt(self):
+        import ast
+        import inspect
+        import textwrap
+        tree = ast.parse(textwrap.dedent(inspect.getsource(S.RosIO.seed)))
+        seed_publishes = [n for n in ast.walk(tree)
+                          if isinstance(n, ast.Call)
+                          and isinstance(n.func, ast.Attribute)
+                          and n.func.attr == 'publish'
+                          and isinstance(n.func.value, ast.Attribute)
+                          and n.func.value.attr == 'seed_pub']
+        self.assertEqual(len(seed_publishes), 0)
+        helpers = [n for n in ast.walk(tree)
+                   if isinstance(n, ast.Call)
+                   and isinstance(n.func, ast.Name)
+                   and n.func.id == 'publish_seed']
+        self.assertEqual(len(helpers), 1)
+
     def test_bbox(self):
         self.assertEqual(S.click_to_bbox_1000([0.5, 0.5], 40), [460, 460, 540, 540])
         self.assertEqual(S.click_to_bbox_1000([0.0, 1.0], 40), [0, 960, 40, 1000])
