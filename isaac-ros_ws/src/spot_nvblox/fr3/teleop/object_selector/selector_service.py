@@ -305,11 +305,18 @@ class Selector:
         can = bool(not self.busy and time.time() - self.last_switch > MIN_SWITCH_INTERVAL_S)
         fresh = True
         live_mask = self.node.mask_status()
+        # Y is only really armed while the tracker and map gate are on the selected object
+        # (the broker enforces the same); report it that way so a LOST target never reads ready.
+        live_ok = (live_mask.get('tracking') == 'TRACKING' and self.selected is not None
+                   and live_mask.get('map_state') == f'ACTIVE:{self.selected}')
+        y_now = bool(self.y_enabled and live_ok)
         return dict(selected=self.selected, generation=self.generation, phase=self.phase,
                     status=self.phase, reason=self.reason, busy=self.busy, can_select=can,
                     select_block=None if can else ('switch in progress' if self.busy else 'wait a few seconds between switches'),
                     last_teleop_check=None if flags is None else dict(ok=ok, reason=why, age_s=round(time.time() - flags.get('stamp', 0), 1)),
-                    y_enabled=self.y_enabled, mask=self.checks['mask'], map=self.checks['map'],
+                    y_enabled=y_now, y_armed=self.y_enabled,
+                    y_block=None if y_now or not self.y_enabled else 'tracker/map lost the selected object: reselect it',
+                    mask=self.checks['mask'], map=self.checks['map'],
                     grasp=self.checks['grasp'], tracking=live_mask,
                     targets={k: dict(label=v['label'], y_validated=k in Y_VALIDATED,
                                      y_lock_reason=Y_LOCK_REASON.get(k)) for k, v in TARGETS.items()},
