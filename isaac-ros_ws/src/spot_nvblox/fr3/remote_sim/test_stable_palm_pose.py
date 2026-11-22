@@ -6,18 +6,40 @@ class PalmStabilityTests(unittest.TestCase):
     def palm(self):return np.array([[0,0,1],[.035,.065,1],[.01,.075,1],[-.015,.07,1],[-.035,.055,1]])
     def q(self,a):return np.array([0,0,math.sin(a/2),math.cos(a/2)])
     def test_fit_follows_real_rotation_and_translation(self):
-        f=RobustPalmFrame();p=self.palm();f.update(p,np.eye(3))
+        f=RobustPalmFrame(bootstrap=1);p=self.palm();f.update(p,np.eye(3))
         a=.7;r=np.array([[math.cos(a),-math.sin(a),0],[math.sin(a),math.cos(a),0],[0,0,1]])
         out,d=f.update(p@r.T+[.3,-.2,.1],None)
         np.testing.assert_allclose(out,r,atol=1e-6);self.assertEqual(d['orientation_inliers'],5)
     def test_one_bad_knuckle_does_not_flip_orientation(self):
-        f=RobustPalmFrame();p=self.palm();f.update(p,np.eye(3));p[1]+=[.04,.01,.05]
+        f=RobustPalmFrame(bootstrap=1);p=self.palm();f.update(p,np.eye(3));p[1]+=[.04,.01,.05]
         out,d=f.update(p,None)
         np.testing.assert_allclose(out,np.eye(3),atol=1e-6);self.assertEqual(d['orientation_inliers'],4)
     def test_unobservable_collinear_palm_is_rejected(self):
-        f=RobustPalmFrame();f.update(self.palm(),np.eye(3))
+        f=RobustPalmFrame(bootstrap=1);f.update(self.palm(),np.eye(3))
         p=self.palm();p[:,0]=0;p[:,2]=1
         with self.assertRaises(ValueError):f.update(p,None)
+    def test_template_is_median_of_consistent_frames(self):
+        f=RobustPalmFrame(bootstrap=3);p=self.palm()
+        for k in range(2):
+            out,d=f.update(p+np.array([[0,0,0]]+[[.002*(-1)**k,0,0]]*4),np.eye(3));self.assertIsNone(f.template)
+        f.update(p,np.eye(3))
+        np.testing.assert_allclose(f.template,p-p[0],atol=.0021)
+    def test_inconsistent_bootstrap_frame_delays_latch(self):
+        f=RobustPalmFrame(bootstrap=3);p=self.palm();bad=p.copy();bad[1:]*=[1.4,1.4,1]
+        f.update(bad,np.eye(3));f.update(p,np.eye(3));f.update(p,np.eye(3))
+        self.assertIsNone(f.template)        # the distorted frame is still in the window
+        f.update(p,np.eye(3));self.assertIsNotNone(f.template)
+    def test_persistently_poor_fit_relatches(self):
+        f=RobustPalmFrame(bootstrap=1,window=5);p=self.palm();f.update(p,np.eye(3))
+        q=p.copy();q[1]+=[.0,.0,.05]         # one knuckle 5 cm off: excluded, 4 inliers fit exactly
+        for _ in range(5):f.update(q,None)
+        self.assertIsNotNone(f.template)
+        r=p.copy();r[1:,0]*=1.15;r[1:,1]*=.9  # every frame mis-shaped vs the template
+        for _ in range(5):
+            try:f.update(r,None)
+            except ValueError:pass
+        self.assertIsNone(f.template);self.assertEqual(f.relatches,1)
+        f.update(r,np.eye(3));self.assertIsNotNone(f.template)
     def test_quaternion_sign_change_is_not_a_rotation(self):
         f=AdaptivePalmOrientation();f.update(self.q(.1),1.)
         self.assertLess(angle(f.update(-self.q(.1),1.1),self.q(.1)),1e-6)

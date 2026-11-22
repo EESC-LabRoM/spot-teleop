@@ -57,15 +57,45 @@ class RobustPalmFrame:
 
     The wrist must remain in the fit. Four current inliers and non-collinear
     support are required. The latched template supplies shape, never motion.
+
+    The template is the median palm-frame shape of `bootstrap` consistent frames
+    (one MediaPipe frame can be distorted, e.g. a hand at the image edge, and a
+    bad template then either jitters by switching 4-point subsets or fails the
+    size check for the rest of the session). While unlatched, the caller's seed
+    rotation is the output. A template whose median fit over the last `window`
+    frames exceeds `refit_mm` (failed fits count as bad) is dropped and rebuilt
+    from current frames.
     """
-    def __init__(self):self.template=None
+    def __init__(self,bootstrap=5,refit_mm=5.,window=15,consistency_mm=6.):
+        self.bootstrap,self.refit,self.window,self.consistency=bootstrap,refit_mm/1000.,window,consistency_mm/1000.
+        self.template=None;self.shapes=[];self.fits=[];self.relatches=0
+
+    def health(self,fit):
+        self.fits=(self.fits+[math.inf if fit is None else fit])[-self.window:]
+        if len(self.fits)>=self.window and float(np.median(self.fits))>self.refit:
+            self.template=None;self.shapes=[];self.fits=[];self.relatches+=1
 
     def update(self,points,initial_rotation):
         p=np.asarray(points,float)
         if p.shape!=(5,3) or not np.all(np.isfinite(p)):raise ValueError('invalid current palm geometry')
         if self.template is None:
-            self.template=(p-p[0])@initial_rotation
-            return np.asarray(initial_rotation).copy(),dict(orientation_inliers=5,orientation_fit_mm=0.)
+            if initial_rotation is None:raise ValueError('palm template needs a seed rotation')
+            seed=np.asarray(initial_rotation,float)
+            self.shapes=(self.shapes+[(p-p[0])@seed])[-self.bootstrap:]
+            quality=dict(orientation_inliers=5,orientation_fit_mm=0.,palm_template=f'{len(self.shapes)}/{self.bootstrap}',palm_relatches=self.relatches)
+            if len(self.shapes)>=self.bootstrap:
+                median=np.median(self.shapes,axis=0)
+                if max(float(np.sqrt(np.mean(np.sum((s-median)**2,axis=1)))) for s in self.shapes)<=self.consistency:
+                    self.template=median;self.shapes=[];self.fits=[];quality['palm_template']='latched'
+            return seed.copy(),quality
+        try:rotation,quality=self.fit(p)
+        except ValueError:
+            self.health(None);raise
+        self.health(quality['orientation_fit_mm']/1000.)
+        quality.update(palm_template='latched' if self.template is not None else 'relatch',palm_relatches=self.relatches)
+        return rotation,quality
+
+    def fit(self,p):
         lengths=np.linalg.norm(p[1:]-p[0],axis=1)
         base=np.linalg.norm(self.template[1:]-self.template[0],axis=1)
         scale=float(np.median(lengths/base))
