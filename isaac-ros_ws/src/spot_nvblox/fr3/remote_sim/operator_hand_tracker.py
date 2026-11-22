@@ -24,6 +24,7 @@ from arm_calibration import ArmCalibration
 from solution_hand_detector import SolutionHandDetector,remap_crop_landmarks
 from stable_palm_pose import RobustPalmFrame,AdaptivePalmOrientation
 from body_wrist_reference import body_wrist_supported,ShoulderRelativeWrist
+from tracking_alerts import visibility_alert
 
 class OperatorHandTracker(Node):
     def __init__(self, domain=188, camera_prefix="/fr3_sim/operator", output_prefix="/fr3_sim/operator", max_input_age=.55, max_output_age=.65, calibrate_arm=False, calibration_port=0, smooth_preview=False, preview_port=0):
@@ -200,6 +201,8 @@ class OperatorHandTracker(Node):
                 supported=body_wrist_supported(points[16].visibility,wrist,shoulder,
                     points[14].visibility,points[12].visibility,self.arm.length,hand_support)
                 diag['pose_hand_depth_support']=hand_support
+                # Pose keeps a confident wrist at the image border while the hand itself is cut off (resting below the frame).
+                diag['pose_wrist_near_edge']=bool(min(points[16].x,1-points[16].x,points[16].y,1-points[16].y)<.08)
                 diag.update(pose_wrist_visibility=round(float(points[16].visibility),3),pose_wrist_depth_valid=wrist is not None,
                     pose_wrist_supported=bool(supported))
                 if supported:self.body_wrist=(ns,wrist)
@@ -231,18 +234,26 @@ class OperatorHandTracker(Node):
         shoulder=self.body_shoulder[1] if self.body_shoulder is not None and self.body_shoulder[0]==ns else None
         return self.relative_wrist.update(origin,ns*1e-9,self.arm.shoulder,shoulder)
 
+    def follow_body_wrist(self,ns):
+        """While the hand model has lost the fingers, a gated current body-pose wrist keeps the operator's hand identity
+        moving with the arm (so the hand re-associates where it reappears). Identity only: it never publishes a command."""
+        if self.body_wrist is None or self.body_wrist[0]!=ns:return False
+        origin=self.body_wrist[1]
+        reference=self.hand_identity
+        if reference is None and self.arm.reference_stamp is not None:reference=(self.arm.wrist_reference,self.arm.reference_stamp)
+        recent=reference is not None and 0<=ns*1e-9-reference[1]<=5.
+        if not recent and self.body_operator_stamp!=ns:return False
+        if recent and self.body_operator_stamp!=ns and np.linalg.norm(origin-reference[0])>min(.4,.28+.7*(ns*1e-9-reference[1])):return False
+        self.hand_identity=(origin.copy(),ns*1e-9);return True
+
     def publish_position_only(self,origin,ns,diag,source):
-        """A current measured wrist may drive translation without a palm orientation."""
+        """The current hand-model wrist may drive translation without a palm orientation.
+
+        Only the hand model's wrist: the body-pose wrist sits ~4 cm from it (x ~1.7 arm scale) and switching between
+        the two stepped the command by 0.1-0.4 m in the replayed bags; a lost hand now pauses and alerts instead."""
         if self.arm is not None and self.arm.scale is None:return False
         if not 0<=(time.time_ns()-ns)*1e-9<self.max_output_age:return False
         if origin is None or not np.all(np.isfinite(origin)):return False
-        if source=='pose_wrist':
-            reference=self.hand_identity
-            if reference is None and self.arm is not None and self.arm.reference_stamp is not None:
-                reference=(self.arm.wrist_reference,self.arm.reference_stamp)
-            recent=reference is not None and 0<=ns*1e-9-reference[1]<=5.
-            if not recent and self.body_operator_stamp!=ns:return False
-            if recent and self.body_operator_stamp!=ns and np.linalg.norm(origin-reference[0])>min(.4,.28+.7*(ns*1e-9-reference[1])):return False
         scale=self.arm.scale if self.arm is not None else 1.315
         p=self.position.update(CAMERA_TO_ROBOT@self.control_wrist(origin,ns)*scale,ns*1e-9)
         packet=dict(version=3,orientation_mode='full_6d',frame='fr3_link0',stamp_ns=ns,
@@ -448,9 +459,9 @@ class OperatorHandTracker(Node):
                     if origin is not None:
                         self.publish_position_only(origin,ns,diag,'hand_wrist')
                     elif self.arm is not None and self.arm.scale is not None:
+                        # Body pose keeps the operator association current and says what is missing; it never moves the robot.
                         self.arm_reference(rgb,depth,ns,image,diag,force=True)
-                        if self.body_wrist is not None and self.body_wrist[0]==ns:
-                            self.publish_position_only(self.body_wrist[1],ns,diag,'pose_wrist')
+                        diag['identity_from_body']=self.follow_body_wrist(ns)
                 except (ValueError,TypeError,RuntimeError,cv2.error) as fallback_error:diag['position_fallback_reason']=str(fallback_error)
         finally:
             now=time.monotonic();self.times=[v for v in self.times if now-v<2.]+[now]
@@ -460,6 +471,7 @@ class OperatorHandTracker(Node):
             if self.arm is not None and self.arm.scale is None and not diag.get('detector_error'):
                 diag['reason']=f'Calibrando braço {len(self.arm.samples)}/{self.arm.minimum}: mostre ombro, cotovelo e punho direitos'
             diag['detector_restarts']=getattr(self.detector,'restarts',0)
+            diag.update(visibility_alert(diag))
             if self.arm is not None:self.save_arm_reference()
             self.preview_diag=diag
             self.diag_pub.publish(String(data=json.dumps(diag,allow_nan=False)))

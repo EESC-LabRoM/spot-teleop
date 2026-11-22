@@ -19,6 +19,8 @@ h2 { margin:22px 0 10px; font-size:15px; font-weight:650; }
 .top { display:grid; grid-template-columns:1fr; gap:14px; align-items:start; }
 .main-column { min-width:0; }
 #zedstatus { display:block; white-space:normal; overflow-wrap:anywhere; border-radius:6px; height:2.7em; line-height:1.3em; overflow:hidden; }
+#trackingalert { margin-top:8px; padding:6px 10px; border:1px solid var(--bad); border-radius:6px; color:var(--bad); background:rgba(232,119,109,.08); font-weight:600; overflow-wrap:anywhere; }
+#trackingalert.warn { border-color:var(--warn); color:var(--warn); background:rgba(232,184,109,.08); }
 #trackingdetail { margin-top:8px; overflow-wrap:anywhere; height:2.6em; line-height:1.3em; overflow:hidden; }
 /* fixed-height status lines: changing text must never move the buttons (10-27) */
 #inputnote { height:3.9em; line-height:1.3em; overflow:hidden; }
@@ -121,6 +123,7 @@ details summary { cursor:pointer; color:var(--muted); font-size:13px; }
         <button type="button" id="tojoystick">Voltar ao joystick</button>
       </div>
       <div class="row"><span id="zedstatus" class="pill warn">waiting for tracking</span></div>
+      <div id="trackingalert" role="status" aria-live="polite" hidden></div>
       <div class="k" id="trackingdetail">Aguardando diagnóstico da mão</div>
       <div class="row"><span class="k">Garra por gesto</span><span id="zedgesture">–</span></div>
       <div class="row" style="margin-top:8px"><label for="inputsource">Control input</label>
@@ -473,6 +476,10 @@ function connect() {
     const backendReady = !!d.zed;
     $('zedrecalibrate').disabled = !backendReady || zedControlBusy || !!d.zed?.home_running;
     $('trackingdetail').textContent = !backendReady ? 'Backend de teleoperação indisponível. A imagem pode continuar funcionando.' : [d.zed.controller_reason, d.zed.reason, d.zed.diagnostics?.reason].filter(Boolean).join(' · ') + (d.zed.diagnostics ? ` · ${d.zed.diagnostics.fps || 0} Hz · ${d.zed.diagnostics.capture_age_ms || 0} ms` : '');
+    // What the operator camera cannot see (tracker diagnostics.alert): the robot pauses until it is back in view.
+    const seen = d.zed?.diagnostics, alertBox = $('trackingalert');
+    alertBox.hidden = !seen?.alert;
+    if (seen?.alert) { alertBox.textContent = seen.alert; alertBox.className = seen.missing === 'palm' ? 'warn' : ''; }
     $('zedactivate').disabled = !backendReady || !!d.zed?.start_reason || zedControlBusy || (d.engaged && d.input_source === 'zed') || ['calibrating'].includes(d.zed?.phase) || !!d.zed?.home_running;
     $('zedhome').disabled = !backendReady || !!d.zed?.controller_reason || zedControlBusy || !!d.zed?.home_running;
     pill('zedstatus', d.zed?.home_running ? 'Home em andamento' : (d.zed?.home_result || (d.zed?.controller_reason ? d.zed.controller_reason : d.zed?.note) || 'Backend de teleoperação indisponível'), d.engaged && d.zed?.phase === 'active' ? 'on' : 'warn');

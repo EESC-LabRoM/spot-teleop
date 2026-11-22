@@ -370,8 +370,9 @@ function connect() {
     $('simt').textContent = d.t ? d.t.toFixed(1) + ' s' : '–';
     if (!sourceBusy && ['joystick','zed'].includes(d.input_source)) $('inputsource').value = d.input_source;
     $('zedactivate').disabled = zedControlBusy || d.engaged || d.input_source !== 'zed' || !d.zed || !!d.zed.reason;
-    $('zedstatus').textContent = d.zed ? (d.zed.reason || 'Pronto · clique Ativar ZED') : 'tracking status unavailable';
-    $('zedstatus').className = 'pill ' + (d.zed && !d.zed.reason ? 'on' : '');
+    const visibilityAlert = d.zed?.diagnostics?.alert;   // what the operator camera cannot see; motion pauses until it is back
+    $('zedstatus').textContent = d.zed ? (visibilityAlert || d.zed.reason || 'Pronto · clique Ativar ZED') : 'tracking status unavailable';
+    $('zedstatus').className = 'pill ' + (d.zed && !d.zed.reason && !visibilityAlert ? 'on' : '');
     $('eng').textContent = d.engaged ? 'engaged' : 'not engaged (press Start)'; $('eng').className = 'pill ' + (d.engaged ? 'on' : '');
     drawPad(d.pad); drawSpeed(d.speed); drawGrip(d.speed); if (!window.__pcFake) pcFrame(d);
   };

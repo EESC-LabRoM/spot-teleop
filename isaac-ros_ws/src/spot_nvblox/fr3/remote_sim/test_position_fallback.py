@@ -38,14 +38,31 @@ class WristFallbackTests(unittest.TestCase):
         depth.data=np.full((360,640),1. if depth_valid else np.nan,np.float32).tobytes()
         self.n.frame(rgb,depth)
         return stamp
-    def test_body_wrist_drives_without_fingers_using_current_depth(self):
-        stamp=self.frame();packet=json.loads(self.n.sample_pub.publish.call_args.args[0].data)
-        self.assertEqual(packet['stamp_ns'],stamp);self.assertEqual(packet['version'],3)
-        self.assertEqual(packet['position_source'],'pose_wrist')
-        self.assertFalse(packet['orientation_valid']);self.assertIsNone(packet['q']);self.assertIsNone(packet['gesture'])
-        self.assertEqual(len(packet['p']),3);self.assertTrue(np.all(np.isfinite(packet['p'])))
-        stamp2=self.frame();self.assertEqual(self.n.body.process.call_count,2)
-        self.assertEqual(json.loads(self.n.sample_pub.publish.call_args.args[0].data)['stamp_ns'],stamp2)
+    def hand_at(self,x,y):
+        self.n.detector.recognize_for_video.return_value=NS(
+            hand_landmarks=[[NS(x=x,y=y) for _ in range(21)]],hand_world_landmarks=[],
+            handedness=[[NS(score=.99,category_name='Right')]],gestures=[[]])
+    def diag(self):return json.loads(self.n.diag_pub.publish.call_args.args[0].data)
+    def test_body_wrist_never_drives_and_alerts_instead(self):
+        # Pose sees the wrist (visibility .95, current depth) but Hands does not: no command, a visibility alert.
+        stamp=self.frame();self.n.sample_pub.publish.assert_not_called()
+        d=self.diag();self.assertEqual(d['stamp_ns'],stamp);self.assertFalse(d['valid'])
+        self.assertEqual(d['missing'],'fingers');self.assertTrue(d['alert'])
+        # ...but the arm's current wrist keeps the hand identity moving, so the hand re-associates where it reappears.
+        self.assertTrue(d['identity_from_body']);self.assertAlmostEqual(self.n.hand_identity[1],stamp*1e-9)
+        np.testing.assert_allclose(self.n.hand_identity[0],[.16,.09,1.],atol=1e-6)
+        self.frame();self.assertEqual(self.n.body.process.call_count,2)   # pose still runs: association stays current
+    def test_hand_outside_the_image_is_named(self):
+        self.n.body.process.return_value.pose_landmarks.landmark[16].visibility=.1
+        self.frame();self.n.sample_pub.publish.assert_not_called();self.assertEqual(self.diag()['missing'],'hand')
+    def test_tracked_6d_hand_has_no_alert(self):
+        self.n.palm_model=NS(template=object(),update=Mock(return_value=(np.eye(3),dict(orientation_inliers=5,orientation_fit_mm=1.))))
+        hand=[NS(x=.6,y=.6) for _ in range(21)];world=[NS(x=0.,y=0.,z=0.) for _ in range(21)]
+        self.n.detector.recognize_for_video.return_value=NS(hand_landmarks=[hand],
+            hand_world_landmarks=[world],handedness=[[NS(score=.99,category_name='Right')]],gestures=[[]])
+        self.frame()
+        packet=json.loads(self.n.sample_pub.publish.call_args.args[0].data)
+        self.assertTrue(packet['orientation_valid']);self.assertIsNone(self.diag()['alert'])
     def test_bad_palm_keeps_current_hand_wrist_translation(self):
         hand=[NS(x=.6,y=.6) for _ in range(21)]
         world=[NS(x=0.,y=0.,z=0.) for _ in range(21)]
@@ -56,6 +73,7 @@ class WristFallbackTests(unittest.TestCase):
         self.n.palm_model.update.assert_called_once()
         packet=json.loads(self.n.sample_pub.publish.call_args.args[0].data)
         self.assertEqual(packet['position_source'],'hand_wrist');self.assertFalse(packet['orientation_valid'])
+        self.assertEqual(self.diag()['missing'],'palm')
 
     def test_current_hand_wrist_does_not_require_world_orientation_landmarks(self):
         self.n.detector.recognize_for_video.return_value=NS(
@@ -65,12 +83,6 @@ class WristFallbackTests(unittest.TestCase):
         self.frame()
         packet=json.loads(self.n.sample_pub.publish.call_args.args[0].data)
         self.assertEqual(packet['position_source'],'hand_wrist');self.assertFalse(packet['orientation_valid'])
-
-    def test_borderline_pose_wrist_uses_shoulder_and_elbow_support(self):
-        self.n.body.process.return_value.pose_landmarks.landmark[16].visibility=.649
-        self.frame()
-        packet=json.loads(self.n.sample_pub.publish.call_args.args[0].data)
-        self.assertEqual(packet['position_source'],'pose_wrist')
 
     def test_weak_pose_wrist_without_arm_support_does_not_move(self):
         points=self.n.body.process.return_value.pose_landmarks.landmark
@@ -113,9 +125,10 @@ class WristFallbackTests(unittest.TestCase):
         points[12].x=.5;points[12].y=.2
         points[14].x=.6;points[14].y=.4
         points[16].x=.5;points[16].y=.6
+        self.hand_at(.5,.6)   # the full current arm re-associates the hand found at its wrist
         self.frame()
         packet=json.loads(self.n.sample_pub.publish.call_args.args[0].data)
-        self.assertEqual(packet['position_source'],'pose_wrist')
+        self.assertEqual(packet['position_source'],'hand_wrist')
 
     def test_no_depth_does_not_publish_position(self):
         self.frame(False);self.n.sample_pub.publish.assert_not_called()
@@ -126,7 +139,7 @@ class WristFallbackTests(unittest.TestCase):
         self.n.body.process.return_value=NS(pose_landmarks=None)
         self.frame();self.n.sample_pub.publish.assert_not_called()
     def test_reacquisition_needs_current_calibrated_operator(self):
-        self.n.hand_identity=(np.array([.16,.09,1.]),time.time()-10.)
+        self.n.hand_identity=(np.array([.16,.09,1.]),time.time()-10.);self.hand_at(.6,.6)
         self.frame();self.assertTrue(self.n.sample_pub.publish.called)
         self.n.sample_pub.publish.reset_mock();self.n.hand_identity=None
         self.n.arm.shoulder=np.array([2.,2.,2.])
