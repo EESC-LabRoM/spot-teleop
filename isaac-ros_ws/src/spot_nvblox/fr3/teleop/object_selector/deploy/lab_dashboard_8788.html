@@ -115,8 +115,6 @@ details summary { cursor:pointer; color:var(--muted); font-size:13px; }
     <figcaption><div><div class="name">Camera 3 · operator wrist</div><div class="sub">zed3 · 34046618</div></div><button type="button" data-cam="cam3">Reconnect</button></figcaption></figure>
   <figure id="cam4"><div class="frame" style="aspect-ratio:4/3"><img alt="RealSense do punho da Franka"><div class="offline">RealSense indisponível. Tentando novamente…</div></div>
     <figcaption><div><div class="name">RealSense · visão do robô</div><div class="sub">D435i · punho · 138422074833</div></div><button type="button" data-cam="cam4">Reconnect</button></figcaption></figure>
-  <figure id="spotw"><div class="frame"><img alt="spot wrist overlay"><div class="offline">Spot overlay unavailable. Retrying…</div></div>
-    <figcaption><div><div class="name">Spot detector · torso axes + wrist</div><div class="sub">orig node · /spot_wrist/overlay</div></div><button type="button" data-spotw="1">Reconnect</button></figcaption></figure>
 </section>
 
   </div>
@@ -127,6 +125,10 @@ details summary { cursor:pointer; color:var(--muted); font-size:13px; }
         <button type="button" data-object-target="drill" aria-pressed="false" disabled>Drill</button>
         <button type="button" data-object-target="tennis_ball" aria-pressed="false" disabled>Tennis ball</button>
         <button type="button" data-object-target="sprite" aria-pressed="false" disabled>Sprite bottle</button>
+      </div>
+      <div style="display:flex;gap:6px;margin:6px 0">
+        <input type="text" data-object-text maxlength="60" placeholder="or type what to grab (VLM), e.g. red mug" autocomplete="off" disabled style="flex:1;min-width:0;padding:5px 8px;border-radius:6px;border:1px solid #444;background:#111;color:inherit">
+        <button type="button" data-object-text-go disabled title="Sends one ZED1 frame to the Gemini API to find the object, then runs the normal switch. Y stays locked for text targets.">Find &amp; select</button>
       </div>
       <div class="k" data-object-hint style="min-height:1.3em">Pick an object, then click it in the image.</div>
       <canvas data-object-canvas width="640" height="360" title="ZED1 with the live SAM2 mask. Choose a button, then click the object." style="display:block;width:100%;aspect-ratio:16/9;margin:6px 0;border-radius:6px;background:#000;cursor:crosshair"></canvas>
@@ -246,7 +248,7 @@ details summary { cursor:pointer; color:var(--muted); font-size:13px; }
 <script>
 // ---- camera streams (web_video_server on :8787) ---------------------------------------------------------------------
 const HTTPS = location.protocol === 'https:';                  // via nexus:8443: cameras and the robot panel come through this server
-const STREAM_BASE = 'http://' + location.hostname + ':8787/stream?topic=';
+const STREAM_BASE = 'camstream?topic=';   // 2026-11-23: same origin via mesh_server (:8787 listens on 127.0.0.1 only)
 const cams = { cam1: '/zed1/zed_node/left/image_rect_color', cam2: '/zed2/zed_node/left/image_rect_color', cam3: '/fr3_operator/wrist_overlay', cam4: '/fr3_realsense/color/image_rect',
                seg1: '/franka_seg_zed1/overlay', seg2: '/franka_seg_zed2/overlay' };
 function startCam(key) {
@@ -254,7 +256,7 @@ function startCam(key) {
   if (HTTPS || key === 'cam3' || key === 'cam4') {     // one JPEG at a time through the tunnel, next one only after this one arrived (streams would starve the remote pad)
     const gen = fig.dataset.gen = String(+(fig.dataset.gen || 0) + 1);       // Reconnect starts a new chain; the old one stops
     const RTC = { cam1: 'front', cam2: 'top', cam3: 'operator', cam4: 'wrist', seg1: 'seg1', seg2: 'seg2' };   // 2026-11-23: WebRTC (go2rtc, H.264) for the driving cams
-    if (RTC[key]) {
+    if (HTTPS && RTC[key]) {   // plain http: same-origin snaps/streams, no dependency on the go2rtc relay
       img.style.display = 'none';
       let f = fig.querySelector('iframe.rtc');
       if (!f) { f = document.createElement('iframe'); f.className = 'rtc'; f.allow = 'autoplay; fullscreen'; f.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;border:0;display:block;background:#000'; fig.querySelector('.frame').appendChild(f); }
@@ -272,7 +274,6 @@ function startCam(key) {
       if (fig.dataset.gen !== gen) return;
       if (lean() && !keep) { fig.querySelector('.offline').textContent = 'Paused while the remote PS4 is on (keeps the link fast).'; frame.classList.add('down'); return setTimeout(next, 1000); }
       // cam4: old :8785 snapshot server gone; fall through to the snap proxy (2026-11-23)
-      if (key === 'cam3' && !HTTPS) { img.src = 'http://' + location.hostname + ':8786/snapshot?_=' + Date.now(); return; }
       img.src = 'snap?topic=' + cams[key] + '&width=320&height=180&quality=45&_=' + Date.now();   // 2026-11-23: small self-clocked snaps; MJPEG streams buffered and lagged on this link
     };
     return next();
@@ -285,18 +286,6 @@ function startCam(key) {
 (function graspButtons(){ const b=document.getElementById('rgrasp'), c=document.getElementById('rgraspCancel'), m=document.getElementById('rgraspMsg'); if(!b) return; async function post(path){ m.textContent='sending...'; try{ const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json','X-Dashboard':'1'},body:'{}'}); const d=await r.json(); m.textContent=(d.ok?'ok: ':'refused: ')+(d.message||r.status); }catch(e){ m.textContent='dashboard backend unreachable'; } } b.addEventListener('click',()=>post('fr3/grasp')); c.addEventListener('click',()=>post('fr3/grasp-cancel')); const pg=document.getElementById('rpregrasp'); if(pg) pg.addEventListener('click',()=>post('fr3/pregrasp')); const op=document.getElementById('ropen'); if(op) op.addEventListener('click',()=>post('fr3/gripper-open')); })();
 document.querySelectorAll('button[data-cam]').forEach(b => b.addEventListener('click', () => startCam(b.dataset.cam)));
 Object.keys(cams).forEach(startCam);
-// Spot orig overlay card: WebRTC like the other cams (node: spot_wrist_orig in container spot-wrist-orig).
-function startSpotw() {
-  const fig = document.getElementById('spotw'); if (!fig) return;
-  const img = fig.querySelector('img'), frame = fig.querySelector('.frame');
-  img.style.display = 'none';
-  let f = fig.querySelector('iframe.rtc');
-  if (!f) { f = document.createElement('iframe'); f.className = 'rtc'; f.allow = 'autoplay; fullscreen'; f.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;border:0;display:block;background:#000'; fig.querySelector('.frame').appendChild(f); }
-  frame.classList.remove('down');
-  f.src = 'https://omnigent-vm.tail0994ab.ts.net:1985/stream.html?src=spotw&mode=webrtc';
-}
-document.querySelector('button[data-spotw]').addEventListener('click', () => startSpotw());
-startSpotw();
 document.getElementById('robotdash').href = HTTPS ? 'fr3/' : 'http://' + location.hostname + ':8088/';
 </script>
 
@@ -1619,6 +1608,8 @@ if ((location.hash || '') === '#sim') selectTab(true);
   const root = document.getElementById('object-selector');
   if (!root) return;
   const TARGETS = ['drill', 'tennis_ball', 'sprite'];
+  const textIn = root.querySelector('[data-object-text]');
+  const textGo = root.querySelector('[data-object-text-go]');
   const buttons = Array.from(root.querySelectorAll('[data-object-target]'));
   const status = root.querySelector('[data-object-status]');
   const details = root.querySelector('[data-object-details]');
@@ -1663,6 +1654,7 @@ if ((location.hash || '') === '#sim') selectTab(true);
 
   function setButtons() {
     const can = !!(last && last.can_select) && !posting;
+    textIn.disabled = !can; textGo.disabled = !can || !textIn.value.trim();
     buttons.forEach(b => {
       b.disabled = !can;
       b.setAttribute('aria-pressed', String(b.dataset.objectTarget === (pending || (last && last.selected))));
@@ -1671,9 +1663,10 @@ if ((location.hash || '') === '#sim') selectTab(true);
 
   function render(d) {
     if (!d || typeof d.phase !== 'string') throw Error('invalid selector status');
-    if (d.selected != null && !TARGETS.includes(d.selected)) throw Error('invalid target');
+    if (d.selected != null && d.selected !== 'custom' && !TARGETS.includes(d.selected)) throw Error('invalid target');
     last = d;
-    const name = d.selected ? d.targets[d.selected].label : 'none';
+    const tt = d.text_target || {};
+    const name = d.selected === 'custom' ? `“${tt.prompt || 'text target'}” (VLM)` : (d.selected ? d.targets[d.selected].label : 'none');
     const cls = d.phase === 'ready' ? 'on' : d.phase === 'error' ? 'bad' : 'warn';
     status.className = `pill ${cls}`;
     // Y runs the quick ROS grasp since 11-23 and does not read this card, so show tracking only.
@@ -1684,7 +1677,7 @@ if ((location.hash || '') === '#sim') selectTab(true);
       check(k).style.color = c.ok ? 'var(--live)' : 'var(--warn)';
     }
     const t = d.tracking || {};
-    details.textContent = `${d.reason}` + (t.tracking ? ` · tracker ${t.tracking}, map gate ${t.map_state || '?'}` : '') +
+    details.textContent = `${d.reason}` + (tt.vlm ? ` · VLM box ${JSON.stringify(tt.vlm.bbox)}${tt.vlm.latency_ms ? `, ${Math.round(tt.vlm.latency_ms)} ms` : ''}` : '') + (t.tracking ? ` · tracker ${t.tracking}, map gate ${t.map_state || '?'}` : '') +
       (d.can_select ? '' : ` · selection blocked: ${d.select_block || 'busy'}`);
     if (!pending) hint.textContent = d.can_select ? 'Pick an object, then click it in the image.' :
       `Selection unavailable: ${d.select_block || 'busy'}`;
@@ -1709,6 +1702,25 @@ if ((location.hash || '') === '#sim') selectTab(true);
     hint.textContent = `Now click the ${last.targets[pending].label.toLowerCase()} in the image (Esc cancels).`;
     setButtons(); draw();
   }));
+  textIn.addEventListener('input', setButtons);
+  textIn.addEventListener('keydown', e => { if (e.key === 'Enter' && !textGo.disabled) textGo.click(); });
+  textGo.addEventListener('click', async () => {
+    const prompt = textIn.value.trim();
+    if (!prompt || textGo.disabled || posting) return;
+    pending = null; posting = true; setButtons();
+    hint.textContent = `Asking the VLM for “${prompt}”, then switching… (about 30–90 s; one frame goes to the Gemini API)`;
+    try {
+      const resp = await fetch('object-target', {method: 'POST', cache: 'no-store',
+        headers: {'Content-Type': 'application/json', 'X-Dashboard': '1'},
+        body: JSON.stringify({prompt}), signal: AbortSignal.timeout(30000)});
+      const d = await resp.json().catch(() => ({}));
+      if (!resp.ok || d.ok !== true) throw Error(d.error || `HTTP ${resp.status}`);
+    } catch (e) {
+      hint.textContent = `Text selection refused: ${e.message}`;
+    } finally {
+      posting = false; await update(); draw();
+    }
+  });
   document.addEventListener('keydown', e => { if (e.key === 'Escape' && pending) { pending = null; update(); draw(); } });
 
   canvas.addEventListener('click', async ev => {

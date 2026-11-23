@@ -4,6 +4,11 @@
 GET  /object-target  -> status JSON (selected, phase, mask/map/grasp checks, can_select)
 POST /object-target  {"target": "drill|tennis_ball|sprite", "click": [x, y]}
                      x, y = click on the ZED1 image, normalised 0..1.
+POST /object-target  {"prompt": "red mug"}      (VLM text path, 2026-11-23)
+                     The vm-vlm node (Gemini grounding on /vm/cable/rgb = ZED1 left, 640x360) returns bbox_1000; its
+                     centre is used as the click and the box as the SAM2 seed, then the same fail-closed switch runs with a
+                     generic 'custom' target spec. Y stays locked for text targets (no validated grasp for them).
+                     NOTE: each prompt sends one ZED1 frame to the Gemini API.
 
 A switch runs as one fail-closed sequence and only while the robot is
 disengaged, idle and empty-handed (fresh /teleop/engaged + /teleop/grasp_status):
@@ -25,6 +30,7 @@ import base64
 import json
 import math
 import os
+import re
 import shlex
 import subprocess
 import threading
@@ -55,6 +61,16 @@ TARGETS = {
     'tennis_ball': dict(label='Tennis ball', mask=(0.0005, 0.05), extent=(0.04, 0.15), min_pts=100, box=35),
     'sprite': dict(label='Sprite bottle', mask=(0.001, 0.08), extent=(0.05, 0.60), min_pts=50, box=40),
 }
+# Free-text (VLM) target: wide gates, label = the prompt. Never in Y_VALIDATED.
+CUSTOM_ID = 'custom'
+PROMPT_RE = re.compile(r"^[\w][\w \-.,']{0,59}$")
+MAX_VLM_BOX = 0.60          # a box wider/taller than this fraction of the image is not an object, refuse it
+
+
+def custom_spec(prompt):
+    return dict(label=prompt[:40], mask=(0.0003, 0.15), extent=(0.02, 0.80), min_pts=50, box=40)
+
+
 # Only these may get Y. Ball/Sprite are added only after their grasp path and
 # swept clearance are validated (handoff 2026-11-21); never flip without evidence.
 # Sprite (2026-11-21): top-down/tilted CAP grasp planned live by the broker
@@ -122,6 +138,47 @@ def click_to_bbox_1000(click, half):
         raise ValueError('click must be two numbers in 0..1')
     cx, cy = round(x * 1000), round(y * 1000)
     return [max(0, cx - half), max(0, cy - half), min(1000, cx + half), min(1000, cy + half)]
+
+
+def check_prompt(prompt):
+    """Plain object description only: it goes to a ROS parameter and to an external API, keep it boring."""
+    if not isinstance(prompt, str):
+        raise ValueError('prompt must be text')
+    if any(c in prompt for c in '\r\n\t\x00'):
+        raise ValueError('prompt must be a single line')
+    prompt = ' '.join(prompt.split())
+    if not PROMPT_RE.match(prompt):
+        raise ValueError('prompt: 1-60 characters, letters/digits/space and - . , \' only')
+    return prompt
+
+
+def parse_vlm_result(text):
+    """bbox/label from the vm-vlm Trigger response message (JSON of the best box)."""
+    try:
+        d = json.loads(text)
+    except (TypeError, ValueError) as e:
+        raise ValueError(f'VLM answer is not JSON: {str(text)[:80]!r}') from e
+    box = d.get('bbox_1000') if isinstance(d, dict) else None
+    if not (isinstance(box, (list, tuple)) and len(box) == 4):
+        raise ValueError('VLM answer has no bbox_1000')
+    x1, y1, x2, y2 = (float(v) for v in box)
+    if not all(math.isfinite(v) and 0 <= v <= 1000 for v in (x1, y1, x2, y2)) or x2 <= x1 or y2 <= y1:
+        raise ValueError(f'VLM box invalid: {box}')
+    if (x2 - x1) / 1000 > MAX_VLM_BOX or (y2 - y1) / 1000 > MAX_VLM_BOX:
+        raise ValueError(f'VLM box too large for an object: {[round(v) for v in (x1, y1, x2, y2)]}')
+    return dict(bbox=[round(x1), round(y1), round(x2), round(y2)],
+                click=[(x1 + x2) / 2000.0, (y1 + y2) / 2000.0],
+                confidence=d.get('confidence'), latency_ms=d.get('vlm_latency_ms'))
+
+
+def pick_coordinator_seed(seed_cmds, t_set, own_label):
+    """First /perception/seed_command seen after t_set that did NOT come from this selector.
+    vm-coordinator (coordinator_node) reacts to every /vlm/prompt_change_id by calling the VLM itself and publishing
+    the seed; a second seed from here would reset the tracker (tracking_active=False) right after it initialised."""
+    for t, d in seed_cmds:
+        if t >= t_set and isinstance(d, dict) and d.get('label') != own_label and 'bbox_1000' in d:
+            return d
+    return None
 
 
 def publish_seed(publish, message):
@@ -289,6 +346,8 @@ class Selector:
         self.teleop = (False, 'teleop state not read yet', None)
         self.last_switch = 0.0
         self.steps = []
+        self.prompt = None          # last VLM text target (label shown on the card)
+        self.vlm = None             # last grounding result (bbox, latency)
 
     # ---- status ----
     def _persist(self):
@@ -327,6 +386,8 @@ class Selector:
                     grasp=self.checks['grasp'], tracking=live_mask,
                     targets={k: dict(label=v['label'], y_validated=k in Y_VALIDATED,
                                      y_lock_reason=Y_LOCK_REASON.get(k)) for k, v in TARGETS.items()},
+                    text_target=dict(enabled=True, prompt=self.prompt if self.selected == CUSTOM_ID else None,
+                                     vlm=self.vlm if self.selected == CUSTOM_ID else None),
                     steps=self.steps)
 
     def poll_teleop(self):
@@ -392,8 +453,57 @@ class Selector:
         threading.Thread(target=self._switch, args=(target, click, bbox), daemon=True).start()
         return self.generation
 
-    def _switch(self, target, click, bbox):
-        spec = TARGETS[target]
+    def request_prompt(self, prompt):
+        prompt = check_prompt(prompt)
+        with self.lock:
+            if self.busy:
+                raise Fail('a switch is already running')
+            if time.time() - self.last_switch < MIN_SWITCH_INTERVAL_S:
+                raise Fail('wait a few seconds between switches (tracker reseed limit)')
+            p = tower(f'docker exec fr3-ros2 bash -lc {shlex.quote(TELEOP_ECHO)}', timeout=20, check=False)
+            ok, why, _ = self.teleop = parse_teleop(p.stdout, time.time())
+            if not ok:
+                raise Fail(why)
+            self.busy = True
+            self.last_switch = time.time()
+            self.generation += 1
+            self.selected = CUSTOM_ID
+            self.prompt = prompt
+            self.vlm = None
+        threading.Thread(target=self._switch_text, args=(prompt,), daemon=True).start()
+        return self.generation
+
+    def _switch_text(self, prompt):
+        """Text target: the normal fail-closed switch; the VLM grounding + seeding happens inside it, after the
+        map is paused and vm-tfproj reset (see _text_seed)."""
+        self._switch(CUSTOM_ID, None, None, spec=custom_spec(prompt), text_prompt=prompt)
+
+    def _text_seed(self, prompt, target):
+        """Ground the prompt and get the tracker TRACKING with exactly ONE seed. Returns (click, bbox).
+        Prompt changed -> vm-vlm announces it and vm-coordinator does VLM + seed itself: we only wait for its seed
+        (a second seed from here reset the tracker: 2026-11-23 g14/g15, overlay appeared then vanished, LOST, error).
+        Same prompt -> nobody reacts: trigger the VLM and seed ourselves (the g13 path)."""
+        t_set = time.time()
+        changed = self.node.vlm_set_prompt(prompt)
+        if changed:
+            self._set('seeding', f'new prompt {prompt!r}: vm-coordinator asks the VLM and seeds the tracker '
+                                 '(one ZED1 frame goes to the Gemini API); waiting for its seed')
+            res = self.node.wait_coordinator_seed(t_set, target)
+            self.vlm = dict(bbox=res['bbox'], confidence=res['confidence'], latency_ms=res['latency_ms'])
+            log(f'coordinator seed for {prompt!r}: bbox_1000 {res["bbox"]} latency {res["latency_ms"]} ms')
+            self._set('seeding', f'seed from the coordinator accepted (box {res["bbox"]}); waiting for TRACKING (up to 60 s)')
+            self.node.wait_tracking(time.time(), 60.0)
+        else:
+            self._set('seeding', f'asking the VLM for {prompt!r} (one ZED1 frame goes to the Gemini API)')
+            res = self.node.vlm_ground(prompt)
+            self.vlm = dict(bbox=res['bbox'], confidence=res['confidence'], latency_ms=res['latency_ms'])
+            log(f'VLM grounded {prompt!r}: bbox_1000 {res["bbox"]} latency {res["latency_ms"]} ms')
+            self._set('seeding', f'seeding tracker at bbox_1000 {res["bbox"]}')
+            self.node.seed(res['bbox'], target, progress=lambda m: self._set('seeding', m))
+        return res['click'], res['bbox']
+
+    def _switch(self, target, click, bbox, spec=None, text_prompt=None):
+        spec = spec or TARGETS[target]
         try:
             self.y_enabled = False
             self._set('locking', f'Y locked; switching to {spec["label"]}',
@@ -412,8 +522,11 @@ class Selector:
             self._set('seeding', 'resetting seed reprojection (vm-tfproj)')
             run(['docker', 'restart', '-t', '5', 'vm-tfproj'], timeout=40)
             time.sleep(8)
-            self._set('seeding', f'seeding tracker at bbox_1000 {bbox}')
-            self.node.seed(bbox, target)
+            if text_prompt is None:
+                self._set('seeding', f'seeding tracker at bbox_1000 {bbox}')
+                self.node.seed(bbox, target, progress=lambda m: self._set('seeding', m))
+            else:
+                click, bbox = self._text_seed(text_prompt, target)
             time.sleep(1.5)
             age, mask = self.node.latest_mask()
             ok, detail = mask_check(mask, click, spec, 1.5, age)
@@ -460,7 +573,8 @@ class Selector:
                 self.y_enabled = True      # broker plans from the live cloud; drill binding stays parked
                 self.checks['grasp'] = dict(ok=True, detail=Y_NOTE[target])
             else:
-                self.checks['grasp'] = dict(ok=False, detail=Y_LOCK_REASON[target])
+                self.checks['grasp'] = dict(ok=False, detail=Y_LOCK_REASON.get(
+                    target, 'text target: no validated grasp for this object, Y stays locked'))
             self._set('ready', f'{spec["label"]} selected' + ('' if self.y_enabled else ' (Y locked)'))
         except Exception as e:  # noqa: BLE001
             self.y_enabled = False
@@ -522,6 +636,7 @@ class RosIO:
         self.node = rclpy.create_node('object_selector')
         rel = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE, history=HistoryPolicy.KEEP_LAST)
         self.mask = (None, 0.0)
+        self.frame_stamp = None     # (header.stamp, wall time) of the latest tracker frame (from /vm/view_mask)
         self.tracking = (None, 0.0)
         self.map_state = (None, 0.0)
         self.seed3d = None
@@ -532,6 +647,18 @@ class RosIO:
         self.node.create_subscription(String, '/wrist_map/target_state', lambda m: setattr(self, 'map_state', (m.data, time.time())), rel)
         self.node.create_subscription(PointStamped, '/tracking/seed_3d', lambda m: setattr(self, 'seed3d', m), rel)
         self.node.create_subscription(CameraInfo, '/zed1/zed_node/depth/camera_info', lambda m: setattr(self, 'info', m), qos_profile_sensor_data)
+        from std_srvs.srv import SetBool, Trigger
+        from rcl_interfaces.srv import SetParameters
+        from rcl_interfaces.msg import Parameter, ParameterValue, ParameterType
+        self._Parameter, self._ParameterValue, self._ParameterType = Parameter, ParameterValue, ParameterType
+        self._SetBool, self._Trigger, self._SetParameters = SetBool, Trigger, SetParameters
+        self.vlm_param_cli = self.node.create_client(SetParameters, '/vlm_relocalize_node/set_parameters')
+        self.vlm_prompt_cli = self.node.create_client(SetBool, '/vlm/set_object_prompt')
+        self.vlm_trigger_cli = self.node.create_client(Trigger, '/vlm/trigger_relocalize')
+        self.prompt_ids = []        # wall times of /vlm/prompt_change_id (published by vm-vlm when the prompt really changes)
+        self.seed_cmds = []         # (wall time, dict) of /perception/seed_command, last 12 (ours and the coordinator's)
+        self.node.create_subscription(String, '/vlm/prompt_change_id', lambda m: self.prompt_ids.append(time.time()), rel)
+        self.node.create_subscription(String, '/perception/seed_command', self._seed_cmd_cb, rel)
         self.sel_pub = self.node.create_publisher(String, '/wrist_map/target_selection', rel)
         self.seed_pub = self.node.create_publisher(String, '/perception/seed_command', 10)
         self.px_pub = self.node.create_publisher(PointStamped, '/tracking/seed_pixel', 10)
@@ -542,6 +669,8 @@ class RosIO:
             return
         arr = np.frombuffer(m.data, np.uint8).reshape(m.height, m.step)[:, :m.width].copy()
         self.mask = (arr, time.time())
+        # /vm/view_mask carries the exact header of the rgb frame the tracker is processing.
+        self.frame_stamp = (m.header.stamp, time.time())
 
     def latest_mask(self):
         arr, t = self.mask
@@ -556,6 +685,73 @@ class RosIO:
                     mask_age_s=round(time.time() - t, 1) if t else None,
                     map_state=ms, map_state_age_s=round(time.time() - mt, 1) if mt else None)
 
+    def _seed_cmd_cb(self, m):
+        try:
+            d = json.loads(m.data)
+        except ValueError:
+            return
+        self.seed_cmds = (self.seed_cmds + [(time.time(), d)])[-12:]
+
+    def _vlm_call(self, client, request, timeout, what):
+        if not client.wait_for_service(timeout_sec=3.0):
+            raise Fail(f'VLM node not reachable ({what}); is vm-vlm running?')
+        fut = client.call_async(request)
+        t0 = time.time()
+        while not fut.done():
+            if time.time() - t0 > timeout:
+                raise Fail(f'VLM {what} timed out after {timeout:.0f} s')
+            time.sleep(0.05)
+        return fut.result()
+
+    def vlm_set_prompt(self, prompt):
+        """Set the vm-vlm prompt. True when the prompt really changed: vm-vlm then publishes /vlm/prompt_change_id and
+        vm-coordinator grounds it and seeds the tracker BY ITSELF (do not trigger/seed again). False = same prompt as
+        before, nobody reacts and the caller must trigger + seed."""
+        t_set = time.time()
+        P = self._Parameter(name='new_object_prompt', value=self._ParameterValue(
+            type=self._ParameterType.PARAMETER_STRING, string_value=prompt))
+        r = self._vlm_call(self.vlm_param_cli, self._SetParameters.Request(parameters=[P]), 8, 'set prompt')
+        if not r.results or not r.results[0].successful:
+            raise Fail('the VLM node rejected the prompt parameter')
+        # success=False just means "same prompt as before".
+        self._vlm_call(self.vlm_prompt_cli, self._SetBool.Request(data=True), 8, 'apply prompt')
+        t0 = time.time()
+        while time.time() - t0 < 2.5:
+            if any(t >= t_set for t in self.prompt_ids):
+                return True
+            time.sleep(0.1)
+        return False
+
+    def wait_coordinator_seed(self, t_set, own_label, timeout=75.0):
+        t0 = time.time()
+        while time.time() - t0 < timeout:
+            d = pick_coordinator_seed(self.seed_cmds, t_set, own_label)
+            if d is not None:
+                try:
+                    return parse_vlm_result(json.dumps(d))
+                except ValueError as e:
+                    raise Fail(str(e)) from e
+            time.sleep(0.3)
+        raise Fail(f'the coordinator did not publish a seed within {timeout:.0f} s (VLM found nothing or is down)')
+
+    def wait_tracking(self, t0, timeout=60.0):
+        while time.time() - t0 < timeout:
+            st, ts = self.tracking
+            if st == 'TRACKING' and time.time() - ts < 2 and ts > t0 - 1:
+                return
+            time.sleep(0.3)
+        raise Fail(f'tracker state {self.tracking[0]!r}, want TRACKING')
+
+    def vlm_ground(self, prompt):
+        """Trigger the VLM on the latest ZED1 frame (prompt already set). Returns parse_vlm_result()."""
+        t = self._vlm_call(self.vlm_trigger_cli, self._Trigger.Request(), 50, 'grounding')
+        if not t.success:
+            raise Fail(f'the VLM did not find {prompt!r} in the frame ({str(t.message)[:100]})')
+        try:
+            return parse_vlm_result(t.message)
+        except ValueError as e:
+            raise Fail(str(e)) from e
+
     def select_map_target(self, target):
         for _ in range(5):
             self.sel_pub.publish(self.String(data=target))
@@ -568,14 +764,18 @@ class RosIO:
             time.sleep(0.25)
         raise Fail(f'map gate did not accept {target!r} (state {self.map_state[0]!r})')
 
-    def seed(self, bbox, label):
-        """Same sequence as grasp_loop.s1_seed (proven 11-20/21), without the px bridge."""
+    def seed(self, bbox, label, progress=None):
+        """Same sequence as grasp_loop.s1_seed (proven 11-20/21), without the px bridge.
+        progress(msg) reports the real sub-step: the card used to say just 'seeding' for the whole sequence
+        (up to ~2 min) even while the tracker already showed TRACKING."""
+        note = progress or (lambda m: None)
         seed = json.dumps({'bbox_1000': bbox, 'label': label, 'confidence': 1.0})
         self.seed3d = None
         s3 = None
         for attempt in range(3):
             publish_seed(self.seed_pub.publish, self.String(data=seed))
             log(f'seed sent (try {attempt + 1}) {seed}')
+            note(f'seed sent, waiting for the tracker to answer (try {attempt + 1}/3, up to 25 s)')
             t0 = time.time()
             while self.seed3d is None and time.time() - t0 < 25:
                 time.sleep(0.2)
@@ -592,20 +792,28 @@ class RosIO:
         u = K[0, 0] * (s3.point.x / s3.point.z) + K[0, 2]
         v = K[1, 1] * (s3.point.y / s3.point.z) + K[1, 2]
         t0 = time.time()
+        last_note = 0.0
         while time.time() - t0 < 15:
+            if time.time() - last_note >= 4.0:
+                last_note = time.time()
+                note(f'seed accepted; pixel seed for ZED1 {int(time.time() - t0)}/15 s (fixed window), '
+                     f'tracker says {self.tracking[0]}')
             m = self.PointStamped()
             m.header.frame_id = info.header.frame_id
-            m.header.stamp = self.node.get_clock().now().to_msg()
+            # The tracker only consumes a pending seed pixel on a frame whose stamp is >= the pixel stamp - 0.5 s
+            # (sam2_tracker_node stamp-gate). tf_projection stamps with the frame time; a wall-clock stamp made
+            # the gate unreachable once /vm/cable/rgb frames were ~3 s old (lab at load 40, 2026-11-23: seeds from
+            # this selector never initialised ZED1 -> LOST for 60 s). Stamp with the latest tracker frame instead.
+            fs = self.frame_stamp
+            if fs is not None and time.time() - fs[1] < 5.0:
+                m.header.stamp = fs[0]
+            else:
+                m.header.stamp = self.node.get_clock().now().to_msg()
             m.point.x, m.point.y, m.point.z = float(u), float(v), float(s3.point.z)
             self.px_pub.publish(m)
             time.sleep(0.1)
-        t0 = time.time()
-        while time.time() - t0 < 60:
-            st, ts = self.tracking
-            if st == 'TRACKING' and time.time() - ts < 2 and ts > t0 - 1:
-                return
-            time.sleep(0.3)
-        raise Fail(f'tracker state {self.tracking[0]!r}, want TRACKING')
+        note('pixel seed done; waiting for a fresh TRACKING (up to 60 s)')
+        self.wait_tracking(time.time(), 60.0)
 
 
 def make_handler(sel):
@@ -637,9 +845,12 @@ def make_handler(sel):
                 if not 0 < n <= 1024:
                     raise ValueError('invalid body')
                 body = json.loads(self.rfile.read(n))
-                if not isinstance(body, dict) or set(body) != {'target', 'click'}:
-                    raise ValueError('body must be {"target", "click"}')
-                gen = sel.request(body['target'], body['click'])
+                if isinstance(body, dict) and set(body) == {'prompt'}:
+                    gen = sel.request_prompt(body['prompt'])
+                elif isinstance(body, dict) and set(body) == {'target', 'click'}:
+                    gen = sel.request(body['target'], body['click'])
+                else:
+                    raise ValueError('body must be {"target", "click"} or {"prompt"}')
             except (ValueError, TypeError) as e:
                 return self._send(400, dict(ok=False, error=str(e)))
             except Fail as e:
