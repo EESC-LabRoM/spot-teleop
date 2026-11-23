@@ -1,0 +1,1741 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<title>FR3 Lab Live</title>
+<style>
+:root { --bg:#0f1214; --surface:#171b1e; --line:#2a3137; --fg:#e8e6e1; --muted:#8e959b; --live:#5fd39a; --warn:#e8b86d; --bad:#e8776d; --accent:#6aa7ff; color-scheme: dark; }
+* { box-sizing: border-box; }
+body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  padding:16px max(16px, env(safe-area-inset-right, 0px)) 28px max(16px, env(safe-area-inset-left, 0px)); }
+header { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:8px 16px; margin-bottom:14px; }
+h1 { margin:0; font-size:20px; font-weight:650; }
+h2 { margin:22px 0 10px; font-size:15px; font-weight:650; }
+.pills { display:flex; flex-wrap:wrap; gap:6px; }
+.pill { border:1px solid var(--line); border-radius:999px; padding:2px 10px; font-size:13px; color:var(--muted); font-variant-numeric:tabular-nums; background:var(--surface); }
+.pill.on { color:var(--live); } .pill.warn { color:var(--warn); } .pill.bad { color:var(--bad); }
+.top { display:grid; grid-template-columns:1fr; gap:14px; align-items:start; }
+.main-column { min-width:0; }
+#zedstatus { display:block; white-space:normal; overflow-wrap:anywhere; border-radius:6px; height:2.7em; line-height:1.3em; overflow:hidden; }
+#trackingdetail { margin-top:8px; overflow-wrap:anywhere; height:2.6em; line-height:1.3em; overflow:hidden; }
+/* fixed-height status lines: changing text must never move the buttons (10-27) */
+#inputnote { height:3.9em; line-height:1.3em; overflow:hidden; }
+#zedgesture { display:inline-block; min-width:9em; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; vertical-align:bottom; }
+#curobostatus { display:block; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+#zedactivate, #zedhome, #zedstop, #zedrecalibrate { padding:7px 10px; border:1px solid var(--line); border-radius:6px; cursor:pointer; }
+#zedactivate { background:var(--live); color:#0b0f14; font-weight:650; }
+#zedstop { background:#542a2a; color:var(--fg); }
+@media (min-width:1100px) { .top { grid-template-columns:minmax(0,1fr) 340px; } }
+#view { position:relative; height:min(68vh,720px); min-height:360px; background:#10151c; border:1px solid var(--line); border-radius:8px; overflow:hidden; }
+#view canvas { display:block; width:100%; height:100%; }
+.tools { position:absolute; left:8px; top:8px; right:8px; display:flex; flex-wrap:wrap; gap:6px; pointer-events:none; }
+.tools > * { pointer-events:auto; }
+.tools label, .tools button { background:rgba(16,21,28,.86); border:1px solid var(--line); border-radius:6px; padding:2px 8px; font:inherit; font-size:13px; color:var(--fg); cursor:pointer; user-select:none; }
+.hint { position:absolute; left:8px; bottom:6px; color:var(--muted); font-size:12px; background:rgba(16,21,28,.86); border-radius:6px; padding:2px 8px; }
+.side { display:flex; flex-direction:column; gap:12px; min-width:0; }
+.card { background:var(--surface); border:1px solid var(--line); border-radius:8px; padding:10px 12px; }
+.card h3 { margin:0 0 6px; font-size:14px; font-weight:650; }
+.row { display:flex; justify-content:space-between; gap:10px; font-variant-numeric:tabular-nums; }
+.k { color:var(--muted); font-size:13px; }
+input[type=range] { width:100%; accent-color:var(--accent); }
+.bar { position:relative; height:5px; background:#232b33; border-radius:3px; margin:1px 0 5px; }
+.bar i { position:absolute; top:0; height:100%; background:var(--accent); border-radius:3px; }
+.bar b { position:absolute; left:50%; top:-2px; width:1px; height:9px; background:#3a4452; }
+.btns { display:flex; flex-wrap:wrap; gap:4px; margin-top:4px; }
+.btn { font-size:11px; border:1px solid var(--line); border-radius:4px; padding:0 5px; color:var(--muted); }
+.btn.down { background:var(--accent); color:#0b0f14; border-color:var(--accent); }
+.grid { display:grid; grid-template-columns:1fr; gap:14px; }
+@media (min-width:700px) { .grid { grid-template-columns:1fr 1fr; } }
+@media (min-width:1100px) { .grid.three { grid-template-columns:repeat(3, minmax(0,1fr)); } }
+figure { margin:0; background:var(--surface); border:1px solid var(--line); border-radius:8px; overflow:hidden; min-width:0; }
+.frame { position:relative; aspect-ratio:16/9; background:#000; }
+.frame img { position:absolute; inset:0; width:100%; height:100%; object-fit:contain; }
+.frame .offline { position:absolute; inset:0; display:none; align-items:center; justify-content:center; color:var(--warn); padding:12px; text-align:center; }
+.frame.down .offline { display:flex; }
+figcaption { display:flex; flex-wrap:wrap; justify-content:space-between; align-items:center; gap:4px 10px; padding:8px 12px; border-top:1px solid var(--line); }
+.name { font-weight:600; } .sub { color:var(--muted); font-size:12px; }
+a { color:var(--accent); }
+details summary { cursor:pointer; color:var(--muted); font-size:13px; }
+.rk { list-style:none; margin:6px 0; padding:0; font-size:13px; } .rk li { padding:1px 0; display:flex; gap:6px; }
+.rk .s { width:1.2em; text-align:center; font-weight:700; } .rk .ok .s { color:var(--live); } .rk .bad .s { color:var(--bad); } .rk .warn .s, .rk .wait .s { color:var(--warn); }
+.rk .t { flex:1; } .rk .d { color:var(--muted); text-align:right; max-width:55%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+#rviz { width:100%; max-width:320px; height:auto; display:block; margin:4px 0; }
+#ren { font:inherit; color:var(--fg); background:#1f262c; border:1px solid var(--line); border-radius:6px; padding:3px 10px; cursor:pointer; }
+#ren:disabled { opacity:.5; cursor:default; } #ren.armed { background:var(--bad); color:#0b0f14; border-color:var(--bad); }
+#rbanner { position:absolute; left:8px; bottom:30px; z-index:5; padding:4px 10px; border-radius:6px; font-size:13px; font-weight:600; color:#0b0f14; background:var(--bad); max-width:calc(100% - 16px); }
+#rbanner.ok { background:var(--live); } #rbanner.warn, #rbanner.wait { background:var(--warn); } #rbanner.live { background:#e0483a; color:#fff; animation:rp 1s infinite; }
+@keyframes rp { 50% { opacity:.65; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>FR3 lab · live</h1>
+  <div class="pills">
+    <span class="pill" id="pRobot">robot: connecting…</span>
+    <span class="pill" id="pEng">teleop –</span>
+    <span class="pill" id="pPad">pad –</span>
+    <span class="pill" id="pMap">map: connecting…</span>
+  </div>
+</header>
+<nav class="tabs"><button type="button" id="tabbtn-live" class="tabbtn on">Lab · Live</button><button type="button" id="tabbtn-sim" class="tabbtn">Simulation · VM103</button></nav>
+<style>.tabs{display:flex;gap:8px;margin:10px 0 14px}.tabbtn{background:#161d27;border:1px solid var(--line);border-radius:8px;padding:6px 18px;font:inherit;font-size:15px;color:var(--fg);cursor:pointer}.tabbtn.on{background:#1d3a5f;border-color:#2f6fdb;color:#fff}</style>
+<div id="tab-live">
+
+
+<section class="top">
+  <div class="main-column">
+  <div id="view">
+    <div class="tools">
+      <label><input type="checkbox" id="crop" checked> workspace only</label>
+      <label><input type="checkbox" id="lit" checked> shading</label>
+      <label><input type="checkbox" id="height"> colour by height</label>
+      <label><input type="checkbox" id="showMap" checked> map</label>
+      <label><input type="checkbox" id="showRobot" checked> robot</label>
+      <label title="drill model box (carved from the mesh) + pick/TCP markers"><input type="checkbox" id="showDrill" checked> drill</label>
+      <label title="grasp cloud points (masked ZED depth, fr3_link0)"><input type="checkbox" id="showCloud" checked> cloud</label>
+      <label title="published wrist TF frame + trail (green = hand, yellow = pose fallback)"><input type="checkbox" id="showWrist" checked> wrist</label>
+      <select id="wristsrc" title="3D wrist marker source: debug TF (robot frame) or spot pose (body frame, simulated marker)"><option value="debug" selected>debug TF</option><option value="spot">spot (SIM)</option></select>
+      <span class="livecloud" title="live object cloud per camera (fr3_link0, current frame, no follow offset)"><span style="color:#22d3ee">■</span><button type="button" data-livecam="z1">ZED1</button> <span style="color:#fb923c">■</span><button type="button" data-livecam="z2">ZED2</button> <button type="button" data-livecam="both">both</button> · calibration <button type="button" data-calibprev="live" title="what the planner and grasp use now: ZED1 + ZED2 robot-fit + desk-step Z correction, deployed 2026-11-19 22:17">live (deployed 11-19)</button> <button type="button" data-calibprev="before" title="preview only, same depth re-posed with the calibration that was live before 11-19: ZED1 11-06 robot-fit (s 0.9767), ZED2 11-15 drill-aligned (s 1.0086, k 0.0474). Nothing is published.">before 11-19 (old)</button> <button type="button" data-calibprev="cand" title="preview only, browser re-pose with the 2026-11-22 w10 table-refined candidates from the 26-pose cuRobo session: cross-plane 0.23 deg, table dz ~0 mm at the touch points, arm gates OK; ball centre 14.2 mm still FAILS the 5 mm gate. Nothing is published.">new w10 (cand)</button> <span id="calibNote" style="margin-left:6px"></span> <span id="livecloudStat"></span></span>
+      <label><input type="checkbox" id="wire"> wireframe</label>
+      <button type="button" id="reset">reset view</button>
+    </div>
+    <div id="rbanner" hidden></div>
+    <div class="hint">drag: rotate · right-drag: pan · wheel: zoom · grid 10 cm · blue = commanded, orange = measured hand, wrist axes = tracker TF (green = hand, yellow = pose fallback, white = spot SIM, body frame, NOT robot-aligned) <span id="wristhud" class="k"></span></div>
+  </div>
+
+<h2>Cameras</h2>
+<section class="grid">
+  <figure id="cam1"><div class="frame"><img alt="zed1 live"><div class="offline">Stream unavailable. Retrying…</div></div>
+    <figcaption><div><div class="name">Camera 1 · front</div><div class="sub">zed1 · 33874668</div></div><button type="button" data-cam="cam1">Reconnect</button></figcaption></figure>
+  <figure id="cam2"><div class="frame"><img alt="zed2 live"><div class="offline">Stream unavailable. Retrying…</div></div>
+    <figcaption><div><div class="name">Camera 2 · top</div><div class="sub">zed2 · 39498278</div></div><button type="button" data-cam="cam2">Reconnect</button></figcaption></figure>
+  <figure id="cam3"><div class="frame"><img alt="zed3 live"><div class="offline">Wrist tracking stream unavailable. Retrying…</div></div>
+    <figcaption><div><div class="name">Camera 3 · operator wrist</div><div class="sub">zed3 · 34046618</div></div><button type="button" data-cam="cam3">Reconnect</button></figcaption></figure>
+  <figure id="cam4"><div class="frame" style="aspect-ratio:4/3"><img alt="RealSense do punho da Franka"><div class="offline">RealSense indisponível. Tentando novamente…</div></div>
+    <figcaption><div><div class="name">RealSense · visão do robô</div><div class="sub">D435i · punho · 138422074833</div></div><button type="button" data-cam="cam4">Reconnect</button></figcaption></figure>
+  <figure id="spotw"><div class="frame"><img alt="spot wrist overlay"><div class="offline">Spot overlay unavailable. Retrying…</div></div>
+    <figcaption><div><div class="name">Spot detector · torso axes + wrist</div><div class="sub">orig node · /spot_wrist/overlay</div></div><button type="button" data-spotw="1">Reconnect</button></figcaption></figure>
+</section>
+
+  </div>
+  <div class="side">
+    <div class="card"><h3>cuRobo · joystick</h3><div id="curobostatus" class="pill warn">Conferindo planejador…</div></div>
+        <div class="card" id="object-selector"><h3>Grasp target <span class="k">(SAM2 + map; Y is separate)</span></h3>
+      <div style="display:flex;flex-wrap:wrap;gap:6px;margin:6px 0">
+        <button type="button" data-object-target="drill" aria-pressed="false" disabled>Drill</button>
+        <button type="button" data-object-target="tennis_ball" aria-pressed="false" disabled>Tennis ball</button>
+        <button type="button" data-object-target="sprite" aria-pressed="false" disabled>Sprite bottle</button>
+      </div>
+      <div class="k" data-object-hint style="min-height:1.3em">Pick an object, then click it in the image.</div>
+      <canvas data-object-canvas width="640" height="360" title="ZED1 with the live SAM2 mask. Choose a button, then click the object." style="display:block;width:100%;aspect-ratio:16/9;margin:6px 0;border-radius:6px;background:#000;cursor:crosshair"></canvas>
+      <div class="pill warn" data-object-status>Checking object selection…</div>
+      <div class="row"><span class="k">mask</span><span data-object-check="mask">–</span></div>
+      <div class="row"><span class="k">map</span><span data-object-check="map">–</span></div>
+      <div class="k" data-object-details style="margin-top:4px"></div>
+    </div>
+    <div class="card"><h3>ZED3 · 6D wrist teleoperation</h3>
+      <iframe id="zedmini" title="Camera 3 (operator hand), same WebRTC stream as the Camera 3 card" allow="autoplay; fullscreen" src="https://omnigent-vm.tail0994ab.ts.net:1985/stream.html?src=operator&mode=webrtc" style="display:block;width:100%;aspect-ratio:16/9;margin:6px 0 4px;border-radius:6px;background:#000;border:0"></iframe>
+      <div style="display:flex;flex-wrap:wrap;gap:8px;margin:6px 0 8px">
+        <button type="button" id="zedactivate">Start teleop ZED</button>
+        <button type="button" id="zedrecalibrate">Nova pessoa / recalibrar</button>
+        <button type="button" id="zedhome">Home</button>
+        <button type="button" id="zedstop">Parar / abortar Home</button>
+        <button type="button" id="tojoystick">Voltar ao joystick</button> <button type="button" id="zedrecover">Recover arm + bridge</button>
+      </div>
+      <div class="row"><span id="zedstatus" class="pill warn">waiting for tracking</span></div>
+      <div class="k" id="trackingdetail">Aguardando diagnóstico da mão</div>
+      <div class="row"><span class="k">Garra por gesto</span><span id="zedgesture">–</span></div>
+      <div class="row" style="margin-top:8px"><label for="inputsource">Control input</label>
+        <select id="inputsource"><option value="joystick">Joystick</option><option value="zed">ZED3 wrist · 6D</option></select></div>
+      <div class="k" id="inputnote">Clique Start teleop ZED. Mostre ombro, cotovelo e punho direitos até calibrar a escala; depois mantenha a mão parada para iniciar. Ao concluir a calibração, o controle é habilitado automaticamente.</div>
+      <div class="k" style="margin-top:6px">A posição e a orientação atuais são a referência. Estenda o braço para aproximar o robô da mesa; recue para afastar. Gire a mão para orientar a garra. Palma aberta abre a garra; punho fechado fecha. Mantenha o gesto por um instante. Home encerra a teleoperação e retorna à posição inicial.</div>
+      <div class="k" style="margin-top:6px">Perda curta: pausa e retoma com a mão estável, sem salto. Após 5 s: desarma e exige novo Start. Controle direto, sem desvio de obstáculos cuRobo/PF.</div>
+    </div>
+
+    <div class="card" id="rcard"><h3>Remote PS4 (this browser) <span id="rbadge" class="pill">–</span></h3>
+      <div id="rinsecure" class="k" hidden>The browser only exposes a gamepad on an https page. Open this dashboard at
+        <a href="https://nexus.tail0994ab.ts.net:8443/">https://nexus.tail0994ab.ts.net:8443</a> to drive with your PS4.</div>
+      <div id="rbody" hidden>
+        <ul class="rk" id="rcheck"></ul>
+        <canvas id="rviz" width="320" height="104"></canvas>
+        <div class="btns" id="rbtns"></div>
+        <div class="row" style="margin-top:6px"><span class="k">round trip</span><span id="rrtt">–</span></div>
+        <div class="k" id="rmsg" style="margin:4px 0;min-height:1.4em"></div>
+        <button type="button" id="ren" disabled>Enable remote control</button> <span class="k">Esc = disable</span>
+        <div class="row"><button type="button" id="rpregrasp">Pre-grasp (debug)</button> <button type="button" id="rgrasp">Grasp (Y)</button> <button type="button" id="rgraspCancel">Cancel grasp</button> <button type="button" id="ropen">Open gripper</button> <span class="k" id="rgraspMsg">autonomous grasp, same trigger as pad Y: the robot WILL move</span></div>
+        <details id="rdet" style="margin-top:8px"><summary>What the browser sees / troubleshooting</summary>
+          <pre id="rall" class="k" style="white-space:pre-wrap;margin:6px 0"></pre>
+          <div class="k">The browser lists a pad only after you press a button <b>while this tab is focused</b> (click the page first). Close other tabs that may hold the pad, and quit Steam / DS4Windows / Remote Play. Chrome or Edge, USB or Bluetooth; a non-standard mapping is refused.</div>
+        </details>
+        <div class="k" style="margin-top:6px">Options = engage, Share = disengage, left stick = x/y, right stick = roll/pitch, L1/L2 = up/down, R1/R2 = yaw, Cross/Circle = close/open gripper.</div>
+      </div>
+    </div>
+    <div class="card"><h3>Robot</h3>
+      <div class="row"><span class="k">hand (mm, base frame)</span><span id="tcp">–</span></div>
+      <div class="row"><span class="k">target − hand</span><span id="lag">–</span></div>
+      <div class="row"><span class="k">map</span><span id="mapstats">–</span></div>
+    </div>
+    <div class="card"><h3>Executor</h3>
+      <div class="row"><span class="k">backend</span><span id="backend" class="pill">&ndash;</span></div>
+      <div style="display:flex;gap:8px;margin-top:8px">
+        <button type="button" id="becurobo">cuRobo + MPC</button>
+        <button type="button" id="becart">Cartesiano</button>
+      </div>
+      <div class="k" id="backendnote">Troca o executor com o braço parado (~40 s, sem movimento). O servidor recusa se estiver engajado; não usar durante teste com claim de outra lane.</div>
+    </div>
+    <div class="card"><h3>Teleop speed</h3>
+      <div class="row"><span class="k">translation</span><b id="spv">–</b></div>
+      <input type="range" id="sp" min="5" max="100" step="5" value="100" disabled>
+      <div class="k" id="spnote">waiting for the teleop</div>
+      <div class="row" style="margin-top:6px"><span class="k">rotation</span><b id="rpv">–</b></div>
+      <input type="range" id="rp" min="5" max="100" step="5" value="100" disabled>
+      <div class="k" id="rpnote">waiting for the teleop</div>
+    </div>
+    <div class="card"><h3>Gripper force</h3>
+      <div class="row"><span class="k">grasp force (next close)</span><b id="gfv">–</b></div>
+      <input type="range" id="gf" min="5" max="70" step="5" value="20" disabled>
+      <div class="k" id="gfnote">waiting for the teleop</div>
+      <div class="k" style="margin-top:4px">Holding something? Press close again to re-grasp with the new force. Franka Hand: up to 70 N.</div>
+    </div>
+    <div class="card"><h3>Pad <span class="k" id="layout"></span></h3>
+      <details><summary>sticks and buttons</summary><div id="pad"></div></details>
+      <div class="k" style="margin-top:6px">Lab pad (8BitDo) check: <a id="robotdash" target="_blank" rel="noopener">robot panel</a></div>
+    </div>
+  </div>
+</section>
+
+<h2>Robot segmentation (cuRobo RobotSegmenter) · red = removed from the depth nvblox sees</h2>
+<section class="grid">
+  <figure id="seg1"><div class="frame"><img alt="zed1 robot mask"><div class="offline">No segmenter output. Retrying…</div></div>
+    <figcaption><div><div class="name">Camera 1 · segmented</div><div class="sub">/franka_seg_zed1/overlay</div></div><button type="button" data-cam="seg1">Reconnect</button></figcaption></figure>
+  <figure id="seg2"><div class="frame"><img alt="zed2 robot mask"><div class="offline">No segmenter output. Retrying…</div></div>
+    <figcaption><div><div class="name">Camera 2 · segmented</div><div class="sub">/franka_seg_zed2/overlay</div></div><button type="button" data-cam="seg2">Reconnect</button></figcaption></figure>
+</section>
+
+<h2>Grasp lane (VM103) · SAM2 drill mask + chosen grasp vs cloud</h2>
+<section class="grid">
+  <figure id="gseg"><div class="frame"><img alt="sam2 drill mask live"><div class="offline">Segmentation viewer unavailable. Retrying…</div></div>
+    <figcaption><div><div class="name">Drill mask ZED1 · live</div><div class="sub">/zed1/segmentation_overlay</div></div><button type="button" id="gsegBtn">Reconnect</button></figcaption></figure>
+  <figure id="gseg2"><div class="frame"><img alt="sam2 drill mask zed2 live"><div class="offline">ZED2 mask unavailable. Retrying…</div></div>
+    <figcaption><div><div class="name">Drill mask ZED2 · live</div><div class="sub">/zed2/segmentation_mask (~1.5 Hz)</div></div><button type="button" id="gseg2Btn">Reconnect</button></figcaption></figure>
+  <figure id="ggrasp"><div class="frame"><canvas id="g3d" style="width:100%;height:320px;display:block"></canvas><div class="offline">Loading 3D grasp…</div></div>
+    <figcaption><div><div class="name">Grasp vs cloud · 3D</div><div class="sub">drag orbit · wheel zoom · double-click resets</div><div class="sub" id="g3dmeta">provenance: loading...</div></div><button type="button" id="ggraspBtn">Reload</button></figcaption></figure>
+</section>
+
+<script>
+// ---- grasp lane (VM103, murilo 2026-11-03): same snap-when-arrived discipline as the cameras ----
+// ZED2 panel added 2026-11-06 (RAL lane, Murilo): same chain on segsnap2 (VM :8791/snap2.jpg), slower (mask ~1.5 Hz)
+[['gseg', 'segsnap', 400], ['gseg2', 'segsnap2', 700]].forEach(([id, url, ms]) => {
+  const lean = () => window.remotePadOn && window.remotePadOn();
+  const fig = document.getElementById(id), img = fig.querySelector('img'), frame = fig.querySelector('.frame');
+  let gen = 0;
+  function chain(){
+    const g = ++gen;
+    img.onload = () => { frame.classList.remove('down'); setTimeout(next, lean() ? 2000 : ms); };
+    img.onerror = () => { frame.classList.add('down'); setTimeout(next, 4000); };
+    function next(){ if (g !== gen) return; img.src = url + '?_=' + Date.now(); }
+    next();
+  }
+  document.getElementById(id + 'Btn').addEventListener('click', chain);
+  chain();
+});
+</script>
+
+<script>
+// ---- camera streams (web_video_server on :8787) ---------------------------------------------------------------------
+const HTTPS = location.protocol === 'https:';                  // via nexus:8443: cameras and the robot panel come through this server
+const STREAM_BASE = 'http://' + location.hostname + ':8787/stream?topic=';
+const cams = { cam1: '/zed1/zed_node/left/image_rect_color', cam2: '/zed2/zed_node/left/image_rect_color', cam3: '/fr3_operator/wrist_overlay', cam4: '/fr3_realsense/color/image_rect',
+               seg1: '/franka_seg_zed1/overlay', seg2: '/franka_seg_zed2/overlay' };
+function startCam(key) {
+  const fig = document.getElementById(key), img = fig.querySelector('img'), frame = fig.querySelector('.frame');
+  if (HTTPS || key === 'cam3' || key === 'cam4') {     // one JPEG at a time through the tunnel, next one only after this one arrived (streams would starve the remote pad)
+    const gen = fig.dataset.gen = String(+(fig.dataset.gen || 0) + 1);       // Reconnect starts a new chain; the old one stops
+    const RTC = { cam1: 'front', cam2: 'top', cam3: 'operator', cam4: 'wrist', seg1: 'seg1', seg2: 'seg2' };   // 2026-11-23: WebRTC (go2rtc, H.264) for the driving cams
+    if (RTC[key]) {
+      img.style.display = 'none';
+      let f = fig.querySelector('iframe.rtc');
+      if (!f) { f = document.createElement('iframe'); f.className = 'rtc'; f.allow = 'autoplay; fullscreen'; f.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;border:0;display:block;background:#000'; fig.querySelector('.frame').appendChild(f); }
+      frame.classList.remove('down');
+      // One player per camera; bitrate adapts at the encoder (abr_controller), never by swapping players.
+      f.src = 'https://omnigent-vm.tail0994ab.ts.net:1985/stream.html?src=' + RTC[key] + '&mode=webrtc';
+      return;
+    }
+    // While the remote pad is enabled the relay link is the pad's: only front + top, small and slower (measured 10-20: 5 full-size
+    // pollers -> pad round trip p95 334 ms, max 440 ms, and the pad server blocks above 400 ms).
+    const lean = () => window.remotePadOn && window.remotePadOn(), keep = key === 'cam1' || key === 'cam2';
+    img.onload = () => { frame.classList.remove('down'); setTimeout(next, key === 'cam3' ? 100 : 0); };
+    img.onerror = () => { frame.classList.add('down'); setTimeout(next, 4000); };
+    const next = () => {
+      if (fig.dataset.gen !== gen) return;
+      if (lean() && !keep) { fig.querySelector('.offline').textContent = 'Paused while the remote PS4 is on (keeps the link fast).'; frame.classList.add('down'); return setTimeout(next, 1000); }
+      // cam4: old :8785 snapshot server gone; fall through to the snap proxy (2026-11-23)
+      if (key === 'cam3' && !HTTPS) { img.src = 'http://' + location.hostname + ':8786/snapshot?_=' + Date.now(); return; }
+      img.src = 'snap?topic=' + cams[key] + '&width=320&height=180&quality=45&_=' + Date.now();   // 2026-11-23: small self-clocked snaps; MJPEG streams buffered and lagged on this link
+    };
+    return next();
+  }
+  img.onload = () => frame.classList.remove('down');
+  img.onerror = () => { frame.classList.add('down'); setTimeout(() => startCam(key), 4000); };
+  // topic unencoded (web_video_server does not decode %2F); 480x270 q60 keeps the encoder cheap on the lab PC
+  img.src = STREAM_BASE + cams[key] + '&width=480&height=270&quality=60&_=' + Date.now();
+}
+(function graspButtons(){ const b=document.getElementById('rgrasp'), c=document.getElementById('rgraspCancel'), m=document.getElementById('rgraspMsg'); if(!b) return; async function post(path){ m.textContent='sending...'; try{ const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json','X-Dashboard':'1'},body:'{}'}); const d=await r.json(); m.textContent=(d.ok?'ok: ':'refused: ')+(d.message||r.status); }catch(e){ m.textContent='dashboard backend unreachable'; } } b.addEventListener('click',()=>post('fr3/grasp')); c.addEventListener('click',()=>post('fr3/grasp-cancel')); const pg=document.getElementById('rpregrasp'); if(pg) pg.addEventListener('click',()=>post('fr3/pregrasp')); const op=document.getElementById('ropen'); if(op) op.addEventListener('click',()=>post('fr3/gripper-open')); })();
+document.querySelectorAll('button[data-cam]').forEach(b => b.addEventListener('click', () => startCam(b.dataset.cam)));
+Object.keys(cams).forEach(startCam);
+// Spot orig overlay card: WebRTC like the other cams (node: spot_wrist_orig in container spot-wrist-orig).
+function startSpotw() {
+  const fig = document.getElementById('spotw'); if (!fig) return;
+  const img = fig.querySelector('img'), frame = fig.querySelector('.frame');
+  img.style.display = 'none';
+  let f = fig.querySelector('iframe.rtc');
+  if (!f) { f = document.createElement('iframe'); f.className = 'rtc'; f.allow = 'autoplay; fullscreen'; f.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;border:0;display:block;background:#000'; fig.querySelector('.frame').appendChild(f); }
+  frame.classList.remove('down');
+  f.src = 'https://omnigent-vm.tail0994ab.ts.net:1985/stream.html?src=spotw&mode=webrtc';
+}
+document.querySelector('button[data-spotw]').addEventListener('click', () => startSpotw());
+startSpotw();
+document.getElementById('robotdash').href = HTTPS ? 'fr3/' : 'http://' + location.hostname + ':8088/';
+</script>
+
+<script>
+(async function curoboStatus(){
+ const element=document.getElementById('curobostatus');
+ if(location.protocol==='https:'){element.textContent='Status cuRobo no painel local :8788';return;}
+ try {
+  const response=await fetch('http://'+location.hostname+':8784/status',{cache:'no-store',signal:AbortSignal.timeout(1500)});
+  if(!response.ok)throw new Error('status unavailable');
+  const state=await response.json();
+  element.textContent=state.armed ? (state.reason==='active' ? 'cuRobo ativo · seguindo controle' : state.command_ready ? 'cuRobo pronto · Start no joystick' : 'cuRobo aguardando · '+(state.packet_reason||state.reason)) : 'cuRobo desarmado · '+(state.packet_reason||state.reason);
+  element.className='pill '+(state.armed&&state.command_ready?'on':'warn');
+ } catch(error){element.textContent='cuRobo indisponível';element.className='pill warn';}
+ setTimeout(curoboStatus,700);
+})();
+</script>
+
+<script>
+// ZED card mini view: the #zedmini iframe above plays the same WebRTC stream as the Camera 3 card, no mirror code needed.
+</script>
+<script>
+// sim cameras (VM103 Isaac, domain 103): same snap-polling as the lab cams, over VM103 tailscale HTTPS
+const SIM_HOST = 'https://omnigent-vm.tail0994ab.ts.net';
+const simcams = { sim1: '/zed1/zed_node/left/image_rect_color/compressed', sim2: '/zed2/zed_node/left/image_rect_color/compressed', sseg1: '/franka_seg_zed1/overlay', sseg2: '/franka_seg_zed2/overlay' };
+function setSimState(ok) {
+  const el = document.getElementById('simstate');
+  el.textContent = ok ? 'sim: live' : 'sim: unreachable';
+  el.className = 'pill ' + (ok ? 'on' : 'bad');
+}
+function startSimCam(key) {
+  const fig = document.getElementById(key), img = fig.querySelector('img'), frame = fig.querySelector('.frame');
+  const gen = fig.dataset.gen = String(+(fig.dataset.gen || 0) + 1);
+  const paused = () => window.remotePadOn && window.remotePadOn();
+  img.onload = () => { frame.classList.remove('down'); setSimState(true); setTimeout(next, 400); };
+  img.onerror = () => { frame.classList.add('down'); setSimState(false); setTimeout(next, 4000); };
+  const next = () => {
+    if (fig.dataset.gen !== gen) return;
+    if (!window.__simTabActive) return setTimeout(next, 1000);
+    if (paused()) { fig.querySelector('.offline').textContent = 'Paused while the remote PS4 is on (keeps the link fast).'; frame.classList.add('down'); return setTimeout(next, 1000); }
+    img.src = SIM_HOST + ':9443/snap?topic=' + simcams[key] + '&_=' + Date.now();
+  };
+  return next();
+}
+function startSimDrill() {
+  const fig = document.getElementById('sdrill'), img = fig.querySelector('img'), frame = fig.querySelector('.frame');
+  const gen = fig.dataset.gen = String(+(fig.dataset.gen || 0) + 1);
+  const paused = () => window.remotePadOn && window.remotePadOn();
+  img.onload = () => { frame.classList.remove('down'); setTimeout(next, 400); };
+  img.onerror = () => { frame.classList.add('down'); setTimeout(next, 4000); };
+  const next = () => {
+    if (fig.dataset.gen !== gen) return;
+    if (!window.__simTabActive) return setTimeout(next, 1000);
+    if (paused()) { fig.querySelector('.offline').textContent = 'Paused while the remote PS4 is on (keeps the link fast).'; frame.classList.add('down'); return setTimeout(next, 1000); }
+    img.src = SIM_HOST + ':9444/snap.jpg?_=' + Date.now();  // cache-buster (identical src never refetches)
+  };
+  return next();
+}
+function initSimCams() {
+  if (window.__simInitDone) return; window.__simInitDone = true;
+  document.querySelectorAll('button[data-simcam]').forEach(b => b.addEventListener('click', () => startSimCam(b.dataset.simcam)));
+  Object.keys(simcams).forEach(startSimCam);
+  document.getElementById('sdrillBtn').addEventListener('click', startSimDrill);
+  startSimDrill();
+  pollSimDrill();
+}
+if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', initSimCams);
+else initSimCams();
+async function pollSimDrill() {
+  if (!window.__simTabActive) return setTimeout(pollSimDrill, 1000);
+  try {
+    const d = await (await fetch(SIM_HOST + ':9444/drill.json', { cache: 'no-store' })).json();
+    const c = d.center || d.centroid || [];
+    document.getElementById('simdrill').textContent = 'drill: [' + c.map(v => (+v).toFixed(3)).join(', ') + ']';
+    document.getElementById('simdrill').className = 'pill on';
+    document.getElementById('simpts').textContent = 'cloud: ' + d.n_points + ' pts';
+    document.getElementById('simpts').className = 'pill on';
+  } catch (e) {
+    document.getElementById('simdrill').textContent = 'drill: --';
+    document.getElementById('simdrill').className = 'pill';
+    document.getElementById('simpts').textContent = 'cloud: --';
+    document.getElementById('simpts').className = 'pill';
+  }
+  setTimeout(pollSimDrill, 2500);
+}
+</script>
+
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"}}</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { ColladaLoader } from 'three/addons/loaders/ColladaLoader.js';
+const $ = id => document.getElementById(id);
+const pill = (id, text, cls) => { $(id).textContent = text; $(id).className = 'pill ' + (cls || ''); };
+
+// ---- 3D scene ---------------------------------------------------------------------------------------------------------
+const view = $('view');
+THREE.Object3D.DEFAULT_UP.set(0, 0, 1);                       // ROS: z up
+const scene = new THREE.Scene(); scene.background = new THREE.Color(0x10151c); window.__mapScene = scene; // cloud overlay hook (dashboard lane): read-only scene handle for the isolated block below
+const cam = new THREE.PerspectiveCamera(45, 1, 0.02, 50); cam.up.set(0, 0, 1);
+const HOME = { pos: [1.7, -1.4, 1.2], target: [0.45, 0, 0.2] };
+cam.position.set(...HOME.pos);
+const ren = new THREE.WebGLRenderer({ antialias: true }); ren.setPixelRatio(Math.min(devicePixelRatio, 2)); view.prepend(ren.domElement);
+const ctl = new OrbitControls(cam, ren.domElement); ctl.target.set(...HOME.target); ctl.update();
+scene.add(new THREE.HemisphereLight(0xffffff, 0x556070, 1.4));
+const sun = new THREE.DirectionalLight(0xffffff, 1.6); sun.position.set(2, -1.5, 3); scene.add(sun);
+const grid = new THREE.GridHelper(3, 30, 0x3a4452, 0x232b36); grid.rotation.x = Math.PI / 2; scene.add(grid);
+scene.add(new THREE.AxesHelper(0.2));
+function resize() { const w = view.clientWidth, h = view.clientHeight; ren.setSize(w, h, false); cam.aspect = w / h; cam.updateProjectionMatrix(); }
+addEventListener('resize', resize); resize();
+(function loop() { requestAnimationFrame(loop); ctl.update(); ren.render(scene, cam); })();
+$('reset').onclick = () => { cam.position.set(...HOME.pos); ctl.target.set(...HOME.target); ctl.update(); };
+
+// ---- nvblox mesh (mesh.bin from this server) ---------------------------------------------------------------------------
+const BOX = { min: [-0.5, -1.0, -0.1], max: [1.3, 1.0, 1.3] };
+const mapMat = new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.FrontSide });   // front faces only, like rviz: walls seen from behind vanish
+const SRGB2LIN = new Float32Array(256).map((_, i) => { const c = i / 255; return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); });
+const LIGHT = new THREE.Vector3(0.4, -0.3, 0.87).normalize();
+function mapColours(g, pos, rgba, nv) {   // nvblox colours are sRGB bytes; three.js expects linear (else washed out). Shading baked in, unlit like rviz
+  const n = g.getAttribute('normal').array, c = new Float32Array(nv * 3), hc = $('height').checked ? heightColours(pos, nv) : null, lit = $('lit').checked;
+  for (let i = 0; i < nv; i++) {
+    const k = lit ? 0.72 + 0.28 * Math.abs(n[3 * i] * LIGHT.x + n[3 * i + 1] * LIGHT.y + n[3 * i + 2] * LIGHT.z) : 1;
+    for (let j = 0; j < 3; j++) c[3 * i + j] = k * (hc ? hc[3 * i + j] : SRGB2LIN[rgba[4 * i + j]]);
+  }
+  return new THREE.BufferAttribute(c, 3);
+}
+const mapMesh = new THREE.Mesh(new THREE.BufferGeometry(), mapMat); scene.add(mapMesh);
+let raw = null, ver = -1;
+function heightColours(pos, n) {
+  const c = new Float32Array(n * 3), col = new THREE.Color();
+  for (let i = 0; i < n; i++) { const t = Math.min(1, Math.max(0, (pos[3 * i + 2] + 0.05) / 0.85)); col.setHSL(0.66 - 0.66 * t, 0.85, 0.5); c.set([col.r, col.g, col.b], 3 * i); }   // setHSL gives linear values already
+  return c;
+}
+function weldNormals(g, pos, nv) {   // nvblox sends each 8x8x8-voxel block with its own copy of the border vertices, so computeVertexNormals leaves a lighting step at every block seam (blocky look): average the normals of coincident vertices
+  const n = g.getAttribute('normal').array, at = new Map(), grp = new Int32Array(nv);
+  for (let i = 0; i < nv; i++) {
+    const k = Math.round(pos[3 * i] * 1e4) + ',' + Math.round(pos[3 * i + 1] * 1e4) + ',' + Math.round(pos[3 * i + 2] * 1e4);
+    let j = at.get(k); if (j === undefined) { j = at.size; at.set(k, j); } grp[i] = j;
+  }
+  const s = new Float32Array(3 * at.size);
+  for (let i = 0; i < nv; i++) { const j = 3 * grp[i]; s[j] += n[3 * i]; s[j + 1] += n[3 * i + 1]; s[j + 2] += n[3 * i + 2]; }
+  for (let i = 0; i < nv; i++) {
+    const j = 3 * grp[i], l = Math.hypot(s[j], s[j + 1], s[j + 2]) || 1;
+    n[3 * i] = s[j] / l; n[3 * i + 1] = s[j + 1] / l; n[3 * i + 2] = s[j + 2] / l;
+  }
+}
+function rebuild() {
+  if (!raw) return;
+  const { pos, rgba, idx, nv } = raw; let tri = idx;
+  if ($('crop').checked) {
+    const keep = [];
+    for (let t = 0; t < idx.length; t += 3) {
+      const i = 3 * idx[t], x = pos[i], y = pos[i + 1], z = pos[i + 2];
+      if (x >= BOX.min[0] && x <= BOX.max[0] && y >= BOX.min[1] && y <= BOX.max[1] && z >= BOX.min[2] && z <= BOX.max[2]) keep.push(idx[t], idx[t + 1], idx[t + 2]);
+    }
+    tri = new Uint32Array(keep);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  g.setIndex(new THREE.BufferAttribute(tri, 1)); g.computeVertexNormals(); weldNormals(g, pos, nv);
+  g.setAttribute('color', mapColours(g, pos, rgba, nv));
+  mapMesh.geometry.dispose(); mapMesh.geometry = g;
+  mapMat.wireframe = $('wire').checked;
+  $('mapstats').textContent = `${(tri.length / 3).toLocaleString()} triangles`;
+}
+for (const id of ['crop', 'lit', 'height', 'wire']) $(id).onchange = rebuild;
+$('showMap').onchange = () => { mapMesh.visible = $('showMap').checked; };
+let mapT = 0;
+const SLOW = location.protocol === 'https:';                   // via nexus:8443 = DERP relay: the ~1.3 MB map every second starves the pad
+async function poll() {
+  if (SLOW && window.remotePadOn && window.remotePadOn()) { pill('pMap', 'map paused (remote PS4 on)', 'warn'); return setTimeout(poll, 1000); }
+  try {
+    const r = await fetch('mesh.bin?v=' + ver, { cache: 'no-store' });
+    if (r.status === 200) {
+      const buf = await r.arrayBuffer(), h = new Uint32Array(buf, 0, 3), nv = h[1], nt = h[2]; let o = 12;
+      const pos = new Float32Array(buf, o, nv * 3); o += nv * 12;
+      const rgba = new Uint8Array(buf, o, nv * 4); o += nv * 4;
+      raw = { pos, rgba, idx: new Uint32Array(buf, o, nt * 3), nv }; ver = h[0]; mapT = Date.now(); rebuild();
+    }
+    if (r.ok) pill('pMap', 'map live', 'on'); else pill('pMap', 'map: server error ' + r.status, 'warn');
+  } catch (e) { pill('pMap', 'map: unreachable', 'bad'); }
+  setTimeout(poll, SLOW ? 5000 : 1000);
+}
+poll();
+
+// ---- live robot: meshes + poses from the FR3 dashboard (passed through by this server) ---------------------------------
+const robot = new THREE.Group(); scene.add(robot); const linkGroups = {};
+$('showRobot').onchange = () => { robot.visible = cmdF.visible = tcpF.visible = $('showRobot').checked; };
+function frame(color) {
+  const g = new THREE.Group(); g.add(new THREE.AxesHelper(0.06));
+  g.add(new THREE.Mesh(new THREE.SphereGeometry(0.012, 16, 12), new THREE.MeshBasicMaterial({ color }))); g.visible = false; scene.add(g); return g;
+}
+const cmdF = frame(0x2f6fdb), tcpF = frame(0xe8801c);
+function setPose(o, p) { o.position.set(p[0], p[1], p[2]); o.quaternion.set(p[3], p[4], p[5], p[6]); o.visible = $('showRobot').checked; }
+async function loadRobot() {
+  let cfg;
+  for (;;) { try { cfg = await (await fetch('config')).json(); if (cfg.visuals.length) break; } catch (e) {} await new Promise(r => setTimeout(r, 2000)); }
+  const loader = new ColladaLoader();
+  const mat = new THREE.MeshStandardMaterial({ color: 0xdfe5ee, roughness: 0.55, metalness: 0.1, transparent: true, opacity: 0.55 });
+  await Promise.all(cfg.visuals.map(v => new Promise(res => {
+    loader.load('mesh/' + v.mesh, c => {
+      const m = c.scene; m.rotation.set(0, 0, 0);
+      m.traverse(o => { if (o.isMesh) o.material = Array.isArray(o.material) ? o.material.map(() => mat) : mat; });
+      const holder = new THREE.Group(); holder.add(m);
+      holder.position.set(...v.xyz); holder.quaternion.setFromEuler(new THREE.Euler(v.rpy[0], v.rpy[1], v.rpy[2], 'ZYX')); holder.scale.set(...v.scale);
+      const lg = linkGroups[v.link] || (linkGroups[v.link] = (() => { const g = new THREE.Group(); g.visible = false; robot.add(g); return g; })());
+      lg.add(holder); res();
+    }, undefined, () => res());
+  })));
+}
+loadRobot();
+
+// ---- grasp lane drill overlay (murilo 2026-11-03): drill model box + pick/TCP markers, map frame -------------------------
+const drillG = new THREE.Group(); scene.add(drillG);
+$('showDrill').onchange = () => { drillG.visible = $('showDrill').checked; };
+const drillBoxMat = new THREE.MeshBasicMaterial({ color: 0xe8801c, transparent: true, opacity: 0.18, depthWrite: false });
+const drillEdgeMat = new THREE.LineBasicMaterial({ color: 0xe8801c });
+let drillMesh = null, drillEdge = null;
+function drawDrillBox(lo, hi, stale) {
+  if (drillMesh) { drillG.remove(drillMesh); drillMesh.geometry.dispose(); drillMesh = null; }
+  if (drillEdge) { drillG.remove(drillEdge); drillEdge.geometry.dispose(); drillEdge = null; }
+  const g = new THREE.BoxGeometry(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]);
+  drillBoxMat.color.set(stale ? 0xe83c3c : 0xe8801c);
+  drillEdgeMat.color.set(stale ? 0xe83c3c : 0xe8801c);
+  drillMesh = new THREE.Mesh(g, drillBoxMat);
+  drillMesh.position.set((lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, (lo[2] + hi[2]) / 2);
+  drillEdge = new THREE.LineSegments(new THREE.EdgesGeometry(g), drillEdgeMat);
+  drillEdge.position.copy(drillMesh.position);
+  drillG.add(drillMesh); drillG.add(drillEdge);
+}
+async function pollDrill() {
+  try {
+    const r = await fetch('drilljson', { cache: 'no-store' });
+    if (r.ok) {
+      const d = await r.json();
+      if (d.ok) drawDrillBox(d.aabb_min, d.aabb_max, d.status !== 'live');
+    }
+  } catch (e) {}
+  setTimeout(pollDrill, 2000);
+}
+pollDrill();
+(async function loadTarget() {
+  try {
+    const r = await fetch('targetjson', { cache: 'no-store' });
+    if (!r.ok) return;
+    const t = await r.json();
+    const dot = (p, rad, color) => { const m = new THREE.Mesh(new THREE.SphereGeometry(rad, 16, 12), new THREE.MeshBasicMaterial({ color })); m.position.set(p[0], p[1], p[2]); drillG.add(m); };
+    dot(t.pick, 0.008, 0xff22ff);
+    dot(t.tcp, 0.005, 0xff2222);
+    const line = new THREE.Line(
+      new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(...t.pick), new THREE.Vector3(...t.tcp)]),
+      new THREE.LineDashedMaterial({ color: 0xff2222, dashSize: 0.008, gapSize: 0.006 }));
+    line.computeLineDistances();
+    drillG.add(line);
+  } catch (e) {}
+})();
+
+// ---- wrist TF frame: published tracker pose as rviz-style axes + trail --------------------------------------------------
+const wristF = (() => {
+  const g = new THREE.Group();
+  const axes = new THREE.AxesHelper(0.08); axes.name = 'axes'; g.add(axes);
+  const dot = new THREE.Mesh(new THREE.SphereGeometry(0.014, 16, 12), new THREE.MeshBasicMaterial({ color: 0x22ff88 }));
+  dot.name = 'dot'; g.add(dot);
+  const trailGeo = new THREE.BufferGeometry();
+  trailGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(60 * 3), 3).setUsage(THREE.DynamicDrawUsage));
+  trailGeo.setDrawRange(0, 0);
+  const trail = new THREE.Line(trailGeo, new THREE.LineBasicMaterial({ color: 0x22ff88, transparent: true, opacity: 0.6 }));
+  trail.name = 'trail'; trail.frustumCulled = false; g.add(trail);
+  g.visible = false; scene.add(g); return g;
+})();
+// Mapping-zero arrow: with no arm calibration the tracker publishes R_fixed @ wrist_cam * gain,
+// so the scene origin IS the calibration origin; the arrow shows exactly what the mapping outputs.
+const wristArrow = new THREE.ArrowHelper(new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, 0, 0), 0.001, 0x22ff88, 0.03, 0.02);
+wristArrow.visible = false; scene.add(wristArrow);
+const _wdir = new THREE.Vector3();
+const wristTrail = [];
+let wristTargetP = null, wristTargetQ = null, wristHasPose = false, wristLastValid = 0;
+$('showWrist').onchange = () => { wristF.visible = $('showWrist').checked && wristHasPose; };
+let wristSrc = 'debug';
+$('wristsrc').onchange = () => { wristSrc = $('wristsrc').value; wristTrail.length = 0; wristTargetP = wristTargetQ = null; wristHasPose = false; wristF.visible = false; wristF.getObjectByName('trail').geometry.setDrawRange(0, 0); };
+(function wristLoop() {   // the tracker only yields ~3-4 valid samples/s: ease toward the latest at 60 fps so the frame glides instead of jumping
+  requestAnimationFrame(wristLoop);   // 0.5 converges in ~3 frames (~50 ms): less lag than 0.35, still smooth
+  if (wristF.visible && wristTargetP) {
+    wristF.position.lerp(wristTargetP, 0.5);
+    if (wristTargetQ) wristF.quaternion.slerp(wristTargetQ, 0.5);
+    const L = wristF.position.length();
+    if (L > 0.01 && wristSrc === 'debug') {
+      wristArrow.visible = true;
+      wristArrow.setDirection(_wdir.copy(wristF.position).normalize());
+      wristArrow.setLength(L, 0.03, 0.02);
+    } else wristArrow.visible = false;
+  } else wristArrow.visible = false;
+})();
+function spotSample(d, t, tAge) {   // PoseStamped-shape dict -> sample-like; the node republishes HELD poses
+  if (!d || !Array.isArray(d.p)) return {};   // with fresh stamps, so gate on tracking.valid (fail closed)
+  const gated = !!t && t.valid === true && tAge !== null && tAge < 1000;
+  const qok = Array.isArray(d.q) && d.q.length === 4 && d.q.every(Number.isFinite);
+  return { position_valid: gated, orientation_valid: gated && qok, p: d.p, q: qok ? d.q : null,
+           frame: d.frame, position_source: 'spot_body', orientation_mode: 'roll' };
+}
+async function pollWrist() {
+  try {
+    const r = await fetch('wristjson', { cache: 'no-store' });
+    if (r.ok) {
+      const w = await r.json();
+      const useSpot = wristSrc === 'spot';
+      const pk = useSpot ? w.spot_pose : w.sample;
+      const tk = useSpot ? w.spot_tracking : null;
+      const t = useSpot ? ((tk && tk.data) || {}) : ((w.tracking && w.tracking.data) || {});
+      const age = (pk && pk.age_ms != null) ? pk.age_ms : null;
+      const tAge = useSpot ? ((tk && tk.age_ms != null) ? tk.age_ms : null) : 0;
+      const s = useSpot ? spotSample(pk && pk.data, t, tAge) : ((w.sample && w.sample.data) || {});
+      const now = performance.now();
+      if (age !== null && age < 1000 && s.position_valid && Array.isArray(s.p) && s.p.length === 3 && s.p.every(Number.isFinite)) {
+        if (now - wristLastValid > 500) wristTrail.length = 0;   // break the trail across gaps, no streaks
+        wristTargetP = new THREE.Vector3(s.p[0], s.p[1], s.p[2]);
+        if (!wristHasPose) wristF.position.copy(wristTargetP);   // snap once ever, ease after
+        if (s.orientation_valid && Array.isArray(s.q) && s.q.length === 4) {
+          wristTargetQ = new THREE.Quaternion(s.q[0], s.q[1], s.q[2], s.q[3]);
+          if (!wristHasPose) wristF.quaternion.copy(wristTargetQ);
+        } else wristTargetQ = null;
+        const fallback = s.position_source && s.position_source !== 'hand_wrist';
+        const c = useSpot ? 0xffffff : (fallback ? 0xe8b86d : 0x22ff88);
+        wristF.getObjectByName('dot').material.color.setHex(c);
+        wristF.getObjectByName('trail').material.color.setHex(c);
+        wristArrow.setColor(c);
+        const g = t.position_gain;
+        $('wristhud').textContent = useSpot ? '· SIM spot body frame (NOT robot-aligned) · ' + (t.valid === true ? 'TRACKING' : 'PAUSED' + (t.reason ? ': ' + t.reason : ''))
+
+          : '· wrist gain ' + (g === undefined ? '–' : Number(g).toFixed(3) + (Number(g) === 1.315 ? ' (fixed, NO arm calib)' : '')) + ' · src ' + (s.position_source || '–');
+        wristF.getObjectByName('axes').visible = !!s.orientation_valid;
+        wristTrail.push([s.p[0], s.p[1], s.p[2]]);
+        if (wristTrail.length > 60) wristTrail.shift();
+        const tp = wristF.getObjectByName('trail').geometry;
+        wristTrail.forEach((p, i) => tp.getAttribute('position').setXYZ(i, p[0], p[1], p[2]));
+        tp.setDrawRange(0, wristTrail.length);
+        tp.getAttribute('position').needsUpdate = true;
+        wristHasPose = true; wristLastValid = now;
+        wristF.visible = $('showWrist').checked;
+      } else if (wristHasPose && now - wristLastValid > 3000) {
+        wristF.visible = false; wristTrail.length = 0; wristTargetP = wristTargetQ = null; wristHasPose = false;
+      } else if (wristHasPose) {
+        wristF.getObjectByName('dot').material.color.setHex(0x8e959b);   // holding through a dropout: gray dot, pose frozen
+      }
+    }
+  } catch (e) {}
+  setTimeout(pollWrist, 50);
+}
+pollWrist();
+
+// ---- side panel ---------------------------------------------------------------------------------------------------------
+const LAYOUTS = {
+  xinput: { btn: ['A','B','X','Y','LB','RB','Back','Start','Guide','L3','R3'], ax: ['LX','LY','LT','RX','RY','RT','Dpad X','Dpad Y'], trig: [2, 5] },
+  dinput: { btn: ['A','B','C','X','Y','Z','LB','RB','LT','RT','Back','Start','Guide','L3','R3','?'], ax: ['LX','LY','RX','RY','RT','LT','Dpad X','Dpad Y'], trig: [4, 5] },
+};
+function drawPad(p) {
+  if (!p || !p.ok) { $('pad').innerHTML = '<span class="k">no pad on the lab PC</span>'; $('layout').textContent = ''; pill('pPad', 'local pad: none', 'warn'); return; }
+  const N = LAYOUTS[p.layout] || LAYOUTS.xinput; $('layout').textContent = p.layout === 'dinput' ? '· Bluetooth' : '· USB'; pill('pPad', 'local pad ok', 'on');
+  let h = '';
+  N.ax.forEach((nm, i) => {
+    const trig = N.trig.includes(i), v = p.axes[i] ?? (trig ? -1 : 0), t = (v + 1) / 2, lo = trig ? 0 : Math.min(0.5, t), w = trig ? t : Math.abs(t - 0.5);
+    h += `<div class="row"><span class="k">${nm}</span><span>${v.toFixed(2)}</span></div><div class="bar"><b></b><i style="left:${lo * 100}%;width:${w * 100}%"></i></div>`;
+  });
+  $('pad').innerHTML = h + '<div class="btns">' + N.btn.map((nm, i) => `<span class="btn ${p.buttons[i] ? 'down' : ''}">${nm}</span>`).join('') + '</div>';
+}
+async function post(path, body) {
+  const r = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Dashboard': '1' }, body: JSON.stringify(body) });
+  const j = await r.json().catch(() => ({})); return [r.ok, j];
+}
+const busy = {}, timers = {};
+function slider(id, vid, nid, fmt, send) {
+  $(id).addEventListener('input', () => {
+    busy[id] = true; $(vid).textContent = fmt($(id).value); clearTimeout(timers[id]);
+    timers[id] = setTimeout(async () => {
+      try { const [ok, j] = await send(Number($(id).value)); $(nid).textContent = ok ? 'applied' : 'not applied: ' + (j.message || 'error'); }
+      catch (e) { $(nid).textContent = 'not applied: ' + e; }
+      busy[id] = false;
+    }, 200);
+  });
+}
+let zedControlBusy = false;
+let zedControlGeneration = 0;
+async function zedControl(action) {
+  if (zedControlBusy && action !== 'disengage') return;
+  const generation = ++zedControlGeneration;
+  zedControlBusy = true; $('zedactivate').disabled = true;
+  try {
+    const r = await fetch('zed-control', {method:'POST', headers:{'Content-Type':'application/json','X-Dashboard':'1'}, body:JSON.stringify({action})});
+    const body = await r.text();
+    let d; try { d = JSON.parse(body); } catch (_) { d = {ok:false, message:body || ('HTTP ' + r.status)}; }
+    if (generation === zedControlGeneration) $('inputnote').textContent = d.ok ? (d.message || 'Comando recebido') : (d.message || 'Não foi possível executar o comando');
+  } catch(e) { if (generation === zedControlGeneration) $('inputnote').textContent = 'Sem resposta. Confira o estado do controle antes de tentar novamente.'; }
+  finally { if (generation === zedControlGeneration) zedControlBusy = false; }
+}
+$('zedactivate').onclick = () => zedControl('start');
+$('zedstop').onclick = () => zedControl('disengage');
+$('zedhome').onclick = () => zedControl('home');
+let backendBusy = false;
+async function setBackend(target) {
+  if (backendBusy) return; backendBusy = true; $('becurobo').disabled = $('becart').disabled = true;
+  $('backendnote').textContent = 'Trocando para ' + target + '... (~40 s, sem movimento)';
+  try {
+    const r = await fetch('zed-control', {method:'POST', headers:{'Content-Type':'application/json','X-Dashboard':'1'}, body:JSON.stringify({action:'backend', target})});
+    const body = await r.text();
+    let d; try { d = JSON.parse(body); } catch (_) { d = {ok:false, message:(body || ('HTTP ' + r.status))}; }
+    if (d.backend) $('backend').textContent = d.backend;
+    else if (d.ok) $('backend').textContent = target;
+    $('backendnote').textContent = d.ok ? d.message : ('Falhou: ' + (d.message || ('HTTP ' + r.status)));
+  } catch(e) { $('backendnote').textContent = 'Sem resposta: ' + e; }
+  finally { backendBusy = false; $('becurobo').disabled = $('becart').disabled = zedControlBusy; }
+}
+$('becurobo').onclick = () => setBackend('curobo');
+$('becart').onclick = () => setBackend('cartesian');
+$('zedrecalibrate').onclick = () => zedControl('recalibrate');
+// Stop ZED following (the arm holds), then hand control back to the gamepad: Start on the pad engages it.
+$('tojoystick').onclick = async () => {
+  const b = $('tojoystick'); b.disabled = true;
+  try {
+    await zedControl('disengage');
+    const [ok,j] = await post('input-source', {source:'joystick'});
+    if (ok) $('inputsource').value = 'joystick';
+    $('inputnote').textContent = ok ? 'Joystick selecionado. Aperte Start no controle para dirigir (Back desengaja).'
+                                    : (j.message || 'Não foi possível voltar ao joystick');
+  } catch(e) { $('inputnote').textContent = 'Não foi possível voltar ao joystick: ' + e.message; }
+  finally { b.disabled = false; }
+};
+    $('zedrecover').onclick = async () => {
+      if (!confirm('Recover the arm hardware + cuRobo output? Nothing moves. Afterwards, press Start.')) return;
+      const b = $('zedrecover'); b.disabled = true;
+      try {
+        const r = await fetch('zed-control', {method:'POST', headers:{'Content-Type':'application/json','X-Dashboard':'1'}, body:JSON.stringify({action:'recover'})});
+        const j = await r.json();
+        $('inputnote').textContent = (j.ok ? 'Recovered: ' : 'Recovery failed: ') + (j.message || r.status);
+      } catch(e) { $('inputnote').textContent = 'Recovery request failed: ' + e.message; }
+      finally { b.disabled = false; }
+    };
+    let sourceBusy = false;
+$('inputsource').onchange = async () => {
+  sourceBusy = true; $('inputsource').disabled = true;
+  try {
+    const [ok,j] = await post('input-source', {source:$('inputsource').value});
+    $('inputnote').textContent = ok ? 'Entrada selecionada. Clique Ativar ZED quando o indicador estiver verde.' : (j.message || 'Could not select input');
+  } catch(e) { $('inputnote').textContent = 'Could not select input: ' + e.message; }
+  finally { sourceBusy = false; $('inputsource').disabled = false; }
+};
+slider('sp', 'spv', 'spnote', v => v + ' %', v => post('speed', { scale: v / 100 }));
+slider('rp', 'rpv', 'rpnote', v => v + ' %', v => post('speed', { rot_scale: v / 100 }));
+slider('gf', 'gfv', 'gfnote', v => v + ' N', v => post('grip', { force: v }));
+function setSlider(id, vid, nid, value, shown, note) {
+  const el = $(id);
+  if (value === null || value === undefined) { el.disabled = true; $(vid).textContent = '–'; $(nid).textContent = note; return; }
+  el.disabled = false;
+  if (!busy[id] && document.activeElement !== el) el.value = value;
+  if (!busy[id]) { $(vid).textContent = shown; $(nid).textContent = note; }
+}
+function drawSpeed(sp) {
+  if (!sp) { for (const [i, v, n] of [['sp', 'spv', 'spnote'], ['rp', 'rpv', 'rpnote'], ['gf', 'gfv', 'gfnote']]) setSlider(i, v, n, null, '', 'teleop not running'); return; }
+  setSlider('sp', 'spv', 'spnote', Math.round(sp[0] * 100), Math.round(sp[0] * 100) + ' %', `${(sp[0] * sp[1] * 100).toFixed(0)} cm/s horizontal, ${(sp[0] * sp[2] * 100).toFixed(0)} cm/s vertical`);
+  setSlider('rp', 'rpv', 'rpnote', Math.round(sp[3] * 100), Math.round(sp[3] * 100) + ' %', `${(sp[3] * sp[4]).toFixed(0)} deg/s`);
+  if (sp.length > 5) setSlider('gf', 'gfv', 'gfnote', Math.round(sp[5]), Math.round(sp[5]) + ' N', 'set in the teleop');
+  else setSlider('gf', 'gfv', 'gfnote', null, '', 'this teleop has no live grasp force (restart it)');
+}
+let lastMsg = 0;
+function connect() {
+  const es = new EventSource('stream');
+  es.onerror = () => pill('pRobot', 'robot: reconnecting', 'warn');
+  es.onmessage = e => {
+    const d = JSON.parse(e.data); lastMsg = Date.now(); pill('pRobot', 'robot live', 'on');
+    for (const [l, p] of Object.entries(d.links || {})) if (linkGroups[l]) setPose(linkGroups[l], p);
+    if (d.cmd) setPose(cmdF, d.cmd); else cmdF.visible = false;
+    if (d.tcp) {
+      setPose(tcpF, d.tcp); $('tcp').textContent = d.tcp.slice(0, 3).map(x => (1000 * x).toFixed(0)).join('  ');
+      $('lag').textContent = d.cmd ? Math.round(1000 * Math.hypot(d.cmd[0] - d.tcp[0], d.cmd[1] - d.tcp[1], d.cmd[2] - d.tcp[2])) + ' mm' : '–';
+    }
+    pill('pEng', d.engaged ? 'teleop ENGAGED' : 'teleop idle (Start)', d.engaged ? 'on' : '');
+    if (!sourceBusy && ['joystick','zed'].includes(d.input_source)) $('inputsource').value = d.input_source;
+    const backendReady = !!d.zed;
+    $('zedrecalibrate').disabled = !backendReady || zedControlBusy || !!d.zed?.home_running;
+    $('trackingdetail').textContent = !backendReady ? 'Backend de teleoperação indisponível. A imagem pode continuar funcionando.' : [d.zed.controller_reason, d.zed.reason, d.zed.diagnostics?.reason].filter(Boolean).join(' · ') + (d.zed.diagnostics ? ` · ${d.zed.diagnostics.fps || 0} Hz · ${d.zed.diagnostics.capture_age_ms || 0} ms` : '');
+    $('zedactivate').disabled = !backendReady || !!d.zed?.start_reason || zedControlBusy || (d.engaged && d.input_source === 'zed') || ['calibrating'].includes(d.zed?.phase) || !!d.zed?.home_running;
+    // Home runs fr3_home_jtc.py on the JTC (no cuRobo/planner): do not gate it on controller_reason (grasp lane 2026-11-05)
+    $('zedhome').disabled = !backendReady || zedControlBusy || !!d.zed?.home_running;
+    if ($('becurobo') && $('becart')) $('becurobo').disabled = $('becart').disabled = backendBusy || zedControlBusy;
+    pill('zedstatus', d.zed?.home_running ? 'Home em andamento' : (d.zed?.home_result || (d.zed?.controller_reason ? d.zed.controller_reason : d.zed?.note) || 'Backend de teleoperação indisponível'), d.engaged && d.zed?.phase === 'active' ? 'on' : 'warn');
+    if (d.zed?.home_result) $('inputnote').textContent = d.zed.home_result;
+    else if (d.zed?.phase === 'calibrating') {
+      const t = d.zed?.diagnostics;
+      $('inputnote').textContent = t && t.arm_calibrated === false ? `${t.reason} · ${t.arm_samples}/${t.arm_required_samples}` : d.zed.note + ' · ' + Math.round(100 * (d.zed.stability || 0)) + '%';
+    }
+    else if (d.zed?.phase === 'paused' || d.zed?.phase === 'active') {
+      const t=d.zed?.diagnostics;
+      $('inputnote').textContent=d.zed.note+(t ? ` · ${t.fps || 0} Hz · ${t.capture_age_ms || 0} ms`+(t.arm_scale ? ` · braço ${t.arm_length_m.toFixed(2)} m · escala ${t.arm_scale.toFixed(2)}` : '') : '');
+    } 
+    if ($('zedgesture')) $('zedgesture').textContent = ({Open_Palm:'Palma aberta',Closed_Fist:'Punho fechado'}[d.zed?.gesture] || 'Sem gesto confiável') + (d.zed?.gripper_command ? ' · pedido: ' + (d.zed.gripper_command === 'Closed_Fist' ? 'fechar' : 'abrir') : '');
+    drawPad(d.pad); drawSpeed(d.speed);
+  };
+}
+connect();
+setInterval(() => { if (lastMsg && Date.now() - lastMsg > 3000) pill('pRobot', 'robot: no data ' + ((Date.now() - lastMsg) / 1000).toFixed(0) + ' s', 'bad'); }, 1000);
+</script>
+
+<script type="module">
+// ---- drill cloud overlay (dashboard lane 2026-11-04): masked grasp cloud as points in the map scene ----
+// Separate block on purpose: a failure here must not touch the map/robot scene above.
+// Data: 'graspjson' (cloud per grasp run) + 'drilljson' (live_3d tracked point + moved/stale status).
+// Box overlay untouched as fallback. Follow math: D = T*live - box center (drill.json center; grasp.json centroid is floor-polluted, +58mm Z bias 2026-11-04), applied to the whole group.
+import * as THREE from 'three';
+(function(){
+  const box = document.getElementById('showCloud');
+  const OPTICAL = 'zed1_left_camera_optical_frame';
+  // Static optical->fr3_link0 transform from zed1_extrinsic_20261106_robotfit7_dz.json
+  // (T_base_cam, deployed live TF 2026-11-06; 4-decimal display rounding).
+  // Replaces the Nov-3 static hops (30.7 mm / 1.46 deg stale). Camera is bolted;
+  // if the camera is ever recalibrated, grasp lane must flag new numbers here.
+  const TF_R = [[0.9397,-0.0485,0.3385],[-0.3214,-0.4633,0.8259],[0.1168,-0.8849,-0.4509]];
+  const TF_T = [0.2595,-0.5728,0.6371];
+  const FOLLOW_MAX_AGE_S = 3;
+  // EMA smoothing for the follow offset: the live_3d source wanders on a static
+  // scene (grasp lane 2026-11-04: ~19px lateral + ~73mm depth drift on dark drill).
+  // Alpha 0.35 at 2s poll ~= 70% converged in ~6s; jumps > SNAP_M snap (real move).
+  const FOLLOW_EMA_ALPHA = 0.35;
+  const FOLLOW_SNAP_M = 0.15;
+  let followEMA = null;
+  const STOPS = [[0.27,0.08,0.33],[0.23,0.32,0.55],[0.13,0.57,0.55],[0.37,0.79,0.38],[0.99,0.91,0.15]];
+  function zcolor(t, out){
+    const x = Math.min(1, Math.max(0, t)) * (STOPS.length - 1);
+    const i = Math.min(STOPS.length - 2, Math.floor(x)), u = x - i;
+    for (let k = 0; k < 3; k++) out[k] = STOPS[i][k] + (STOPS[i+1][k] - STOPS[i][k]) * u;
+  }
+  const ptsMat = new THREE.PointsMaterial({ size: 0.0035, vertexColors: true, sizeAttenuation: true });
+  const pickMat = new THREE.MeshBasicMaterial({ color: 0xff22ff });
+  const tcpMat = new THREE.MeshBasicMaterial({ color: 0xff2222 });
+  let cloudG = null, lastRun = null, GDATA = null, DDATA = null;
+  function setVisible(){ if (cloudG && box) cloudG.visible = box.checked; }
+  if (box) box.onchange = setVisible;
+  function setStale(stale){ ptsMat.color.set(stale ? 0xe83c3c : 0xffffff); }
+  function tfm(p){
+    return [TF_R[0][0]*p[0]+TF_R[0][1]*p[1]+TF_R[0][2]*p[2]+TF_T[0],
+            TF_R[1][0]*p[0]+TF_R[1][1]*p[1]+TF_R[1][2]*p[2]+TF_T[1],
+            TF_R[2][0]*p[0]+TF_R[2][1]*p[1]+TF_R[2][2]*p[2]+TF_T[2]];
+  }
+  function applyFollow(){
+    if (!cloudG) return;
+    const L3 = DDATA && DDATA.live_3d;
+    const fresh = L3 && L3.ok && L3.frame === OPTICAL && typeof L3.age_s === 'number' && L3.age_s <= FOLLOW_MAX_AGE_S
+      && Array.isArray(L3.point_m) && L3.point_m.length === 3
+      && GDATA && DDATA.source_run === GDATA.run && DDATA.status === 'live' && Array.isArray(DDATA.center) && DDATA.center.length === 3;
+    if (!fresh){ cloudG.position.set(0, 0, 0); followEMA = null; return; }
+    const w = tfm(L3.point_m), c = DDATA.center;
+    const raw = [w[0]-c[0], w[1]-c[1], w[2]-c[2]];
+    if (!followEMA){ followEMA = raw.slice(); }
+    else {
+      const dx = raw[0]-followEMA[0], dy = raw[1]-followEMA[1], dz = raw[2]-followEMA[2];
+      if (Math.hypot(dx, dy, dz) > FOLLOW_SNAP_M){ followEMA = raw.slice(); }
+      else {
+        followEMA = [followEMA[0]+FOLLOW_EMA_ALPHA*dx, followEMA[1]+FOLLOW_EMA_ALPHA*dy, followEMA[2]+FOLLOW_EMA_ALPHA*dz];
+      }
+    }
+    cloudG.position.set(followEMA[0], followEMA[1], followEMA[2]);
+  }
+  function build(scene, d){
+    if (cloudG){
+      scene.remove(cloudG);
+      cloudG.traverse(o => { if (o.geometry) o.geometry.dispose(); });
+      cloudG = null;
+    }
+    followEMA = null;
+    cloudG = new THREE.Group();
+    const pos = new Float32Array(d.cloud.flat());
+    const n = Math.min(d.n_points, d.cloud.length);
+    let zmin = 1e9, zmax = -1e9;
+    for (let i = 2; i < pos.length; i += 3){ if (pos[i] < zmin) zmin = pos[i]; if (pos[i] > zmax) zmax = pos[i]; }
+    const col = new Float32Array(n * 3), c = [0, 0, 0];
+    for (let i = 0; i < n; i++){ zcolor((pos[3*i+2] - zmin) / Math.max(1e-6, zmax - zmin), c); col[3*i] = c[0]; col[3*i+1] = c[1]; col[3*i+2] = c[2]; }
+    const pg = new THREE.BufferGeometry();
+    pg.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    pg.setAttribute('color', new THREE.BufferAttribute(col, 3));
+    cloudG.add(new THREE.Points(pg, ptsMat));
+    const tcp = new THREE.Vector3(d.tcp[0], d.tcp[1], d.tcp[2]);
+    const pick = new THREE.Vector3(d.pick[0], d.pick[1], d.pick[2]);
+    const tdot = new THREE.Mesh(new THREE.SphereGeometry(0.004, 20, 14), tcpMat);
+    tdot.position.copy(tcp); cloudG.add(tdot);
+    const pk = new THREE.Mesh(new THREE.OctahedronGeometry(0.007), pickMat);
+    pk.position.copy(pick); cloudG.add(pk);
+    setVisible();
+    scene.add(cloudG);
+  }
+  async function pollStatus(){
+    try {
+      const r = await fetch('drilljson', { cache: 'no-store' });
+      if (r.ok){
+        const d = await r.json();
+        if (d && d.ok){ DDATA = d; setStale(d.status !== 'live'); applyFollow(); }
+      }
+    } catch (e) {}
+    setTimeout(pollStatus, 2000);
+  }
+  async function poll(scene){
+    try {
+      const r = await fetch('graspjson', { cache: 'no-store' });
+      if (r.ok){
+        const d = await r.json();
+        if (d && Array.isArray(d.cloud) && d.cloud.length){
+          GDATA = d;
+          if (d.run !== lastRun){ lastRun = d.run; build(scene, d); }
+          applyFollow();
+        }
+      }
+    } catch (e) {}
+    setTimeout(() => poll(scene), 10000);
+  }
+  (async function init(){
+    try {
+      let scene = null;
+      for (let i = 0; i < 120 && !scene; i++){
+        scene = window.__mapScene || null;
+        if (!scene) await new Promise(r => setTimeout(r, 500));
+      }
+      if (!scene) return;
+      poll(scene);
+      pollStatus();
+    } catch (e) {}
+  })();
+})();
+</script>
+
+<script type="module">
+// Live per-camera object cloud (2026-11-13, Murilo): ZED1/ZED2/Both toggle
+// over the live fused cloud (livecloudjson) for cross-camera calib checks.
+// Separate module like the snapshot overlay above: isolated failure domain,
+// read-only scene handle. Points are fr3_link0 current-frame: no follow.
+import * as THREE from 'three';
+(function(){
+  const btns = Array.from(document.querySelectorAll('[data-livecam]'));
+  const prevBtns = Array.from(document.querySelectorAll('[data-calibprev]'));
+  const stat = document.getElementById('livecloudStat');
+  let mode = 'both';
+  // Calibration preview (2026-11-19, Murilo): purely visual, in the browser, nothing is published.
+  // The served clouds are in the LIVE TF (ZED1+ZED2 robot-fit + desk-step dz (ZED1 -2.1 mm, ZED2 +7.4 mm) deployed 2026-11-19 22:17, depth models in the VM fan-ins).
+  // 'before' re-poses the same depth with the previous calibration: undo the new depth model, apply the old one,
+  // then the old camera pose (ZED1 11-06 robot-fit, ZED2 11-15 drill-aligned). Depth model: z_used = z*s*(1+k*(z-1)).
+  const CAL = {"z1": {"new": {"R": [0.8794849628944306, -0.12365777479443092, 0.4595812636881553, -0.46311229377317514, -0.4449326869939863, 0.7665258008050506, 0.10969584246164178, -0.886985585531622, -0.44857896399385644], "t": [0.24172857553227736, -0.5878705846030301, 0.6280603926489581], "s": 0.9755371809234283, "k": 0.0}, "old": {"R": [0.9397237183430156, -0.04847325055714038, 0.33848140412609506, -0.32137561496626044, -0.46327849813246824, 0.8258877904784884, 0.11677768746984252, -0.8848859512092409, -0.45093183396986064], "t": [0.25954189977682934, -0.5728058649241219, 0.6371383800273309], "s": 0.9767, "k": 0.0}, "cand": {"R": [0.8876881124310516, -0.10184259084935385, 0.44904107268891885, -0.4430324619156975, -0.4545740611136511, 0.772712466878889, 0.12542737816024224, -0.8848673797894268, -0.44863948415086674], "t": [0.25710514519861455, -0.5878264236197865, 0.6344644972119011], "s": 0.9798982022210823, "k": 0.0}}, "z2": {"new": {"R": [-0.8711057312552014, 0.3845373283343613, -0.3054600597325456, 0.49109549691417953, 0.6819233026655674, -0.5420385799851313, -0.00013373463639491123, -0.6221829734082701, -0.7828718475688665], "t": [0.7841657939802937, 0.36355247224110965, 0.8128793166618525], "s": 1.0048108486096028, "k": 0.0474}, "old": {"R": [-0.8533873868714102, 0.41079891083593756, -0.32089596878863086, 0.5208023613321766, 0.6456390038586041, -0.5584936679384098, -0.022245636866933247, -0.6437348301532838, -0.7649252251611965], "t": [0.8811492380284169, 0.34782230992213603, 0.8041043769139852], "s": 1.0086, "k": 0.0474}, "cand": {"R": [-0.8616472734794464, 0.3938120469375017, -0.32011880262228937, 0.5074966441749024, 0.6644534598258849, -0.5485879654865057, -0.0033365036558211086, -0.6351485427931858, -0.7723828042693908], "t": [0.7873526942941692, 0.3682528715880203, 0.8063574689678746], "s": 1.0048, "k": 0.0474}}};
+  let prevMode = 'live';
+  function zRaw(zu, m){
+    if (!m.k) return zu / m.s;
+    const a = m.k * m.s, b = m.s * (1 - m.k);
+    return (-b + Math.sqrt(b*b + 4*a*zu)) / (2*a);
+  }
+  function zUsed(z, m){ return z * m.s * (1 + m.k * (z - 1)); }
+  function reposeBefore(dst, src, cam, key){
+    const N = CAL[cam].new, O = CAL[cam][key || 'old'];
+    for (let i = 0; i < src.length; i += 3){
+      const dx = src[i] - N.t[0], dy = src[i+1] - N.t[1], dz = src[i+2] - N.t[2];
+      const px = N.R[0]*dx + N.R[3]*dy + N.R[6]*dz, py = N.R[1]*dx + N.R[4]*dy + N.R[7]*dz, pz = N.R[2]*dx + N.R[5]*dy + N.R[8]*dz;
+      if (!(pz > 0.05)){ dst[i] = src[i]; dst[i+1] = src[i+1]; dst[i+2] = src[i+2]; continue; }
+      const zo = zUsed(zRaw(pz, N), O), r = zo / pz, qx = px*r, qy = py*r, qz = zo;
+      dst[i]   = O.R[0]*qx + O.R[1]*qy + O.R[2]*qz + O.t[0];
+      dst[i+1] = O.R[3]*qx + O.R[4]*qy + O.R[5]*qz + O.t[1];
+      dst[i+2] = O.R[6]*qx + O.R[7]*qy + O.R[8]*qz + O.t[2];
+    }
+  }
+  let rawZ1 = null, rawZ2 = null;
+  const M1 = new THREE.PointsMaterial({ size: 0.004, color: 0x22d3ee, sizeAttenuation: true });
+  const M2 = new THREE.PointsMaterial({ size: 0.004, color: 0xfb923c, sizeAttenuation: true });
+  let P1 = null, P2 = null, lastKey = '';
+  function paint(){
+    btns.forEach(b => {
+      const on = b.getAttribute('data-livecam') === mode;
+      b.style.background = on ? '#2b6cb0' : '';
+      b.style.color = on ? '#ffffff' : '';
+    });
+    const before = prevMode === 'before';
+    if (P1){
+      P1.visible = (mode !== 'z2');
+      const a1 = P1.geometry.getAttribute('position');
+      if (rawZ1){ if (prevMode !== 'live') reposeBefore(a1.array, rawZ1, 'z1', prevMode); else a1.array.set(rawZ1); a1.needsUpdate = true; P1.geometry.computeBoundingSphere(); }
+    }
+    if (P2){
+      P2.visible = (mode !== 'z1');
+      const a2 = P2.geometry.getAttribute('position');
+      if (rawZ2){ if (prevMode !== 'live') reposeBefore(a2.array, rawZ2, 'z2', prevMode); else a2.array.set(rawZ2); a2.needsUpdate = true; P2.geometry.computeBoundingSphere(); }
+    }
+    const note = document.getElementById('calibNote');
+    if (note){ note.textContent = prevMode === 'before' ? 'OLD calibration preview (not live)' : (prevMode === 'cand' ? 'NEW w10 candidate 2026-11-22 preview (not live; ball gate FAIL 14.2 mm)' : ''); note.style.color = prevMode === 'live' ? '' : '#f87171'; }
+    prevBtns.forEach(b => {
+      const on = b.getAttribute('data-calibprev') === prevMode;
+      b.style.background = on ? '#2b6cb0' : '';
+      b.style.color = on ? '#ffffff' : '';
+    });
+  }
+  btns.forEach(b => b.addEventListener('click', () => { mode = b.getAttribute('data-livecam'); paint(); }));
+  prevBtns.forEach(b => b.addEventListener('click', () => { prevMode = b.getAttribute('data-calibprev'); paint(); }));
+  function build(scene, d){
+    if (P1){ scene.remove(P1); P1.geometry.dispose(); P1 = null; }
+    if (P2){ scene.remove(P2); P2.geometry.dispose(); P2 = null; }
+    if (Array.isArray(d.z1) && d.z1.length){
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(d.z1.flat()), 3));
+      P1 = new THREE.Points(g, M1); scene.add(P1);
+      rawZ1 = Float32Array.from(g.getAttribute('position').array);
+    }
+    if (Array.isArray(d.z2) && d.z2.length){
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(d.z2.flat()), 3));
+      P2 = new THREE.Points(g, M2); scene.add(P2);
+      rawZ2 = Float32Array.from(g.getAttribute('position').array);
+    }
+    paint();
+  }
+  async function poll(scene){
+    try {
+      const r = await fetch('livecloudjson', { cache: 'no-store' });
+      if (r.ok){
+        const d = await r.json();
+        if (d && Array.isArray(d.z1) && Array.isArray(d.z2)){
+          const key = d.n1 + '/' + d.n2 + '/' + d.age_s;
+          if (key !== lastKey){ lastKey = key; build(scene, d); }
+          if (stat) stat.textContent = 'Z1 ' + d.n1 + ' / Z2 ' + d.n2 + (d.n2 ? '' : ' (' + (d.zed2_src || 'none') + ')') + ' / ' + d.age_s + 's';
+        }
+      }
+    } catch (e) {}
+    setTimeout(() => poll(scene), 3000);
+  }
+  (async function init(){
+    try {
+      let scene = null;
+      for (let i = 0; i < 120 && !scene; i++){
+        scene = window.__mapScene || null;
+        if (!scene) await new Promise(r => setTimeout(r, 500));
+      }
+      if (!scene) return;
+      paint();
+      poll(scene);
+    } catch (e) {}
+  })();
+})();
+</script>
+
+<script>
+// ---- remote PS4: Gamepad API (standard mapping) -> WebSocket /ws -> remote-pad dashboard on the lab PC (:8089, via mesh_server).
+// Same page logic as fr3_dashboard.html's remote card. Everything starts OFF: the operator presses Enable, and any loss (tab hidden,
+// pad unplugged, socket closed, server says blocked) switches it off until pressed again. The server re-checks everything (neutral
+// gate, frame age, round trip, single client, user allow-list); this page only reads the pad.
+(() => {
+  const $ = id => document.getElementById(id);
+  const R = { ws: null, want: false, seq: 0, sent: new Map(), rtt: null, st: null, note: null, lastInput: 0, prev: '', key: '' };
+  const PS4 = ['Cross', 'Circle', 'Square', 'Triangle', 'L1', 'R1', 'L2', 'R2', 'Share', 'Options', 'L3', 'R3', 'Up', 'Down', 'Left', 'Right', 'PS'];
+  const slots = () => (navigator.getGamepads ? [...navigator.getGamepads()] : []);
+  const allPads = () => slots().filter(g => g && g.connected);
+  const pickPad = () => allPads().find(g => g.mapping === 'standard' && g.buttons.length >= 17 && g.axes.length >= 4) || null;
+  window.remotePadOn = () => false;   // 2026-11-23 Murilo: cameras/map NEVER pause for the remote pad   // cameras go lean (first script)
+  function remoteOff(why) { if (R.want) R.note = { t: performance.now(), msg: why }; R.want = false; render(); }   // reason stays 8 s
+  function render() {
+    const g = pickPad(), others = allPads(), open = !!(R.ws && R.ws.readyState === 1), now = performance.now(), live = R.st && R.st.state === 'live';
+    const seen = g && now - R.lastInput < 3000;
+    const items = [
+      ['ok', 'Secure page (HTTPS)', 'yes'],
+      [navigator.getGamepads ? 'ok' : 'bad', 'Browser gamepad support', navigator.getGamepads ? 'yes' : 'missing'],
+      [g ? 'ok' : (others.length ? 'warn' : 'bad'), 'PS4 detected by the browser', g ? g.id.slice(0, 34) : (others.length ? 'non-standard mapping (' + (others[0].mapping || 'none') + '): ' + others[0].id.slice(0, 24) : 'none: click this page, press a button on the pad'),
+       g ? '' : (others.length ? 'A pad is seen but with a non-standard mapping, which is refused. Use Chrome or Edge, close Steam / DS4Windows.' : 'No PS4 seen by the browser. Click this page, then press a button on the pad.')],
+      [g ? (seen ? 'ok' : 'wait') : 'wait', 'Pad responding', g ? (seen ? 'inputs changing' : 'move a stick or press a button') : '-'],
+      [open ? 'ok' : 'bad', 'Link to the robot PC', open ? 'connected' + (R.rtt == null ? '' : ', ' + R.rtt.toFixed(0) + ' ms') : 'offline, retrying'],
+      [live ? 'ok' : 'wait', 'Remote control', live ? 'LIVE: your pad drives the robot input' : (R.want ? ((R.st && R.st.msg) || 'enabling') : 'off (press Enable)')],
+    ];
+    $('rcheck').innerHTML = items.map(([c, t, d]) => `<li class="${c}"><span class="s">${{ ok: '&#10003;', bad: '&#10007;', warn: '!', wait: '&#9675;' }[c]}</span><span class="t">${t}</span><span class="d" title="${d}">${d}</span></li>`).join('');
+    const firstBad = items.find(i => i[0] === 'bad') || items.find(i => i[0] === 'warn');
+    const badge = live ? ['LIVE', 'warn'] : firstBad ? ['not ready', ''] : ['ready', 'on'];
+    $('rbadge').textContent = badge[0]; $('rbadge').className = 'pill ' + badge[1];
+    const b = $('rbanner'); b.hidden = false;
+    if (live) { b.className = 'live'; b.textContent = 'REMOTE PAD LIVE: your PS4 is driving the robot input'; }
+    else if (firstBad) { b.className = firstBad[0]; b.textContent = firstBad[3] || ('Remote pad: ' + firstBad[1] + ' - ' + firstBad[2]); }
+    else if (!seen) { b.className = 'wait'; b.textContent = 'PS4 detected - move a stick or press a button to confirm it responds'; }
+    else { b.className = 'ok'; b.textContent = 'PS4 connected and responding - press Enable remote control (right panel)'; }
+    $('ren').disabled = !(g && open); $('ren').textContent = R.want ? 'DISABLE remote control' : 'Enable remote control'; $('ren').classList.toggle('armed', R.want);
+    $('rrtt').textContent = R.rtt == null ? '–' : R.rtt.toFixed(0) + ' ms';
+    $('rmsg').textContent = R.note && now - R.note.t < 8000 ? R.note.msg : (R.st ? R.st.msg : '');
+    const s = slots(); $('rall').textContent = (s.length ? s.map((x, i) => `[${i}] ` + (x ? `${x.id} | mapping=${x.mapping || '(none)'} | ${x.buttons.length} buttons, ${x.axes.length} axes` : 'empty slot')).join('\n') : 'navigator.getGamepads() returned nothing') + `\nlink=${open}  state=${R.st ? R.st.state : '-'}`;
+    if (!g) $('rdet').open = true;
+  }
+  function drawViz() {                                          // what the BROWSER reads from the pad (independent of Enable)
+    requestAnimationFrame(drawViz);
+    const g = pickPad() || allPads()[0] || null, c = $('rviz'), x = c.getContext('2d'), cs = getComputedStyle(document.documentElement);
+    const snap = g ? g.axes.map(a => a.toFixed(2)).join() + g.buttons.map(b => b.value.toFixed(2)).join() : '';
+    const key = g ? g.index + g.id : ''; if (key !== R.key) { R.key = key; R.prev = ''; R.lastInput = 0; }   // a new pad has not 'responded' yet
+    if (g && R.prev !== '' && snap !== R.prev) R.lastInput = performance.now(); R.prev = snap;
+    x.clearRect(0, 0, c.width, c.height); const line = cs.getPropertyValue('--line'), acc = cs.getPropertyValue('--accent'), mute = cs.getPropertyValue('--muted');
+    const stick = (cx, ax, ay, lab) => { x.strokeStyle = line; x.lineWidth = 2; x.beginPath(); x.arc(cx, 52, 34, 0, 7); x.stroke(); x.fillStyle = g ? acc : mute; x.beginPath(); x.arc(cx + (g ? (g.axes[ax] || 0) : 0) * 28, 52 + (g ? (g.axes[ay] || 0) : 0) * 28, 8, 0, 7); x.fill(); x.fillStyle = mute; x.font = '11px sans-serif'; x.textAlign = 'center'; x.fillText(lab, cx, 100); };
+    stick(48, 0, 1, 'left stick'); stick(272, 2, 3, 'right stick');
+    const trig = (bx, i, lab) => { const v = g && g.buttons[i] ? g.buttons[i].value : 0; x.strokeStyle = line; x.strokeRect(bx, 20, 18, 64); x.fillStyle = acc; x.fillRect(bx, 84 - 64 * v, 18, 64 * v); x.fillStyle = mute; x.font = '11px sans-serif'; x.textAlign = 'center'; x.fillText(lab, bx + 9, 100); };
+    trig(112, 6, 'L2'); trig(190, 7, 'R2');
+    if (!g) { x.fillStyle = mute; x.font = '12px sans-serif'; x.textAlign = 'center'; x.fillText('no pad seen by the browser', 160, 56); }
+    const bs = $('rbtns').children; for (let i = 0; i < bs.length; i++) bs[i].classList.toggle('down', !!(g && g.buttons[i] && g.buttons[i].pressed));
+  }
+  function wsOpen() {
+    const u = new URL('ws', location.href); u.protocol = 'wss:';
+    const ws = new WebSocket(u); R.ws = ws;
+    ws.onopen = () => { R.seq = 0; R.sent.clear(); R.rtt = null; R.st = null; render(); };
+    ws.onmessage = e => {
+      const st = JSON.parse(e.data); R.st = st;
+      const t0 = R.sent.get(st.seq); if (t0 !== undefined) { R.rtt = performance.now() - t0; for (const k of R.sent.keys()) if (k <= st.seq) R.sent.delete(k); }
+      if (st.state === 'blocked') remoteOff('server: ' + st.msg); else render();
+    };
+    ws.onclose = ev => { R.ws = null; remoteOff('link closed' + (ev.reason ? ': ' + ev.reason : '')); render(); setTimeout(wsOpen, 2000); };
+    ws.onerror = () => {};
+  }
+  function send() {
+    const ws = R.ws; if (!ws || ws.readyState !== 1) return;
+    const g = pickPad();
+    if (R.want && (!g || document.hidden)) remoteOff(g ? 'tab hidden: remote control off' : 'pad disconnected: remote control off');
+    const a = g ? [0, 1, 2, 3].map(i => g.axes[i]) : [0, 0, 0, 0];
+    const b = g ? Array.from({ length: 17 }, (_, i) => g.buttons[i].value) : new Array(17).fill(0);
+    const seq = ++R.seq; R.sent.set(seq, performance.now());
+    if (R.sent.size > 200) R.sent.delete(R.sent.keys().next().value);
+    ws.send(JSON.stringify({ t: 'pad', seq, en: R.want, a, b, rtt: R.rtt }));
+  }
+  function init() {
+    $('rbody').hidden = false;
+    $('rbtns').innerHTML = PS4.map(n => `<span class="btn">${n}</span>`).join('');
+    $('ren').onclick = () => { if (R.want) remoteOff('remote control off'); else if (pickPad()) { R.want = true; R.note = null; render(); } };
+    addEventListener('keydown', e => { if (e.key === 'Escape') remoteOff('remote control off (Esc)'); });
+    addEventListener('gamepadconnected', render); addEventListener('gamepaddisconnected', () => remoteOff('pad disconnected: remote control off'));
+    document.addEventListener('visibilitychange', () => { if (document.hidden) remoteOff('tab hidden: remote control off'); });
+    wsOpen(); setInterval(send, 25); setInterval(render, 400); render(); drawViz();
+  }
+  if (!window.isSecureContext) { $('rinsecure').hidden = false; $('rbadge').textContent = 'https only'; return; }
+  fetch('padcfg').then(r => r.ok ? r.json() : Promise.reject(r.status)).then(c => {
+    if (c.remote) init(); else { $('rinsecure').hidden = false; $('rinsecure').textContent = 'The remote-pad server on the lab PC runs without remote_pad:=true.'; }
+  }).catch(e => { $('rinsecure').hidden = false; $('rinsecure').textContent = 'Remote-pad server on the lab PC not reachable (' + e + '); the watchdog on nexus restarts it.'; });
+})();
+</script>
+
+<script type="module">
+// ---- grasp lane 3D panel (murilo 2026-11-03): reuses this page's three.js ----
+// Live update (2026-11-07): poll graspjson every 5 s (rebuild only when d.run
+// changes) + poll drilljson every 2 s and shift the group via applyFollow().
+// Same follow math as the map-scene drill-cloud-overlay block above; see it
+// for the EMA/snap/gate rationale. Reload button forces rebuild + reframe.
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+(function(){
+  const fig = document.getElementById('ggrasp'), canvasEl = document.getElementById('g3d'),
+        frame = fig.querySelector('.frame'), off = fig.querySelector('.offline');
+  const down = on => frame.classList.toggle('down', on);
+  const renderer = new THREE.WebGLRenderer({ canvas: canvasEl, antialias: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x0f1214);
+  const camera = new THREE.PerspectiveCamera(45, 2, 0.005, 60);
+  const controls = new OrbitControls(camera, canvasEl);
+  controls.enableDamping = true;
+  controls.minDistance = 0.03;
+  controls.maxDistance = 4;
+  scene.add(new THREE.HemisphereLight(0xffffff, 0x223344, 0.9));
+  const key = new THREE.DirectionalLight(0xffffff, 1.4);
+  key.position.set(0.4, -0.5, 0.9);
+  scene.add(key);
+  const grid = new THREE.GridHelper(0.6, 12, 0x2a3137, 0x1d2328);
+  grid.rotation.x = Math.PI / 2;
+  scene.add(grid);
+  const STOPS = [[0.27,0.08,0.33],[0.23,0.32,0.55],[0.13,0.57,0.55],[0.37,0.79,0.38],[0.99,0.91,0.15]];
+  function zcolor(t, out){
+    const x = Math.min(1, Math.max(0, t)) * (STOPS.length - 1);
+    const i = Math.min(STOPS.length - 2, Math.floor(x)), u = x - i;
+    for (let k = 0; k < 3; k++) out[k] = STOPS[i][k] + (STOPS[i+1][k] - STOPS[i][k]) * u;
+  }
+  let group = null, homePos = null, homeTgt = null;
+  // Follow state (mirror of the overlay block; static optical->fr3_link0 TF from
+  // zed1_extrinsic_20261106_robotfit7_dz.json, live TF 2026-11-06 — grasp lane
+  // must flag recalibrations).
+  const OPTICAL = 'zed1_left_camera_optical_frame';
+  const TF_R = [[0.9397,-0.0485,0.3385],[-0.3214,-0.4633,0.8259],[0.1168,-0.8849,-0.4509]];
+  const TF_T = [0.2595,-0.5728,0.6371];
+  const FOLLOW_MAX_AGE_S = 3;
+  const FOLLOW_EMA_ALPHA = 0.35;
+  const FOLLOW_SNAP_M = 0.15;
+  let followEMA = null, lastRun = null, GDATA = null, DDATA = null;   let yawRel = null, yawRun = null;   const YAW_URL = 'https://omnigent-vm.tail0994ab.ts.net:9447/real/yaw.json';   const YAW_MAX_AGE_S = 3;
+  function tfm(p){
+    return [TF_R[0][0]*p[0]+TF_R[0][1]*p[1]+TF_R[0][2]*p[2]+TF_T[0],
+            TF_R[1][0]*p[0]+TF_R[1][1]*p[1]+TF_R[1][2]*p[2]+TF_T[1],
+            TF_R[2][0]*p[0]+TF_R[2][1]*p[1]+TF_R[2][2]*p[2]+TF_T[2]];
+  }
+  function applyFollow(){
+    if (!group) return;
+    const L3 = DDATA && DDATA.live_3d;
+    const fresh = L3 && L3.ok && L3.frame === OPTICAL && typeof L3.age_s === 'number' && L3.age_s <= FOLLOW_MAX_AGE_S
+      && Array.isArray(L3.point_m) && L3.point_m.length === 3
+      && GDATA && DDATA.source_run === GDATA.run && DDATA.status === 'live' && Array.isArray(DDATA.center) && DDATA.center.length === 3;
+    if (!fresh){ group.position.set(0, 0, 0); group.rotation.z = 0; followEMA = null; return; }
+    const w = tfm(L3.point_m), c = DDATA.center;
+    const raw = [w[0]-c[0], w[1]-c[1], w[2]-c[2]];
+    if (!followEMA){ followEMA = raw.slice(); }
+    else {
+      const dx = raw[0]-followEMA[0], dy = raw[1]-followEMA[1], dz = raw[2]-followEMA[2];
+      if (Math.hypot(dx, dy, dz) > FOLLOW_SNAP_M){ followEMA = raw.slice(); }
+      else {
+        followEMA = [followEMA[0]+FOLLOW_EMA_ALPHA*dx, followEMA[1]+FOLLOW_EMA_ALPHA*dy, followEMA[2]+FOLLOW_EMA_ALPHA*dz];
+      }
+    }
+    group.position.set(followEMA[0], followEMA[1], followEMA[2]); const yawOK = GDATA && yawRun === GDATA.run && typeof yawRel === 'number'; if (yawOK){ const t = yawRel, ct = Math.cos(t), st = Math.sin(t), C = DDATA.center; group.rotation.z = t; group.position.set(followEMA[0]+C[0]-(ct*C[0]-st*C[1]), followEMA[1]+C[1]-(st*C[0]+ct*C[1]), followEMA[2]); } else { group.rotation.z = 0; }
+  }
+  function sizeCanvas(){
+    const w = canvasEl.clientWidth, h = canvasEl.clientHeight, pr = renderer.getPixelRatio();
+    if (canvasEl.width !== Math.floor(w * pr) || canvasEl.height !== Math.floor(h * pr)){
+      renderer.setSize(w, h, false);
+      camera.aspect = w / h;
+      camera.updateProjectionMatrix();
+    }
+  }
+  window.addEventListener('resize', sizeCanvas);
+  function build(d, reframe){
+    const metaEl = document.getElementById("g3dmeta");
+    if (metaEl){
+      const liveC = d.live && d.live.cloud;
+      const shift = d.live && (d.live.offset_m || typeof d.live.yaw_deg === "number")
+        ? " live-shift offset " + JSON.stringify(d.live.offset_m) + " yaw " + (d.live.yaw_deg ?? 0) + "deg" : "";
+      metaEl.textContent = "run " + String(d.run || "?").split("@")[0] + " | pose source: " + (d.source || "?")
+        + (liveC ? " | cloud: LIVE fused viewer cloud (" + d.live.cloud + ", NOT the S3 cloud GraspGen used)" : " | cloud: run cloud")
+        + shift + " | debug only - as-planned scene is cloud.npy + pick.json in the run dir";
+    }
+    if (group){ scene.remove(group); group.traverse(o => { if (o.geometry) o.geometry.dispose(); }); }
+    group = new THREE.Group();
+    followEMA = null; yawRel = null; yawRun = null;
+    const pos = new Float32Array(d.cloud.flat());
+    let zmin = 1e9, zmax = -1e9;
+    for (let i = 2; i < pos.length; i += 3){ if (pos[i] < zmin) zmin = pos[i]; if (pos[i] > zmax) zmax = pos[i]; }
+    const col = new Float32Array(d.n_points * 3), c = [0, 0, 0];
+    for (let i = 0; i < d.n_points; i++){ zcolor((pos[3*i+2] - zmin) / Math.max(1e-6, zmax - zmin), c); col[3*i] = c[0]; col[3*i+1] = c[1]; col[3*i+2] = c[2]; }
+    const pg = new THREE.BufferGeometry();
+    pg.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    pg.setAttribute('color', new THREE.BufferAttribute(col, 3));
+    group.add(new THREE.Points(pg, new THREE.PointsMaterial({ size: 0.0035, vertexColors: true, sizeAttenuation: true })));
+    for (const part of d.gripper){
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(part.tris.flat()), 3));
+      g.computeVertexNormals();
+      group.add(new THREE.Mesh(g, new THREE.MeshStandardMaterial({
+        color: part.kind === 'hand' ? 0xcfd4d9 : 0xe8b86d, roughness: 0.55, metalness: 0.08 })));
+    }
+    const tcp = new THREE.Vector3(...d.tcp), pick = new THREE.Vector3(...d.pick);
+    const dot = (p, r, color) => { const m = new THREE.Mesh(new THREE.SphereGeometry(r, 20, 14), new THREE.MeshBasicMaterial({ color })); m.position.copy(p); group.add(m); };
+    dot(tcp, 0.004, 0xff2222);
+    const pk = new THREE.Mesh(new THREE.OctahedronGeometry(0.007), new THREE.MeshBasicMaterial({ color: 0xff22ff }));
+    pk.position.copy(pick); group.add(pk);
+    const R = d.R, axc = [0xff2222, 0x22ff22, 0x2266ff];
+    for (let i = 0; i < 3; i++)
+      group.add(new THREE.ArrowHelper(new THREE.Vector3(R[0][i], R[1][i], R[2][i]), tcp, 0.05, axc[i], 0.012, 0.007));
+    grid.position.set(tcp.x, tcp.y, 0);
+    scene.add(group);
+    homePos = new THREE.Vector3(tcp.x + 0.28, tcp.y - 0.32, tcp.z + 0.24);
+    homeTgt = tcp.clone();
+    if (reframe !== false){
+      camera.position.copy(homePos);
+      controls.target.copy(homeTgt);
+      controls.update();
+    }
+    applyFollow();
+    down(false);
+  }
+  async function pollGrasp(){
+    try {
+      const r = await fetch('graspjson', { cache: 'no-store' });
+      if (!r.ok) throw new Error('graspjson ' + r.status);
+      const d = await r.json();
+      if (d && Array.isArray(d.cloud) && d.cloud.length){
+        GDATA = d;
+        if (d.run !== lastRun){ lastRun = d.run; build(d, group === null); }
+        else applyFollow();
+      }
+    } catch (e) { off.textContent = 'Grasp data unavailable (' + e + '). Retry…'; down(true); }
+    setTimeout(pollGrasp, 5000);
+  }
+  async function pollStatus(){
+    try {
+      const r = await fetch('drilljson', { cache: 'no-store' });
+      if (r.ok){
+        const d = await r.json();
+        if (d && d.ok){ DDATA = d; } try { const r2 = await fetch(YAW_URL, { cache: 'no-store' }); if (r2.ok){ const y = await r2.json(); if (y && typeof y.rel_rad === 'number' && typeof y.wall === 'number' && typeof y.run_id === 'string' && (Date.now()/1000 - y.wall) <= YAW_MAX_AGE_S){ yawRel = y.rel_rad; yawRun = y.run_id; } } } catch (e2) {} applyFollow();
+      }
+    } catch (e) {}
+    setTimeout(pollStatus, 2000);
+  }
+  document.getElementById('ggraspBtn').addEventListener('click', async () => {
+    try {
+      const r = await fetch('graspjson', { cache: 'no-store' });
+      if (!r.ok) throw new Error('graspjson ' + r.status);
+      const d = await r.json();
+      if (d && Array.isArray(d.cloud) && d.cloud.length){ GDATA = d; lastRun = d.run; build(d, true); }
+    } catch (e) { off.textContent = 'Grasp data unavailable (' + e + '). Retry…'; down(true); }
+  });
+  canvasEl.addEventListener('dblclick', () => {
+    if (!homePos) return;
+    camera.position.copy(homePos); controls.target.copy(homeTgt); controls.update();
+  });
+  renderer.setAnimationLoop(() => { sizeCanvas(); controls.update(); renderer.render(scene, camera); });
+  pollGrasp();
+  pollStatus();
+})();
+</script>
+<script type="module">
+// ---- sim grasp-vs-cloud panel: same renderer as the live one, sim grasp.json ----
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+(function(){
+  const fig = document.getElementById('simggrasp'), canvasEl = document.getElementById('simg3d'),
+        frame = fig.querySelector('.frame'), off = fig.querySelector('.offline');
+  const down = on => frame.classList.toggle('down', on);
+  const renderer = new THREE.WebGLRenderer({ canvas: canvasEl, antialias: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x0f1214);
+  const camera = new THREE.PerspectiveCamera(45, 2, 0.005, 60);
+  const controls = new OrbitControls(camera, canvasEl);
+  controls.enableDamping = true;
+  controls.minDistance = 0.03;
+  controls.maxDistance = 4;
+  scene.add(new THREE.HemisphereLight(0xffffff, 0x223344, 0.9));
+  const key = new THREE.DirectionalLight(0xffffff, 1.4);
+  key.position.set(0.4, -0.5, 0.9);
+  scene.add(key);
+  const grid = new THREE.GridHelper(0.6, 12, 0x2a3137, 0x1d2328);
+  grid.rotation.x = Math.PI / 2;
+  scene.add(grid);
+  const STOPS = [[0.27,0.08,0.33],[0.23,0.32,0.55],[0.13,0.57,0.55],[0.37,0.79,0.38],[0.99,0.91,0.15]];
+  function zcolor(t, out){
+    const x = Math.min(1, Math.max(0, t)) * (STOPS.length - 1);
+    const i = Math.min(STOPS.length - 2, Math.floor(x)), u = x - i;
+    for (let k = 0; k < 3; k++) out[k] = STOPS[i][k] + (STOPS[i+1][k] - STOPS[i][k]) * u;
+  }
+  let group = null, homePos = null, homeTgt = null;
+  function sizeCanvas(){
+    const w = canvasEl.clientWidth, h = canvasEl.clientHeight, pr = renderer.getPixelRatio();
+    if (canvasEl.width !== Math.floor(w * pr) || canvasEl.height !== Math.floor(h * pr)){
+      renderer.setSize(w, h, false);
+      camera.aspect = w / h;
+      camera.updateProjectionMatrix();
+    }
+  }
+  window.addEventListener('resize', sizeCanvas);
+  function build(d){
+    if (group){ scene.remove(group); group.traverse(o => { if (o.geometry) o.geometry.dispose(); }); }
+    group = new THREE.Group();
+    const pos = new Float32Array(d.cloud.flat());
+    const n = Math.min(d.n_points || 0, d.cloud.length);
+    let zmin = 1e9, zmax = -1e9;
+    for (let i = 2; i < pos.length; i += 3){ if (pos[i] < zmin) zmin = pos[i]; if (pos[i] > zmax) zmax = pos[i]; }
+    const col = new Float32Array(n * 3), c = [0, 0, 0];
+    for (let i = 0; i < n; i++){ zcolor((pos[3*i+2] - zmin) / Math.max(1e-6, zmax - zmin), c); col[3*i] = c[0]; col[3*i+1] = c[1]; col[3*i+2] = c[2]; }
+    const pg = new THREE.BufferGeometry();
+    pg.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    pg.setAttribute('color', new THREE.BufferAttribute(col, 3));
+    group.add(new THREE.Points(pg, new THREE.PointsMaterial({ size: 0.0035, vertexColors: true, sizeAttenuation: true })));
+    for (const part of (d.gripper || [])){
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(part.tris.flat()), 3));
+      g.computeVertexNormals();
+      group.add(new THREE.Mesh(g, new THREE.MeshStandardMaterial({
+        color: part.kind === 'hand' ? 0xcfd4d9 : 0xe8b86d, roughness: 0.55, metalness: 0.08 })));
+    }
+    const tcp = new THREE.Vector3(...d.tcp), pick = new THREE.Vector3(...d.pick);
+    const dot = (p, r, color) => { const m = new THREE.Mesh(new THREE.SphereGeometry(r, 20, 14), new THREE.MeshBasicMaterial({ color })); m.position.copy(p); group.add(m); };
+    dot(tcp, 0.004, 0xff2222);
+    const pk = new THREE.Mesh(new THREE.OctahedronGeometry(0.007), new THREE.MeshBasicMaterial({ color: 0xff22ff }));
+    pk.position.copy(pick); group.add(pk);
+    const R = d.R, axc = [0xff2222, 0x22ff22, 0x2266ff];
+    for (let i = 0; i < 3; i++)
+      group.add(new THREE.ArrowHelper(new THREE.Vector3(R[0][i], R[1][i], R[2][i]), tcp, 0.05, axc[i], 0.012, 0.007));
+    grid.position.set(tcp.x, tcp.y, 0);
+    scene.add(group);
+    homePos = new THREE.Vector3(tcp.x + 0.28, tcp.y - 0.32, tcp.z + 0.24);
+    homeTgt = tcp.clone();
+    camera.position.copy(homePos);
+    controls.target.copy(homeTgt);
+    controls.update();
+    down(false);
+  }
+  async function load(){
+    try {
+      const r = await fetch(SIM_HOST + ':9444/grasp.json', { cache: 'no-store' });
+      if (!r.ok) throw new Error('sim grasp.json ' + r.status);
+      build(await r.json());
+    } catch (e) { off.textContent = 'Sim grasp data unavailable (' + e + '). Retry…'; down(true); }
+  }
+  document.getElementById('simggraspBtn').addEventListener('click', load);
+  canvasEl.addEventListener('dblclick', () => {
+    if (!homePos) return;
+    camera.position.copy(homePos); controls.target.copy(homeTgt); controls.update();
+  });
+  renderer.setAnimationLoop(() => { if (!window.__simTabActive) return; sizeCanvas(); controls.update(); renderer.render(scene, camera); });
+  load();
+})();
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { ColladaLoader } from 'three/addons/loaders/ColladaLoader.js';
+// ---- sim 3D: nvblox map + FR3 + drill box, all from the VM103 sim stack ----
+const SIM3D = 'https://omnigent-vm.tail0994ab.ts.net:9445';
+const SIMDRILL = 'https://omnigent-vm.tail0994ab.ts.net:9444/drill.json';
+const simview = document.getElementById('simview');
+const simScene = new THREE.Scene(); simScene.background = new THREE.Color(0x10151c);
+const simCam = new THREE.PerspectiveCamera(45, 1, 0.02, 50); simCam.up.set(0, 0, 1);
+const SIM_HOME = { pos: [1.7, -1.4, 1.2], target: [0.45, 0, 0.2] };
+simCam.position.set(...SIM_HOME.pos);
+const simRen = new THREE.WebGLRenderer({ antialias: true }); simRen.setPixelRatio(Math.min(devicePixelRatio, 2)); simview.prepend(simRen.domElement);
+const simCtl = new OrbitControls(simCam, simRen.domElement); simCtl.target.set(...SIM_HOME.target); simCtl.update();
+simScene.add(new THREE.HemisphereLight(0xffffff, 0x556070, 1.4));
+const simSun = new THREE.DirectionalLight(0xffffff, 1.6); simSun.position.set(2, -1.5, 3); simScene.add(simSun);
+const simGridH = new THREE.GridHelper(3, 30, 0x3a4452, 0x232b36); simGridH.rotation.x = Math.PI / 2; simScene.add(simGridH);
+simScene.add(new THREE.AxesHelper(0.2));
+function simResize() { const w = simview.clientWidth, h = simview.clientHeight; simRen.setSize(w, h, false); simCam.aspect = w / h; simCam.updateProjectionMatrix(); }
+addEventListener('resize', simResize); simResize();
+window.__simResize = simResize;
+(function simLoop() { requestAnimationFrame(simLoop); if (window.__simTabActive) { simCtl.update(); simRen.render(simScene, simCam); } })();
+const simPill = (id, text, cls) => { const el = document.getElementById(id); el.textContent = text; el.className = 'pill ' + (cls || ''); };
+const simMapMat = new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.FrontSide });
+const SIM_SRGB2LIN = new Float32Array(256).map((_, i) => { const c = i / 255; return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); });
+const simMapMesh = new THREE.Mesh(new THREE.BufferGeometry(), simMapMat); simScene.add(simMapMesh);
+let simVer = -1;
+function simWeldNormals(g, pos, nv) {
+  const n = g.getAttribute('normal').array, at = new Map(), grp = new Int32Array(nv);
+  for (let i = 0; i < nv; i++) {
+    const k = Math.round(pos[3 * i] * 1e4) + ',' + Math.round(pos[3 * i + 1] * 1e4) + ',' + Math.round(pos[3 * i + 2] * 1e4);
+    let j = at.get(k); if (j === undefined) { j = at.size; at.set(k, j); } grp[i] = j;
+  }
+  const sm = new Float32Array(3 * at.size);
+  for (let i = 0; i < nv; i++) { const j = 3 * grp[i]; sm[j] += n[3 * i]; sm[j + 1] += n[3 * i + 1]; sm[j + 2] += n[3 * i + 2]; }
+  for (let i = 0; i < nv; i++) {
+    const j = 3 * grp[i], l = Math.hypot(sm[j], sm[j + 1], sm[j + 2]) || 1;
+    n[3 * i] = sm[j] / l; n[3 * i + 1] = sm[j + 1] / l; n[3 * i + 2] = sm[j + 2] / l;
+  }
+}
+async function simPollMap() {
+  if (!window.__simTabActive) return setTimeout(simPollMap, 1000);
+  try {
+    const r = await fetch(SIM3D + '/sim_mesh.bin?v=' + simVer, { cache: 'no-store' });
+    if (r.status === 200) {
+      const buf = await r.arrayBuffer(), h = new Uint32Array(buf, 0, 3), nv = h[1], nt = h[2]; let o = 12;
+      const pos = new Float32Array(buf, o, nv * 3); o += nv * 12;
+      const rgba = new Uint8Array(buf, o, nv * 4); o += nv * 4;
+      const idx = new Uint32Array(buf, o, nt * 3);
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+      g.setIndex(new THREE.BufferAttribute(idx, 1)); g.computeVertexNormals(); simWeldNormals(g, pos, nv);
+      const c = new Float32Array(nv * 3);
+      for (let i = 0; i < nv; i++) for (let j = 0; j < 3; j++) c[3 * i + j] = SIM_SRGB2LIN[rgba[4 * i + j]];
+      g.setAttribute('color', new THREE.BufferAttribute(c, 3));
+      simMapMesh.geometry.dispose(); simMapMesh.geometry = g;
+      simVer = h[0];
+      document.getElementById('simtris').textContent = (nt).toLocaleString() + ' triangles';
+      { const el = document.getElementById('simmapstats'); if (el) el.textContent = (buf.byteLength / 1048576).toFixed(1) + ' MB · ' + nv.toLocaleString() + ' verts'; }
+    }
+    if (r.ok || r.status === 204) simPill('simmap', 'map live', 'on'); else simPill('simmap', 'map: server error ' + r.status, 'warn');
+  } catch (e) { simPill('simmap', 'map: unreachable', 'bad'); }
+  setTimeout(simPollMap, 2500);
+}
+simPollMap();
+const simRobot = new THREE.Group(); simScene.add(simRobot); const simLinkGroups = {};
+function simSetPose(o, p) { o.position.set(p[0], p[1], p[2]); o.quaternion.set(p[3], p[4], p[5], p[6]); o.visible = (document.getElementById('simShowRobot') || { checked: true }).checked; }
+const simTcpF = (() => { const g = new THREE.Group(); g.add(new THREE.AxesHelper(0.06)); g.visible = false; simScene.add(g); return g; })();
+async function simLoadRobot() {
+  let cfg;
+  for (;;) { try { cfg = await (await fetch(SIM3D + '/sim_config')).json(); if (cfg.visuals.length) break; } catch (e) {} await new Promise(r => setTimeout(r, 2000)); }
+  const loader = new ColladaLoader();
+  const mat = new THREE.MeshStandardMaterial({ color: 0xdfe5ee, roughness: 0.55, metalness: 0.1, transparent: true, opacity: 0.55 });
+  await Promise.all(cfg.visuals.map(v => new Promise(res => {
+    loader.load(SIM3D + '/sim_mesh/' + v.mesh, c => {
+      const m = c.scene; m.rotation.set(0, 0, 0);
+      m.traverse(o => { if (o.isMesh) o.material = Array.isArray(o.material) ? o.material.map(() => mat) : mat; });
+      const holder = new THREE.Group(); holder.add(m);
+      holder.position.set(...v.xyz); holder.quaternion.setFromEuler(new THREE.Euler(v.rpy[0], v.rpy[1], v.rpy[2], 'ZYX')); holder.scale.set(...v.scale);
+      const lg = simLinkGroups[v.link] || (simLinkGroups[v.link] = (() => { const g = new THREE.Group(); g.visible = false; simRobot.add(g); return g; })());
+      lg.add(holder); res();
+    }, undefined, () => res());
+  })));
+  const es = new EventSource(SIM3D + '/sim_stream');
+  es.onerror = () => simPill('simrobot', 'robot: reconnecting', 'warn');
+  es.onmessage = e => {
+    const d = JSON.parse(e.data); simPill('simrobot', 'robot live', 'on');
+    for (const [l, p] of Object.entries(d.links || {})) if (simLinkGroups[l]) simSetPose(simLinkGroups[l], p);
+    if (d.tcp) { const el = document.getElementById('simtcp'); if (el) el.textContent = d.tcp.slice(0, 3).map(v => Math.round(v * 1000)).join(', '); }
+    if (d.tcp) simSetPose(simTcpF, d.tcp); else simTcpF.visible = false;
+  };
+}
+simLoadRobot();
+const simDrillG = new THREE.Group(); simScene.add(simDrillG);
+const simDrillBoxMat = new THREE.MeshBasicMaterial({ color: 0xe8801c, transparent: true, opacity: 0.18, depthWrite: false });
+const simDrillEdgeMat = new THREE.LineBasicMaterial({ color: 0xe8801c });
+let simDrillMesh = null, simDrillEdge = null;
+async function simPollDrillBox() {
+  if (!window.__simTabActive) return setTimeout(simPollDrillBox, 1000);
+  try {
+    const r = await fetch(SIMDRILL, { cache: 'no-store' });
+    if (r.ok) {
+      const d = await r.json();
+      if (d.ok) {
+        const lo = d.aabb_min, hi = d.aabb_max, stale = d.status !== 'live';
+        if (simDrillMesh) { simDrillG.remove(simDrillMesh); simDrillMesh.geometry.dispose(); simDrillMesh = null; }
+        if (simDrillEdge) { simDrillG.remove(simDrillEdge); simDrillEdge.geometry.dispose(); simDrillEdge = null; }
+        const g = new THREE.BoxGeometry(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]);
+        simDrillBoxMat.color.set(stale ? 0xe83c3c : 0xe8801c);
+        simDrillEdgeMat.color.set(stale ? 0xe83c3c : 0xe8801c);
+        simDrillMesh = new THREE.Mesh(g, simDrillBoxMat);
+        simDrillMesh.position.set((lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, (lo[2] + hi[2]) / 2);
+        simDrillEdge = new THREE.LineSegments(new THREE.EdgesGeometry(g), simDrillEdgeMat);
+        simDrillEdge.position.copy(simDrillMesh.position);
+        simDrillG.add(simDrillMesh); simDrillG.add(simDrillEdge);
+      }
+    }
+  } catch (e) {}
+  setTimeout(simPollDrillBox, 500);
+}
+simPollDrillBox();
+// ---- sim parity: cloud points + toolbar + tcp/map rows (mirror of the live 3D card) ----
+const simCloudG = new THREE.Group(); simScene.add(simCloudG);
+const SIM_STOPS = [[0.27,0.08,0.33],[0.23,0.32,0.55],[0.13,0.57,0.55],[0.37,0.79,0.38],[0.99,0.91,0.15]];
+function simZColor(t, out){
+  const x = Math.min(1, Math.max(0, t)) * (SIM_STOPS.length - 1);
+  const i = Math.min(SIM_STOPS.length - 2, Math.floor(x)), u = x - i;
+  for (let k = 0; k < 3; k++) out[k] = SIM_STOPS[i][k] + (SIM_STOPS[i+1][k] - SIM_STOPS[i][k]) * u;
+}
+const simPtsMat = new THREE.PointsMaterial({ size: 0.0035, vertexColors: true, sizeAttenuation: true });
+const simPickMat = new THREE.MeshBasicMaterial({ color: 0xff22ff });
+const simTcpMat = new THREE.MeshBasicMaterial({ color: 0xff2222 });
+async function simPollCloud(){
+  if (!window.__simTabActive) return setTimeout(simPollCloud, 1000);
+  try {
+    const r = await fetch(SIM_HOST + ':9444/grasp.json', { cache: 'no-store' });
+    if (r.ok){
+      const d = await r.json();
+      if (d.cloud && d.cloud.length > 30 && d.tcp && d.pick){
+        while (simCloudG.children.length){ const o = simCloudG.children.pop(); if (o.geometry) o.geometry.dispose(); }
+        const pos = new Float32Array(d.cloud.flat());
+        const n = Math.min(d.n_points || 0, d.cloud.length);
+        let zmin = 1e9, zmax = -1e9;
+        for (let i = 2; i < pos.length; i += 3){ if (pos[i] < zmin) zmin = pos[i]; if (pos[i] > zmax) zmax = pos[i]; }
+        const col = new Float32Array(n * 3), c = [0, 0, 0];
+        for (let i = 0; i < n; i++){ simZColor((pos[3*i+2] - zmin) / Math.max(1e-6, zmax - zmin), c); col[3*i] = c[0]; col[3*i+1] = c[1]; col[3*i+2] = c[2]; }
+        const pg = new THREE.BufferGeometry();
+        pg.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+        pg.setAttribute('color', new THREE.BufferAttribute(col, 3));
+        simCloudG.add(new THREE.Points(pg, simPtsMat));
+        const tcp = new THREE.Vector3(d.tcp[0], d.tcp[1], d.tcp[2]);
+        const tdot = new THREE.Mesh(new THREE.SphereGeometry(0.004, 20, 14), simTcpMat);
+        tdot.position.copy(tcp); simCloudG.add(tdot);
+        const pk = new THREE.Mesh(new THREE.OctahedronGeometry(0.007), simPickMat);
+        pk.position.copy(new THREE.Vector3(d.pick[0], d.pick[1], d.pick[2])); simCloudG.add(pk);
+        const cb = document.getElementById('simShowCloud'); if (cb) simCloudG.visible = cb.checked;
+      }
+    }
+  } catch (e) {}
+  setTimeout(simPollCloud, 2500);
+}
+simPollCloud();
+const simShowEl = id => document.getElementById(id);
+if (simShowEl('simShowMap')) simShowEl('simShowMap').onchange = () => { simMapMesh.visible = simShowEl('simShowMap').checked; };
+if (simShowEl('simShowRobot')) simShowEl('simShowRobot').onchange = () => { const v = simShowEl('simShowRobot').checked; simRobot.visible = v; simTcpF.visible = v; };
+if (simShowEl('simShowDrill')) simShowEl('simShowDrill').onchange = () => { simDrillG.visible = simShowEl('simShowDrill').checked; };
+if (simShowEl('simShowCloud')) simShowEl('simShowCloud').onchange = () => { simCloudG.visible = simShowEl('simShowCloud').checked; };
+if (simShowEl('simReset')) simShowEl('simReset').onclick = () => { simCam.position.set(...SIM_HOME.pos); simCtl.target.set(...SIM_HOME.target); simCtl.update(); };
+if (simShowEl('simlag')) simShowEl('simlag').textContent = 'hold (follower, no MPC cmd)';
+</script>
+
+</div>
+<div id="tab-sim" hidden>
+<h2>Simulation (VM103 Isaac) · live</h2>
+<section class="grid">
+  <figure id="sim1"><div class="frame"><img alt="sim zed1 live"><div class="offline">Sim unavailable (stack down?). Retrying…</div></div>
+    <figcaption><div><div class="name">Sim · Camera 1</div><div class="sub">zed1 raw · compressed · domain 103</div></div><button type="button" data-simcam="sim1">Reconnect</button></figcaption></figure>
+  <figure id="sim2"><div class="frame"><img alt="sim zed2 live"><div class="offline">Sim unavailable (stack down?). Retrying…</div></div>
+    <figcaption><div><div class="name">Sim · Camera 2</div><div class="sub">zed2 raw · compressed · domain 103</div></div><button type="button" data-simcam="sim2">Reconnect</button></figcaption></figure>
+  <figure id="sseg1"><div class="frame"><img alt="sim zed1 robot mask"><div class="offline">No segmenter output. Retrying…</div></div>
+    <figcaption><div><div class="name">Sim · Camera 1 · segmented</div><div class="sub">/franka_seg_zed1/overlay · domain 103</div></div><button type="button" data-simcam="sseg1">Reconnect</button></figcaption></figure>
+  <figure id="sseg2"><div class="frame"><img alt="sim zed2 robot mask"><div class="offline">No segmenter output. Retrying…</div></div>
+    <figcaption><div><div class="name">Sim · Camera 2 · segmented</div><div class="sub">/franka_seg_zed2/overlay · domain 103</div></div><button type="button" data-simcam="sseg2">Reconnect</button></figcaption></figure>
+  <figure id="sdrill"><div class="frame"><img alt="sim sam2 drill mask live"><div class="offline">Sim segmentation unavailable. Retrying…</div></div>
+    <figcaption><div><div class="name">Sim · Drill mask · live</div><div class="sub">/zed1/segmentation_overlay · domain 103</div></div><button type="button" id="sdrillBtn">Reconnect</button></figcaption></figure>
+  <figure id="simggrasp"><div class="frame"><canvas id="simg3d" style="width:100%;height:320px;display:block"></canvas><div class="offline">Loading sim 3D grasp…</div></div>
+    <figcaption><div><div class="name">Sim · Grasp vs cloud · 3D</div><div class="sub">drag orbit · wheel zoom · double-click resets</div></div><button type="button" id="simggraspBtn">Reload</button></figcaption></figure>
+  <div class="card"><h3>Sim status</h3>
+    <div class="pills"><span class="pill" id="simstate">sim: …</span><span class="pill" id="simdrill">drill: …</span><span class="pill" id="simpts">cloud: …</span></div>
+    <div class="row"><span class="k">hand (mm, base frame)</span><span id="simtcp">–</span></div>
+    <div class="row"><span class="k">target − hand</span><span id="simlag">–</span></div>
+    <div class="row"><span class="k">map</span><span id="simmapstats">–</span></div>
+    <div class="k" style="margin-top:6px">Isaac replica of the lab cell (same ZED poses, same scripts, domain 103).</div>
+  </div>
+  <div class="card" style="grid-column:1/-1"><h3>Sim 3D · map + robot + drill</h3>
+    <div class="tools">
+      <label><input type="checkbox" id="simShowMap" checked> map</label>
+      <label><input type="checkbox" id="simShowRobot" checked> robot</label>
+      <label><input type="checkbox" id="simShowDrill" checked> drill</label>
+      <label title="grasp cloud points (masked ZED depth, fr3_link0)"><input type="checkbox" id="simShowCloud" checked> cloud</label>
+      <button type="button" id="simReset">reset view</button>
+    </div>
+    <div id="simview" style="position:relative;height:min(52vh,480px);min-height:300px;background:#10151c;border:1px solid var(--line);border-radius:8px;overflow:hidden"></div>
+    <div class="pills" style="margin-top:6px"><span class="pill" id="simmap">map: …</span><span class="pill" id="simrobot">robot: …</span><span class="pill" id="simtris"></span></div>
+    <div class="hint">drag: rotate · right-drag: pan · wheel: zoom · orange = measured hand · follower hold (no MPC command in sim)</div>
+  </div>
+</section>
+</div>
+<script>
+// ---- tabs: lab-live vs sim (VM103) ----
+function selectTab(sim) {
+  document.getElementById('tab-live').hidden = sim;
+  document.getElementById('tab-sim').hidden = !sim;
+  document.getElementById('tabbtn-live').className = 'tabbtn' + (sim ? '' : ' on');
+  document.getElementById('tabbtn-sim').className = 'tabbtn' + (sim ? ' on' : '');
+  window.__simTabActive = !!sim;
+  try { if (sim && window.__simResize) window.__simResize(); } catch (e) {}
+  try { history.replaceState(null, '', sim ? '#sim' : '#live'); } catch (e) {}
+}
+document.getElementById('tabbtn-live').onclick = () => selectTab(false);
+document.getElementById('tabbtn-sim').onclick = () => selectTab(true);
+window.__simTabActive = false;
+if ((location.hash || '') === '#sim') selectTab(true);
+</script>
+<script>
+/* Grasp-target selector (2026-11-21). The server decides readiness; this page
+   only shows it. Choose a button, then click the object on the ZED1 image. */
+(() => {
+  const root = document.getElementById('object-selector');
+  if (!root) return;
+  const TARGETS = ['drill', 'tennis_ball', 'sprite'];
+  const buttons = Array.from(root.querySelectorAll('[data-object-target]'));
+  const status = root.querySelector('[data-object-status]');
+  const details = root.querySelector('[data-object-details]');
+  const hint = root.querySelector('[data-object-hint]');
+  const canvas = root.querySelector('[data-object-canvas]');
+  const ctx = canvas.getContext('2d');
+  const check = k => root.querySelector(`[data-object-check="${k}"]`);
+  let last = null, pending = null, posting = false;
+  const rgb = new Image(), mask = new Image();
+  let maskOk = false;
+
+  function draw() {
+    if (!rgb.complete || !rgb.naturalWidth) return;
+    ctx.drawImage(rgb, 0, 0, canvas.width, canvas.height);
+    if (maskOk && mask.naturalWidth) {
+      const off = document.createElement('canvas');
+      off.width = canvas.width; off.height = canvas.height;
+      const o = off.getContext('2d');
+      o.drawImage(mask, 0, 0, off.width, off.height);
+      const d = o.getImageData(0, 0, off.width, off.height);
+      for (let i = 0; i < d.data.length; i += 4) {
+        const on = d.data[i] > 127;
+        d.data[i] = 255; d.data[i + 1] = 40; d.data[i + 2] = 40; d.data[i + 3] = on ? 110 : 0;
+      }
+      o.putImageData(d, 0, 0);
+      ctx.drawImage(off, 0, 0);
+    }
+    if (pending) {
+      ctx.strokeStyle = '#facc15'; ctx.lineWidth = 3;
+      ctx.strokeRect(1, 1, canvas.width - 2, canvas.height - 2);
+    }
+  }
+  rgb.onload = draw;
+  mask.onload = () => { maskOk = true; draw(); };
+  mask.onerror = () => { maskOk = false; draw(); };
+  function refreshImages() {
+    const t = Date.now();
+    // :8788 page (tower): /segsnap is ZED1 with the SAM2 mask already drawn (VM :8791),
+    // the tower snap server has no /vm/view_mask. Same 640x360 frame as the tracker.
+    rgb.src = `segsnap?t=${t}`;
+  }
+
+  function setButtons() {
+    const can = !!(last && last.can_select) && !posting;
+    buttons.forEach(b => {
+      b.disabled = !can;
+      b.setAttribute('aria-pressed', String(b.dataset.objectTarget === (pending || (last && last.selected))));
+    });
+  }
+
+  function render(d) {
+    if (!d || typeof d.phase !== 'string') throw Error('invalid selector status');
+    if (d.selected != null && !TARGETS.includes(d.selected)) throw Error('invalid target');
+    last = d;
+    const name = d.selected ? d.targets[d.selected].label : 'none';
+    const cls = d.phase === 'ready' ? 'on' : d.phase === 'error' ? 'bad' : 'warn';
+    status.className = `pill ${cls}`;
+    // Y runs the quick ROS grasp since 11-23 and does not read this card, so show tracking only.
+    status.textContent = `${name} · ${d.phase}`;
+    for (const k of ['mask', 'map']) {
+      const c = d[k] || {};
+      check(k).textContent = `${c.ok ? 'OK' : '—'} ${c.detail || ''}`;
+      check(k).style.color = c.ok ? 'var(--live)' : 'var(--warn)';
+    }
+    const t = d.tracking || {};
+    details.textContent = `${d.reason}` + (t.tracking ? ` · tracker ${t.tracking}, map gate ${t.map_state || '?'}` : '') +
+      (d.can_select ? '' : ` · selection blocked: ${d.select_block || 'busy'}`);
+    if (!pending) hint.textContent = d.can_select ? 'Pick an object, then click it in the image.' :
+      `Selection unavailable: ${d.select_block || 'busy'}`;
+    setButtons();
+  }
+
+  async function update() {
+    try {
+      const r = await fetch('object-target', {cache: 'no-store', signal: AbortSignal.timeout(3000)});
+      if (!r.ok) throw Error(`HTTP ${r.status}`);
+      render(await r.json());
+    } catch (e) {
+      last = null; setButtons();
+      status.className = 'pill bad'; status.textContent = 'Object selection unavailable';
+      details.textContent = String(e.message || e);
+    }
+  }
+
+  buttons.forEach(b => b.addEventListener('click', () => {
+    if (b.disabled) return;
+    pending = b.dataset.objectTarget;
+    hint.textContent = `Now click the ${last.targets[pending].label.toLowerCase()} in the image (Esc cancels).`;
+    setButtons(); draw();
+  }));
+  document.addEventListener('keydown', e => { if (e.key === 'Escape' && pending) { pending = null; update(); draw(); } });
+
+  canvas.addEventListener('click', async ev => {
+    if (!pending || posting) return;
+    const r = canvas.getBoundingClientRect();
+    const click = [(ev.clientX - r.left) / r.width, (ev.clientY - r.top) / r.height];
+    const target = pending;
+    posting = true; setButtons();
+    hint.textContent = `Switching to ${last.targets[target].label}… (about 30–90 s)`;
+    try {
+      const resp = await fetch('object-target', {method: 'POST', cache: 'no-store',
+        headers: {'Content-Type': 'application/json', 'X-Dashboard': '1'},
+        body: JSON.stringify({target, click}), signal: AbortSignal.timeout(30000)});
+      const d = await resp.json().catch(() => ({}));
+      if (!resp.ok || d.ok !== true) throw Error(d.error || `HTTP ${resp.status}`);
+    } catch (e) {
+      hint.textContent = `Selection refused: ${e.message}`;
+    } finally {
+      pending = null; posting = false; await update(); draw();
+    }
+  });
+
+  setButtons(); update(); refreshImages();
+  setInterval(update, 2000);
+  setInterval(refreshImages, 1000);
+})();
+
+</script>
+</body>
+</html>

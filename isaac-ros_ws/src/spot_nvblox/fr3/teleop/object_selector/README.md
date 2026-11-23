@@ -7,9 +7,9 @@ Y grasps the selected object only when its grasp path is validated.
 ## Deployed
 | Piece | Where it runs | Source here |
 |---|---|---|
-| Selector service (`GET/POST /object-target`, 127.0.0.1:8898) | VM container `vm-object-selector` (image `vm-grasp-loop:latest`, domain 8), code `fr3_real_repro/object_selector/` | `selector_service.py`, `esdf_points.py`, `fr3_spheres.py`, `robot/` |
-| Object grasp planners (used by the broker) | VM `vm-viewer` via the broker VM script | `object_grasps.py` |
-| Dashboard card + proxy (:8899) | VM `fr3_real_repro/dashboard/` | `deploy/lab_live_server.py`, `deploy/lab_dashboard.html`, `selector_card.html`, `object_selector.js` |
+| Selector service (`GET/POST /object-target`, 10.0.0.3:8898) | VM container `vm-object-selector` (image `vm-grasp-loop:latest`, domain 8, `--network host --ipc host` (FastDDS SHM: without host IPC it sees topics but no data), env `SELECTOR_BIND=10.0.0.3 SELECTOR_START_REGRASP=0`), code `fr3_real_repro/object_selector/` | `selector_service.py`, `esdf_points.py`, `fr3_spheres.py`, `robot/` |
+| Object grasp planners (broker path, unused since the 11-23 quick Y) | VM `vm-viewer` via the broker VM script | `object_grasps.py` |
+| Dashboard card + proxy (2026-11-23: tower :8788/:8795; the VM :8899 server is stopped) | `isaac-build:/tmp/nvblox_real/{mesh_server.py,lab_dashboard.html}` (backups `*.bak_selector_20261123`) | `deploy/mesh_server.py`, `deploy/lab_dashboard_8788.html`, `selector_card.html`, `object_selector.js` |
 | Grasp broker gate | tower `fr3_zed_runtime/grasp_broker.py` | `deploy/grasp_broker.py` |
 
 ## Switch sequence (only while disengaged, idle, holding nothing)

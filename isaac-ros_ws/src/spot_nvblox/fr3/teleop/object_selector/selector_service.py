@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Live object-target selector for the FR3 dashboard (VM, 127.0.0.1:8898).
+"""Live object-target selector for the FR3 dashboard (VM, :8898; SELECTOR_BIND, default 127.0.0.1).
 
 GET  /object-target  -> status JSON (selected, phase, mask/map/grasp checks, can_select)
 POST /object-target  {"target": "drill|tennis_ball|sprite", "click": [x, y]}
@@ -46,6 +46,8 @@ KEY = os.environ.get('LAB_KEY', '/ssh/id_lab')
 TOWER_MESH = 'http://100.88.134.127:8788/mesh.bin'
 LIVE_CLOUD = 'http://127.0.0.1:8791/livecloud.json'
 REGRASP_CONTAINER = 'vm-regrasp-live'
+# 0 = never start the drill regrasp loop (Y uses the quick ROS grasp since 11-23, not the broker).
+START_REGRASP = os.environ.get('SELECTOR_START_REGRASP', '1') != '0'
 
 TARGETS = {
     # mask fraction of the 640x360 ZED1 image; cloud largest-extent bounds (m); min points
@@ -449,7 +451,8 @@ class Selector:
 
             if target == 'drill':
                 self._restore_binding()
-                run(['docker', 'start', REGRASP_CONTAINER], timeout=30)
+                if START_REGRASP:
+                    run(['docker', 'start', REGRASP_CONTAINER], timeout=30)
                 self.y_enabled = BINDING.exists()
                 self.checks['grasp'] = dict(ok=self.y_enabled, detail=(
                     Y_NOTE['drill'] if self.y_enabled else 'no drill binding to restore; regrasp loop will regenerate'))
@@ -652,8 +655,10 @@ def main():
     sel = Selector(ros)
     threading.Thread(target=sel.poll_teleop, daemon=True).start()
     sel.adopt_current()
-    srv = ThreadingHTTPServer(('127.0.0.1', 8898), make_handler(sel))
-    log('object selector listening on 127.0.0.1:8898')
+    # The tower dashboard (:8788 mesh_server) proxies here over the lab LAN, so bind that address.
+    bind = os.environ.get('SELECTOR_BIND', '127.0.0.1')
+    srv = ThreadingHTTPServer((bind, 8898), make_handler(sel))
+    log(f'object selector listening on {bind}:8898')
     srv.serve_forever()
 
 

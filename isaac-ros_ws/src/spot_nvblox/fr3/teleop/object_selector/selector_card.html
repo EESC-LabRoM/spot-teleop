@@ -1,14 +1,13 @@
-    <div class="card" id="object-selector"><h3>Grasp target</h3>
+    <div class="card" id="object-selector"><h3>Grasp target <span class="k">(SAM2 + map; Y is separate)</span></h3>
       <div style="display:flex;flex-wrap:wrap;gap:6px;margin:6px 0">
         <button type="button" data-object-target="drill" aria-pressed="false" disabled>Drill</button>
         <button type="button" data-object-target="tennis_ball" aria-pressed="false" disabled>Tennis ball</button>
         <button type="button" data-object-target="sprite" aria-pressed="false" disabled>Sprite bottle</button>
       </div>
       <div class="k" data-object-hint style="min-height:1.3em">Pick an object, then click it in the image.</div>
-      <canvas data-object-canvas width="640" height="360" title="ZED1 with the live target mask (red). Click the object after choosing a button." style="display:block;width:100%;aspect-ratio:16/9;margin:6px 0;border-radius:6px;background:#000;cursor:crosshair"></canvas>
+      <canvas data-object-canvas width="640" height="360" title="ZED1 with the live SAM2 mask. Choose a button, then click the object." style="display:block;width:100%;aspect-ratio:16/9;margin:6px 0;border-radius:6px;background:#000;cursor:crosshair"></canvas>
       <div class="pill warn" data-object-status>Checking object selection…</div>
       <div class="row"><span class="k">mask</span><span data-object-check="mask">–</span></div>
       <div class="row"><span class="k">map</span><span data-object-check="map">–</span></div>
-      <div class="row"><span class="k">Y grasp</span><span data-object-check="grasp">–</span></div>
       <div class="k" data-object-details style="margin-top:4px"></div>
     </div>

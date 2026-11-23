@@ -41,8 +41,9 @@
   mask.onerror = () => { maskOk = false; draw(); };
   function refreshImages() {
     const t = Date.now();
-    rgb.src = `snap?topic=/zed1/zed_node/rgb/image_rect_color&t=${t}`;
-    mask.src = `snap?topic=/vm/view_mask&t=${t}`;
+    // :8788 page (tower): /segsnap is ZED1 with the SAM2 mask already drawn (VM :8791),
+    // the tower snap server has no /vm/view_mask. Same 640x360 frame as the tracker.
+    rgb.src = `segsnap?t=${t}`;
   }
 
   function setButtons() {
@@ -58,10 +59,11 @@
     if (d.selected != null && !TARGETS.includes(d.selected)) throw Error('invalid target');
     last = d;
     const name = d.selected ? d.targets[d.selected].label : 'none';
-    const cls = d.phase === 'ready' ? (d.y_enabled ? 'on' : 'warn') : d.phase === 'error' ? 'bad' : 'warn';
+    const cls = d.phase === 'ready' ? 'on' : d.phase === 'error' ? 'bad' : 'warn';
     status.className = `pill ${cls}`;
-    status.textContent = `${name} · ${d.phase}${d.phase === 'ready' ? (d.y_enabled ? ' · Y ready' : ' · Y locked') : ''}`;
-    for (const k of ['mask', 'map', 'grasp']) {
+    // Y runs the quick ROS grasp since 11-23 and does not read this card, so show tracking only.
+    status.textContent = `${name} · ${d.phase}`;
+    for (const k of ['mask', 'map']) {
       const c = d[k] || {};
       check(k).textContent = `${c.ok ? 'OK' : '—'} ${c.detail || ''}`;
       check(k).style.color = c.ok ? 'var(--live)' : 'var(--warn)';
